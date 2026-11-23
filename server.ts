@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import { createServer as createHttpServer } from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer as createViteServer } from 'vite';
@@ -10,6 +11,7 @@ const __dirname = path.dirname(__filename);
 
 async function startServer() {
   const app = express();
+  const httpServer = createHttpServer(app);
   const port = Number(process.env.PORT || 3000);
 
   app.use(express.json({ limit: '25mb' }));
@@ -117,7 +119,11 @@ Important rules:
   const isProd = process.env.NODE_ENV === 'production';
   if (!isProd) {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        ws: { server: httpServer },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -129,7 +135,7 @@ Important rules:
     });
   }
 
-  app.listen(port, '0.0.0.0', () => {
+  httpServer.listen(port, '0.0.0.0', () => {
     console.log(`Financials with Tuhin server listening on http://0.0.0.0:${port}`);
   });
 }
