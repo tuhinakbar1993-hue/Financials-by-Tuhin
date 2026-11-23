@@ -1,34 +1,20 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Database,
-  AlertCircle,
   Sparkles,
   Lock,
   Unlock,
-  Sliders,
   Calendar,
-  TrendingUp,
   CheckCircle2,
-  ArrowRight,
-  RotateCcw,
   Eye,
-  Layers,
   LayoutGrid,
-  Shield,
   Info,
-  HelpCircle,
-  Check,
   Zap,
-  BarChart3,
-  DollarSign,
-  Briefcase,
-  Percent,
   Wand2,
-  ChevronDown,
-  ChevronUp,
   Star,
   X,
-  SlidersHorizontal,
+  ShieldCheck,
+  AlertTriangle,
 } from 'lucide-react';
 import {
   YearDataInput,
@@ -40,7 +26,7 @@ import {
   CashFlowStatementYear,
   PrimaryDriverKey,
   AutoFillConfigs,
-  DriverAutoFillConfig,
+  FinancialValidationIssue,
 } from '../types/financial';
 import {
   calculateFinancialRatios,
@@ -48,6 +34,7 @@ import {
   PRIMARY_DRIVERS_METADATA,
   calculateDriverAutoFillSeries,
 } from '../services/financialEngine';
+import { YearSelectorControl } from './YearSelectorControl';
 
 interface FinancialDataEntryProps {
   yearsData: YearDataInput[];
@@ -65,6 +52,13 @@ interface FinancialDataEntryProps {
   autoFillConfigs?: AutoFillConfigs;
   onApplyAutoFill?: (driver: PrimaryDriverKey, baseYear: number, baseValue: number, customGrowthRate?: number) => void;
   onClearAutoFill?: (driver: PrimaryDriverKey) => void;
+  validationIssues?: FinancialValidationIssue[];
+  selectedHistoricalYears?: number[];
+  selectedProjectedYears?: number[];
+  onToggleHistoricalYear?: (year: number) => void;
+  onToggleProjectedYear?: (year: number) => void;
+  onSetHistoricalYears?: (years: number[]) => void;
+  onSetProjectedYears?: (years: number[]) => void;
 }
 
 export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
@@ -82,11 +76,19 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
   autoFillConfigs = {},
   onApplyAutoFill = () => {},
   onClearAutoFill = () => {},
+  validationIssues = [],
+  selectedHistoricalYears = [2023, 2024, 2025],
+  selectedProjectedYears,
+  onToggleHistoricalYear,
+  onToggleProjectedYear,
+  onSetHistoricalYears,
+  onSetProjectedYears,
 }) => {
   const [viewMode, setViewMode] = useState<'grid' | 'single'>('grid');
   const [selectedYear, setSelectedYear] = useState<number>(yearsData[0]?.year || 2023);
   const [showInterconnectionLogic, setShowInterconnectionLogic] = useState<boolean>(false);
   const [showAutoFillPanel, setShowAutoFillPanel] = useState<boolean>(true);
+  const [showYearSelector, setShowYearSelector] = useState<boolean>(false);
   const [activeModalDriver, setActiveModalDriver] = useState<PrimaryDriverKey | null>(null);
   const [activeNotification, setActiveNotification] = useState<string | null>(null);
 
@@ -99,6 +101,26 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
     repaymentOfBorrowings: yearsData.find(y => y.year === 2024)?.year || yearsData[0]?.year || 2023,
     fixedAssetsGross: yearsData.find(y => y.year === 2023)?.year || yearsData[0]?.year || 2023,
   });
+
+  // Ensure selectedYear and selectedBaseYears remain valid when years are toggled dynamically
+  useEffect(() => {
+    const validYears = yearsData.map(y => y.year);
+    if (validYears.length === 0) return;
+    if (!validYears.includes(selectedYear)) {
+      setSelectedYear(validYears[0]);
+    }
+    setSelectedBaseYears(prev => {
+      let changed = false;
+      const next = { ...prev };
+      (Object.keys(next) as PrimaryDriverKey[]).forEach(k => {
+        if (!validYears.includes(next[k])) {
+          next[k] = validYears[0];
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [yearsData, selectedYear]);
 
   // Independent custom growth / trend rates for each of the 6 drivers
   const [customRates, setCustomRates] = useState<Partial<Record<PrimaryDriverKey, number>>>({});
@@ -198,6 +220,12 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
     });
   };
 
+  const projYearsList = selectedProjectedYears && selectedProjectedYears.length > 0
+    ? selectedProjectedYears
+    : yearsData.filter(y => y.isProjected).map(y => y.year);
+  const histYearsCount = yearsData.filter(y => !y.isProjected).length;
+  const projYearsCount = yearsData.filter(y => y.isProjected).length;
+
   return (
     <div className="space-y-6">
       {/* Top Header & Operational Banner */}
@@ -209,16 +237,27 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
                 <Database className="w-4 h-4" />
               </div>
               <div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <h2 className="text-lg font-bold text-white tracking-tight">
                     Financial Data Entry & Primary Driver Architecture
                   </h2>
                   <span className="text-[11px] font-semibold text-emerald-400 bg-emerald-950/60 border border-emerald-800/50 px-2 py-0.5 rounded-md">
-                    6 Input Drivers
+                    6 Strictly Fixed Inputs
                   </span>
+                  {validationIssues.length === 0 ? (
+                    <span className="text-[10px] font-semibold text-emerald-300 bg-emerald-950/60 border border-emerald-700/60 px-2 py-0.5 rounded-md inline-flex items-center gap-1">
+                      <ShieldCheck className="w-3 h-3" />
+                      Reconciled
+                    </span>
+                  ) : (
+                    <span className="text-[10px] font-semibold text-amber-300 bg-amber-950/60 border border-amber-700/60 px-2 py-0.5 rounded-md inline-flex items-center gap-1">
+                      <AlertTriangle className="w-3 h-3" />
+                      {validationIssues.length} Alert(s)
+                    </span>
+                  )}
                 </div>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Only the six primary financial drivers accept direct input. All dependent statement figures, ratios, and cash flows are automatically derived with full mathematical integrity.
+                  The six primary user inputs remain strictly unchanged across all calculations. All dependent statement figures, ratios, and cash flows adjust logically and proportionately.
                 </p>
               </div>
             </div>
@@ -287,6 +326,22 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
               </button>
             </div>
 
+            {/* Select Years Individual Toggle */}
+            {onToggleHistoricalYear && onToggleProjectedYear && onSetHistoricalYears && onSetProjectedYears && (
+              <button
+                type="button"
+                onClick={() => setShowYearSelector(!showYearSelector)}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-xl border transition-all flex items-center gap-1.5 ${
+                  showYearSelector
+                    ? 'bg-sky-600 border-sky-400 text-white shadow-sm'
+                    : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'
+                }`}
+              >
+                <Calendar className="w-3.5 h-3.5" />
+                Select Years ({histYearsCount}H+{projYearsCount}P)
+              </button>
+            )}
+
             {/* Auto-Fill Hub Toggle */}
             <button
               type="button"
@@ -324,11 +379,11 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
 
         {/* Projection Horizon Quick Controller */}
         <div className="pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3 text-xs">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Calendar className="w-3.5 h-3.5 text-slate-400" />
             <span className="text-slate-300 font-medium">Projection Horizon:</span>
             <span className="font-mono font-bold text-emerald-400">
-              {assumptions.projectedYearsCount} Years ({yearsData.find(y => y.isProjected)?.year}–{yearsData[yearsData.length - 1]?.year})
+              {projYearsCount} Years ({yearsData.find(y => y.isProjected)?.year}–{yearsData[yearsData.length - 1]?.year})
             </span>
             <div className="flex items-center gap-1 ml-2">
               {[3, 5, 7, 10, 15, 20].map(count => (
@@ -337,7 +392,7 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
                   type="button"
                   onClick={() => handleQuickHorizonChange(count)}
                   className={`px-2 py-0.5 rounded text-[11px] font-semibold transition-colors ${
-                    assumptions.projectedYearsCount === count
+                    projYearsCount === count
                       ? 'bg-emerald-600 text-white shadow-sm'
                       : 'bg-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-700'
                   }`}
@@ -348,10 +403,10 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-3 text-[11px] text-slate-400">
+          <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-400">
             <div className="flex items-center gap-1.5">
               <span className="w-2.5 h-2.5 rounded-sm bg-emerald-600/80 border border-emerald-400 inline-block"></span>
-              <span>Direct Primary Input</span>
+              <span>Fixed Primary Input</span>
             </div>
             <div className="flex items-center gap-1.5">
               <span className="w-2.5 h-2.5 rounded-sm bg-sky-950/60 border border-sky-600/60 inline-block"></span>
@@ -359,7 +414,7 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
             </div>
             <div className="flex items-center gap-1.5">
               <span className="w-2.5 h-2.5 rounded-sm bg-slate-800/80 border border-slate-700 inline-block"></span>
-              <span>Calculated / Locked</span>
+              <span>Calculated / Derived</span>
             </div>
             <span className="text-slate-500 font-mono">
               Currency: {companyProfile.reportingCurrency} in {companyProfile.reportingUnit}
@@ -367,6 +422,18 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Expandable Individual Year Selector */}
+      {showYearSelector && onToggleHistoricalYear && onToggleProjectedYear && onSetHistoricalYears && onSetProjectedYears && (
+        <YearSelectorControl
+          selectedHistoricalYears={selectedHistoricalYears}
+          selectedProjectedYears={projYearsList}
+          onToggleHistoricalYear={onToggleHistoricalYear}
+          onToggleProjectedYear={onToggleProjectedYear}
+          onSetHistoricalYears={onSetHistoricalYears}
+          onSetProjectedYears={onSetProjectedYears}
+        />
+      )}
 
       {/* Toast Notification for Auto-Fill operations */}
       {activeNotification && (

@@ -1,6 +1,7 @@
-import React from 'react';
-import { Mail, GraduationCap, Building, Award, Calendar, ChevronRight, Sliders, Sparkles } from 'lucide-react';
+import React, { useState } from 'react';
+import { Mail, GraduationCap, Building, Calendar, ChevronRight, ChevronDown } from 'lucide-react';
 import { ProjectionAssumptions, CompanyProfile } from '../types/financial';
+import { YearSelectorControl } from './YearSelectorControl';
 
 interface DeveloperFirstLookCardProps {
   assumptions: ProjectionAssumptions;
@@ -8,15 +9,27 @@ interface DeveloperFirstLookCardProps {
   onOpenDeveloperModal: () => void;
   companyProfile: CompanyProfile;
   baseYear: number;
+  selectedHistoricalYears?: number[];
+  selectedProjectedYears?: number[];
+  onToggleHistoricalYear?: (year: number) => void;
+  onToggleProjectedYear?: (year: number) => void;
+  onSetHistoricalYears?: (years: number[]) => void;
+  onSetProjectedYears?: (years: number[]) => void;
 }
 
 export const DeveloperFirstLookCard: React.FC<DeveloperFirstLookCardProps> = ({
   assumptions,
   onUpdateAssumptions,
   onOpenDeveloperModal,
-  companyProfile,
   baseYear,
+  selectedHistoricalYears = [2023, 2024, 2025],
+  selectedProjectedYears,
+  onToggleHistoricalYear,
+  onToggleProjectedYear,
+  onSetHistoricalYears,
+  onSetProjectedYears,
 }) => {
+  const [showYearCustomizer, setShowYearCustomizer] = useState(false);
   const quickHorizons = [1, 3, 5, 7, 10, 12, 15, 20];
 
   const handleSetHorizon = (years: number) => {
@@ -26,7 +39,12 @@ export const DeveloperFirstLookCard: React.FC<DeveloperFirstLookCardProps> = ({
     });
   };
 
-  const endProjectedYear = baseYear + assumptions.projectedYearsCount;
+  const projYears = selectedProjectedYears && selectedProjectedYears.length > 0
+    ? [...selectedProjectedYears].sort((a, b) => a - b)
+    : Array.from({ length: assumptions.projectedYearsCount }, (_, i) => baseYear + 1 + i);
+  const startProjectedYear = projYears[0] ?? baseYear + 1;
+  const endProjectedYear = projYears[projYears.length - 1] ?? baseYear + assumptions.projectedYearsCount;
+  const sortedHist = [...selectedHistoricalYears].sort((a, b) => a - b);
 
   return (
     <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-slate-900/95 via-slate-900/90 to-slate-950 border border-slate-800/90 shadow-xl shadow-black/30 backdrop-blur-md">
@@ -34,7 +52,7 @@ export const DeveloperFirstLookCard: React.FC<DeveloperFirstLookCardProps> = ({
       <div className="absolute top-0 right-0 w-96 h-96 bg-emerald-500/5 rounded-full blur-3xl pointer-events-none -mr-20 -mt-20" />
       <div className="absolute bottom-0 left-1/4 w-80 h-80 bg-sky-500/5 rounded-full blur-3xl pointer-events-none" />
 
-      <div className="relative p-5 sm:p-6 lg:p-7">
+      <div className="relative p-5 sm:p-6 lg:p-7 space-y-4">
         <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6">
           
           {/* Developer Identity Block (First Look Feature) */}
@@ -113,17 +131,17 @@ export const DeveloperFirstLookCard: React.FC<DeveloperFirstLookCardProps> = ({
             </div>
           </div>
 
-          {/* Interactive Projection Horizon Control (Requirement 1) */}
+          {/* Interactive Projection Horizon & Individual Year Selector Control */}
           <div className="w-full lg:w-auto bg-slate-950/90 border border-slate-800/90 rounded-xl p-4 space-y-3 shrink-0 shadow-inner">
             <div className="flex items-center justify-between gap-4">
               <div className="flex items-center gap-2">
                 <Calendar className="w-4 h-4 text-emerald-400" />
                 <span className="text-xs font-bold text-white tracking-tight uppercase font-mono">
-                  Projection Horizon
+                  Reporting Horizon
                 </span>
               </div>
               <span className="text-xs font-mono font-bold text-emerald-400 bg-emerald-950/90 px-2.5 py-0.5 rounded border border-emerald-800/70 shadow-sm">
-                {assumptions.projectedYearsCount} Years ({baseYear + 1}–{endProjectedYear})
+                {sortedHist.length}H + {projYears.length}P ({startProjectedYear}–{endProjectedYear})
               </span>
             </div>
 
@@ -134,7 +152,7 @@ export const DeveloperFirstLookCard: React.FC<DeveloperFirstLookCardProps> = ({
                   key={years}
                   onClick={() => handleSetHorizon(years)}
                   className={`px-2.5 py-1 text-xs font-mono font-bold rounded-lg transition-all ${
-                    assumptions.projectedYearsCount === years
+                    projYears.length === years
                       ? 'bg-emerald-600 text-white shadow-sm ring-1 ring-emerald-400/40'
                       : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800/80 hover:text-white'
                   }`}
@@ -147,28 +165,47 @@ export const DeveloperFirstLookCard: React.FC<DeveloperFirstLookCardProps> = ({
             {/* Custom Slider / Fine Tuning */}
             <div className="space-y-1.5 pt-1">
               <div className="flex items-center justify-between text-[11px] text-slate-400">
-                <span className="font-medium">Custom Forecast Horizon:</span>
-                <span className="font-mono text-white font-semibold">{assumptions.projectedYearsCount} Projected Years</span>
+                <span className="font-medium">Previous: <strong className="text-emerald-300 font-mono">{sortedHist.join(', ')}</strong></span>
+                <span className="font-mono text-white font-semibold">{projYears.length} Projected Years</span>
               </div>
               <input
                 type="range"
                 min={1}
                 max={20}
-                value={assumptions.projectedYearsCount}
+                value={Math.min(20, Math.max(1, projYears.length))}
                 onChange={(e) => handleSetHorizon(Number(e.target.value))}
                 className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500 hover:accent-emerald-400 transition-all"
               />
-              <div className="flex justify-between text-[10px] text-slate-500 font-mono">
-                <span>1 Year</span>
-                <span>5 Years</span>
-                <span>10 Years</span>
-                <span>15 Years</span>
-                <span>20 Years</span>
+              <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono">
+                <span>1Y · 5Y · 10Y · 15Y · 20Y</span>
+                {onToggleHistoricalYear && onToggleProjectedYear && onSetHistoricalYears && onSetProjectedYears && (
+                  <button
+                    type="button"
+                    onClick={() => setShowYearCustomizer(!showYearCustomizer)}
+                    className="text-emerald-400 hover:text-emerald-300 font-sans font-semibold inline-flex items-center gap-1 transition-colors"
+                  >
+                    <span>{showYearCustomizer ? 'Hide Individual Years' : 'Select Individual Years'}</span>
+                    <ChevronDown className={`w-3 h-3 transition-transform ${showYearCustomizer ? 'rotate-180' : ''}`} />
+                  </button>
+                )}
               </div>
             </div>
           </div>
 
         </div>
+
+        {/* Expandable Individual Year Selector */}
+        {showYearCustomizer && onToggleHistoricalYear && onToggleProjectedYear && onSetHistoricalYears && onSetProjectedYears && (
+          <YearSelectorControl
+            selectedHistoricalYears={sortedHist}
+            selectedProjectedYears={projYears}
+            onToggleHistoricalYear={onToggleHistoricalYear}
+            onToggleProjectedYear={onToggleProjectedYear}
+            onSetHistoricalYears={onSetHistoricalYears}
+            onSetProjectedYears={onSetProjectedYears}
+            compact
+          />
+        )}
       </div>
     </div>
   );

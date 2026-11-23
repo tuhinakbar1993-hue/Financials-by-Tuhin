@@ -8,17 +8,13 @@ import {
   TrendingUp,
   Filter,
   Edit3,
-  Check,
   RotateCcw,
-  Plus,
-  Trash2,
   Landmark,
   Scale,
   Layers,
   Building2,
-  ChevronDown,
-  Sparkles,
   ShieldCheck,
+  Calendar,
 } from 'lucide-react';
 import {
   CompanyProfile,
@@ -32,6 +28,11 @@ import {
   ProjectionAssumptions,
   StatementCellOverrides,
   StatementLabelOverrides,
+  StatementFormatMode,
+  FinancialValidationIssue,
+  PreviousFormatYearData,
+  ProjectedFormatYearData,
+  YearDataInput,
 } from '../types/financial';
 import {
   exportIncomeStatementExcel,
@@ -46,6 +47,8 @@ import {
   exportCompletePackageWord,
   exportCompletePackagePdf,
 } from '../services/exportService';
+import { PreviousFormatSuiteView, ProjectedFormatSuiteView } from './FormatStatementsViews';
+import { YearSelectorControl } from './YearSelectorControl';
 
 interface StatementsViewerProps {
   companyProfile: CompanyProfile;
@@ -65,6 +68,18 @@ interface StatementsViewerProps {
   onResetOverrides?: () => void;
   onUpdateNotes?: (updatedNotes: FinancialNoteItem[]) => void;
   onUpdateFixedAssetsCategory?: (catIndex: number, field: string, val: number | string) => void;
+  previousFormatData?: PreviousFormatYearData[];
+  projectedFormatData?: ProjectedFormatYearData[];
+  formatMode?: StatementFormatMode;
+  onChangeFormatMode?: (mode: StatementFormatMode) => void;
+  validationIssues?: FinancialValidationIssue[];
+  selectedHistoricalYears?: number[];
+  selectedProjectedYears?: number[];
+  onToggleHistoricalYear?: (year: number) => void;
+  onToggleProjectedYear?: (year: number) => void;
+  onSetHistoricalYears?: (years: number[]) => void;
+  onSetProjectedYears?: (years: number[]) => void;
+  onUpdatePrimaryDriver?: (year: number, driver: keyof YearDataInput, val: number) => void;
 }
 
 export const StatementsViewer: React.FC<StatementsViewerProps> = ({
@@ -75,7 +90,6 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
   equityData,
   fixedAssetsData,
   notes,
-  statementConfig,
   assumptions,
   onUpdateAssumptions,
   cellOverrides = {},
@@ -85,10 +99,33 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
   onResetOverrides = () => {},
   onUpdateNotes = () => {},
   onUpdateFixedAssetsCategory = () => {},
+  previousFormatData = [],
+  projectedFormatData = [],
+  formatMode: controlledFormatMode,
+  onChangeFormatMode,
+  validationIssues = [],
+  selectedHistoricalYears = [2023, 2024, 2025],
+  selectedProjectedYears,
+  onToggleHistoricalYear,
+  onToggleProjectedYear,
+  onSetHistoricalYears,
+  onSetProjectedYears,
+  onUpdatePrimaryDriver,
 }) => {
   const [activeStatement, setActiveStatement] = useState<string>('cashFlow');
   const [yearViewMode, setYearViewMode] = useState<'all' | 'historical' | 'projected' | 'comparative5'>('all');
   const [isEditMode, setIsEditMode] = useState<boolean>(false);
+  const [internalFormatMode, setInternalFormatMode] = useState<StatementFormatMode>('section76');
+  const [showYearSelector, setShowYearSelector] = useState<boolean>(false);
+
+  const formatMode = controlledFormatMode ?? internalFormatMode;
+  const setFormatMode = onChangeFormatMode ?? setInternalFormatMode;
+
+  const histCount = incomeData.filter(d => !d.isProjected).length;
+  const projCount = incomeData.filter(d => d.isProjected).length;
+  const projYearsList = selectedProjectedYears && selectedProjectedYears.length > 0
+    ? selectedProjectedYears
+    : incomeData.filter(d => d.isProjected).map(d => d.year);
 
   // Filter year data based on yearViewMode
   const filterYears = <T extends { year: number; isProjected: boolean }>(items: T[]): T[] => {
@@ -97,10 +134,11 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         return items.filter(i => !i.isProjected);
       case 'projected':
         return items.filter(i => i.isProjected);
-      case 'comparative5':
+      case 'comparative5': {
         const hist = items.filter(i => !i.isProjected).slice(-2);
         const proj = items.filter(i => i.isProjected).slice(0, 3);
         return [...hist, ...proj];
+      }
       case 'all':
       default:
         return items;
@@ -250,79 +288,164 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Top Banner, Edit Toggle & Export Actions */}
-      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 p-5 bg-slate-900 border border-slate-800 rounded-2xl shadow-sm">
-        <div>
-          <div className="flex items-center gap-2">
-            <TrendingUp className="w-5 h-5 text-emerald-400" />
-            <h2 className="text-lg font-bold text-white tracking-tight">
-              Five Standard Financial Statements & Schedules
-            </h2>
-            <span className="text-[11px] font-semibold text-emerald-300 bg-emerald-950/60 border border-emerald-800/50 px-2 py-0.5 rounded-md">
-              Section 76 & Editable
-            </span>
+      {/* Top Banner, Format Switcher, Edit Toggle & Export Actions */}
+      <div className="flex flex-col gap-4 p-5 bg-slate-900 border border-slate-800 rounded-2xl shadow-sm">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <TrendingUp className="w-5 h-5 text-emerald-400" />
+              <h2 className="text-lg font-bold text-white tracking-tight">
+                Five Standard Financial Statements &amp; Schedules
+              </h2>
+              <span className="text-[11px] font-semibold text-emerald-300 bg-emerald-950/60 border border-emerald-800/50 px-2 py-0.5 rounded-md">
+                Section 76 &amp; Editable
+              </span>
+              {validationIssues.length === 0 ? (
+                <span className="text-[10px] font-semibold text-emerald-300 bg-emerald-950/60 border border-emerald-700/60 px-2 py-0.5 rounded-md inline-flex items-center gap-1">
+                  <ShieldCheck className="w-3 h-3" />
+                  All {histCount + projCount}Y Reconciled
+                </span>
+              ) : (
+                <span className="text-[10px] font-semibold text-amber-300 bg-amber-950/60 border border-amber-700/60 px-2 py-0.5 rounded-md inline-flex items-center gap-1">
+                  <AlertTriangle className="w-3 h-3" />
+                  {validationIssues.length} Audit Alert(s)
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-slate-400 mt-1">
+              {companyProfile.companyName} · {companyProfile.accountingFramework} · {companyProfile.reportingCurrency} in {companyProfile.reportingUnit}
+            </p>
           </div>
-          <p className="text-xs text-slate-400 mt-1">
-            {companyProfile.companyName} · {companyProfile.accountingFramework} · {companyProfile.reportingCurrency} in {companyProfile.reportingUnit}
-          </p>
+
+          {/* Global Controls: Year Selector, Edit Mode Toggle & Export Strip */}
+          <div className="flex flex-wrap items-center gap-2">
+            {onToggleHistoricalYear && onToggleProjectedYear && onSetHistoricalYears && onSetProjectedYears && (
+              <button
+                type="button"
+                onClick={() => setShowYearSelector(!showYearSelector)}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all flex items-center gap-1.5 ${
+                  showYearSelector
+                    ? 'bg-sky-600 text-white border-sky-400'
+                    : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+                }`}
+              >
+                <Calendar className="w-3.5 h-3.5" />
+                <span>Years ({histCount}H + {projCount}P)</span>
+              </button>
+            )}
+
+            {/* Universal Edit Mode Button */}
+            <button
+              onClick={() => setIsEditMode(!isEditMode)}
+              className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg border transition-all flex items-center gap-1.5 shadow-sm ${
+                isEditMode
+                  ? 'bg-amber-500 text-slate-950 border-amber-400 ring-2 ring-amber-500/30'
+                  : 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700 hover:text-white'
+              }`}
+              title="Toggle inline editing for every line item title and financial number"
+            >
+              <Edit3 className="w-3.5 h-3.5" />
+              {isEditMode ? 'Finish Editing (Active)' : 'Edit Values & Labels'}
+            </button>
+
+            {isEditMode && formatMode === 'section76' && (
+              <button
+                onClick={onResetOverrides}
+                className="px-2.5 py-1.5 text-xs font-medium text-slate-400 hover:text-rose-300 bg-slate-800 hover:bg-slate-700/60 rounded-lg border border-slate-700 transition-colors flex items-center gap-1"
+                title="Reset any custom numbers back to the calculation engine defaults"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                Reset
+              </button>
+            )}
+
+            {/* Individual Statement Export Options for Section 76 */}
+            {formatMode === 'section76' && (
+              <div className="flex items-center gap-1 pl-2 border-l border-slate-800">
+                <button
+                  onClick={handleExportExcel}
+                  className="px-2.5 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors flex items-center gap-1.5"
+                  title="Export this statement to Microsoft Excel (.xlsx)"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+                  Excel
+                </button>
+                <button
+                  onClick={handleExportWord}
+                  className="px-2.5 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors flex items-center gap-1.5"
+                  title="Export this statement to Microsoft Word (.docx)"
+                >
+                  <FileText className="w-3.5 h-3.5 text-blue-400" />
+                  Word
+                </button>
+                <button
+                  onClick={handleExportPdf}
+                  className="px-2.5 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors flex items-center gap-1.5"
+                  title="Export this statement to Adobe PDF (.pdf)"
+                >
+                  <Download className="w-3.5 h-3.5 text-rose-400" />
+                  PDF
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* Global Controls: Edit Mode Toggle & Export Strip */}
-        <div className="flex flex-wrap items-center gap-2.5">
-          {/* Universal Edit Mode Button */}
-          <button
-            onClick={() => setIsEditMode(!isEditMode)}
-            className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg border transition-all flex items-center gap-1.5 shadow-sm ${
-              isEditMode
-                ? 'bg-amber-500 text-slate-950 border-amber-400 ring-2 ring-amber-500/30'
-                : 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700 hover:text-white'
-            }`}
-            title="Toggle inline editing for every line item title and financial number"
-          >
-            <Edit3 className="w-3.5 h-3.5" />
-            {isEditMode ? 'Finish Editing (Active)' : 'Edit Values & Labels'}
-          </button>
-
-          {isEditMode && (
+        {/* Statement Presentation Format Bar (Preserves Section 76 + Exact PDF Formats) */}
+        <div className="pt-3 border-t border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[11px] font-semibold text-slate-400 mr-1">Presentation Format:</span>
             <button
-              onClick={onResetOverrides}
-              className="px-2.5 py-1.5 text-xs font-medium text-slate-400 hover:text-rose-300 bg-slate-800 hover:bg-slate-700/60 rounded-lg border border-slate-700 transition-colors flex items-center gap-1"
-              title="Reset any custom numbers back to the calculation engine defaults"
+              type="button"
+              onClick={() => setFormatMode('section76')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border ${
+                formatMode === 'section76'
+                  ? 'bg-emerald-600 text-white border-emerald-400/50 shadow-sm'
+                  : 'bg-slate-950 text-slate-300 border-slate-800 hover:bg-slate-800'
+              }`}
             >
-              <RotateCcw className="w-3.5 h-3.5" />
-              Reset
-            </button>
-          )}
-
-          {/* Individual Statement Export Options */}
-          <div className="flex items-center gap-1 pl-2 border-l border-slate-800">
-            <button
-              onClick={handleExportExcel}
-              className="px-2.5 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors flex items-center gap-1.5"
-              title="Export this statement to Microsoft Excel (.xlsx)"
-            >
-              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
-              Excel
+              Section 76 Standard (All Years)
             </button>
             <button
-              onClick={handleExportWord}
-              className="px-2.5 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors flex items-center gap-1.5"
-              title="Export this statement to Microsoft Word (.docx)"
+              type="button"
+              onClick={() => setFormatMode('previous_format')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border ${
+                formatMode === 'previous_format'
+                  ? 'bg-emerald-600 text-white border-emerald-400/50 shadow-sm'
+                  : 'bg-slate-950 text-slate-300 border-slate-800 hover:bg-slate-800'
+              }`}
             >
-              <FileText className="w-3.5 h-3.5 text-blue-400" />
-              Word
+              Previous Financials Format ({histCount}Y)
             </button>
             <button
-              onClick={handleExportPdf}
-              className="px-2.5 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors flex items-center gap-1.5"
-              title="Export this statement to Adobe PDF (.pdf)"
+              type="button"
+              onClick={() => setFormatMode('projected_format')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border ${
+                formatMode === 'projected_format'
+                  ? 'bg-sky-600 text-white border-sky-400/50 shadow-sm'
+                  : 'bg-slate-950 text-slate-300 border-slate-800 hover:bg-slate-800'
+              }`}
             >
-              <Download className="w-3.5 h-3.5 text-rose-400" />
-              PDF
+              Projected Financials Format ({projCount}Y)
             </button>
           </div>
+          <span className="text-[11px] text-slate-400 font-mono">
+            Fixed Inputs Preserved: Sales · Inventory · Finance Cost · NPAT · Borrowings Repay · Gross FA
+          </span>
         </div>
       </div>
+
+      {/* Expandable Individual Year Selector */}
+      {showYearSelector && onToggleHistoricalYear && onToggleProjectedYear && onSetHistoricalYears && onSetProjectedYears && (
+        <YearSelectorControl
+          selectedHistoricalYears={selectedHistoricalYears}
+          selectedProjectedYears={projYearsList}
+          onToggleHistoricalYear={onToggleHistoricalYear}
+          onToggleProjectedYear={onToggleProjectedYear}
+          onSetHistoricalYears={onSetHistoricalYears}
+          onSetProjectedYears={onSetProjectedYears}
+        />
+      )}
 
       {/* Edit Mode Notification Banner */}
       {isEditMode && (
@@ -330,7 +453,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
           <div className="flex items-center gap-2">
             <Edit3 className="w-4 h-4 text-amber-400 shrink-0" />
             <span>
-              <strong>Direct Editing Enabled:</strong> You can edit any item label and any financial value for any year directly in the table cells below. Changes immediately update calculations and exports.
+              <strong>Direct Editing Enabled:</strong> Edit primary fixed inputs or statement cells directly in the tables below. All dependent calculations and exports update immediately.
             </span>
           </div>
           <button
@@ -342,172 +465,197 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         </div>
       )}
 
-      {/* Statement Tabs Bar & Horizon Selector */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-2">
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 max-w-full scrollbar-thin">
-          {statementTabs.map(tab => {
-            const Icon = tab.icon;
-            const isActive = activeStatement === tab.id;
-            return (
-              <button
-                key={tab.id}
-                onClick={() => setActiveStatement(tab.id)}
-                className={`px-3 py-2 text-xs font-semibold rounded-lg transition-all whitespace-nowrap shrink-0 flex items-center gap-2 ${
-                  isActive
-                    ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md shadow-emerald-950/40 ring-1 ring-emerald-400/30'
-                    : 'bg-slate-900/90 text-slate-300 hover:bg-slate-800 hover:text-white border border-slate-800/90'
-                }`}
-              >
-                <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-white' : 'text-slate-400'}`} />
-                <span>{tab.label}</span>
-              </button>
-            );
-          })}
-        </div>
+      {/* Exact PDF Compliance Format Modes */}
+      {formatMode === 'previous_format' && (
+        <PreviousFormatSuiteView
+          companyProfile={companyProfile}
+          prevData={previousFormatData}
+          notes={notes}
+          isEditMode={isEditMode}
+          onUpdatePrimaryDriver={onUpdatePrimaryDriver}
+        />
+      )}
 
-        {/* Year Filter Controls & Horizon Selector */}
-        {activeStatement !== 'notes' && (
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center gap-1.5 text-xs bg-slate-900 border border-slate-800 p-1 rounded-lg">
-              <Filter className="w-3.5 h-3.5 text-slate-400 ml-1.5" />
-              <button
-                onClick={() => setYearViewMode('all')}
-                className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-                  yearViewMode === 'all' ? 'bg-slate-800 text-emerald-400 font-bold' : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                All (3H+{assumptions?.projectedYearsCount || 15}P)
-              </button>
-              <button
-                onClick={() => setYearViewMode('historical')}
-                className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-                  yearViewMode === 'historical' ? 'bg-slate-800 text-emerald-400 font-bold' : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                Historical (3Y)
-              </button>
-              <button
-                onClick={() => setYearViewMode('comparative5')}
-                className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-                  yearViewMode === 'comparative5' ? 'bg-slate-800 text-emerald-400 font-bold' : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                Comparative (5Y)
-              </button>
-              <button
-                onClick={() => setYearViewMode('projected')}
-                className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-                  yearViewMode === 'projected' ? 'bg-slate-800 text-emerald-400 font-bold' : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                Projected ({assumptions?.projectedYearsCount || 15}Y)
-              </button>
+      {formatMode === 'projected_format' && (
+        <ProjectedFormatSuiteView
+          companyProfile={companyProfile}
+          projData={projectedFormatData}
+          isEditMode={isEditMode}
+          onUpdatePrimaryDriver={onUpdatePrimaryDriver}
+        />
+      )}
+
+      {/* Existing Section 76 7-Tab Suite */}
+      {formatMode === 'section76' && (
+        <>
+          {/* Statement Tabs Bar & Horizon Selector */}
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-2">
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 max-w-full scrollbar-thin">
+              {statementTabs.map(tab => {
+                const Icon = tab.icon;
+                const isActive = activeStatement === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveStatement(tab.id)}
+                    className={`px-3 py-2 text-xs font-semibold rounded-lg transition-all whitespace-nowrap shrink-0 flex items-center gap-2 ${
+                      isActive
+                        ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md shadow-emerald-950/40 ring-1 ring-emerald-400/30'
+                        : 'bg-slate-900/90 text-slate-300 hover:bg-slate-800 hover:text-white border border-slate-800/90'
+                    }`}
+                  >
+                    <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-white' : 'text-slate-400'}`} />
+                    <span>{tab.label}</span>
+                  </button>
+                );
+              })}
             </div>
 
-            {/* Direct Number of Projected Years Selector */}
-            {assumptions && onUpdateAssumptions && (
-              <div className="flex items-center gap-1.5 text-xs bg-slate-900 border border-slate-800 px-2 py-1 rounded-lg">
-                <span className="text-slate-400 text-[11px] font-medium">Horizon:</span>
-                <select
-                  value={assumptions.projectedYearsCount}
-                  onChange={(e) => onUpdateAssumptions({ ...assumptions, projectedYearsCount: Number(e.target.value) })}
-                  className="bg-slate-800 text-emerald-400 font-bold rounded px-1.5 py-0.5 border border-slate-700 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                >
-                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 18, 20].map(y => (
-                    <option key={y} value={y}>{y} {y === 1 ? 'Year' : 'Years'}</option>
-                  ))}
-                </select>
+            {/* Year Filter Controls & Horizon Selector */}
+            {activeStatement !== 'notes' && (
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1.5 text-xs bg-slate-900 border border-slate-800 p-1 rounded-lg">
+                  <Filter className="w-3.5 h-3.5 text-slate-400 ml-1.5" />
+                  <button
+                    onClick={() => setYearViewMode('all')}
+                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                      yearViewMode === 'all' ? 'bg-slate-800 text-emerald-400 font-bold' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    All ({histCount}H+{projCount}P)
+                  </button>
+                  <button
+                    onClick={() => setYearViewMode('historical')}
+                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                      yearViewMode === 'historical' ? 'bg-slate-800 text-emerald-400 font-bold' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    Historical ({histCount}Y)
+                  </button>
+                  <button
+                    onClick={() => setYearViewMode('comparative5')}
+                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                      yearViewMode === 'comparative5' ? 'bg-slate-800 text-emerald-400 font-bold' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    Comparative (5Y)
+                  </button>
+                  <button
+                    onClick={() => setYearViewMode('projected')}
+                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                      yearViewMode === 'projected' ? 'bg-slate-800 text-emerald-400 font-bold' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    Projected ({projCount}Y)
+                  </button>
+                </div>
+
+                {/* Direct Number of Projected Years Selector */}
+                {assumptions && onUpdateAssumptions && (
+                  <div className="flex items-center gap-1.5 text-xs bg-slate-900 border border-slate-800 px-2 py-1 rounded-lg">
+                    <span className="text-slate-400 text-[11px] font-medium">Horizon:</span>
+                    <select
+                      value={projCount}
+                      onChange={(e) => onUpdateAssumptions({ ...assumptions, projectedYearsCount: Number(e.target.value) })}
+                      className="bg-slate-800 text-emerald-400 font-bold rounded px-1.5 py-0.5 border border-slate-700 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                    >
+                      {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 18, 20].map(y => (
+                        <option key={y} value={y}>{y} {y === 1 ? 'Year' : 'Years'}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </div>
             )}
           </div>
-        )}
-      </div>
 
-      {/* Render Statement Body */}
-      {activeStatement === 'cashFlow' && (
-        <StatementOfCashFlowsTable
-          cashFlowData={filteredCashFlow}
-          currency={companyProfile.reportingCurrency}
-          companyProfile={companyProfile}
-          isEditMode={isEditMode}
-          getVal={getVal}
-          getLbl={getLbl}
-          onUpdateValue={onUpdateStatementValue}
-          onUpdateLabel={onUpdateStatementLabel}
-        />
-      )}
+          {/* Render Statement Body */}
+          {activeStatement === 'cashFlow' && (
+            <StatementOfCashFlowsTable
+              cashFlowData={filteredCashFlow}
+              currency={companyProfile.reportingCurrency}
+              companyProfile={companyProfile}
+              isEditMode={isEditMode}
+              getVal={getVal}
+              getLbl={getLbl}
+              onUpdateValue={onUpdateStatementValue}
+              onUpdateLabel={onUpdateStatementLabel}
+            />
+          )}
 
-      {activeStatement === 'income' && (
-        <IncomeStatementTable
-          incomeData={filteredIncome}
-          currency={companyProfile.reportingCurrency}
-          companyProfile={companyProfile}
-          isEditMode={isEditMode}
-          getVal={getVal}
-          getLbl={getLbl}
-          onUpdateValue={onUpdateStatementValue}
-          onUpdateLabel={onUpdateStatementLabel}
-        />
-      )}
+          {activeStatement === 'income' && (
+            <IncomeStatementTable
+              incomeData={filteredIncome}
+              currency={companyProfile.reportingCurrency}
+              companyProfile={companyProfile}
+              isEditMode={isEditMode}
+              getVal={getVal}
+              getLbl={getLbl}
+              onUpdateValue={onUpdateStatementValue}
+              onUpdateLabel={onUpdateStatementLabel}
+            />
+          )}
 
-      {activeStatement === 'balanceSheet' && (
-        <BalanceSheetTable
-          balanceData={filteredBalance}
-          currency={companyProfile.reportingCurrency}
-          companyProfile={companyProfile}
-          isEditMode={isEditMode}
-          getVal={getVal}
-          getLbl={getLbl}
-          onUpdateValue={onUpdateStatementValue}
-          onUpdateLabel={onUpdateStatementLabel}
-        />
-      )}
+          {activeStatement === 'balanceSheet' && (
+            <BalanceSheetTable
+              balanceData={filteredBalance}
+              currency={companyProfile.reportingCurrency}
+              companyProfile={companyProfile}
+              isEditMode={isEditMode}
+              getVal={getVal}
+              getLbl={getLbl}
+              onUpdateValue={onUpdateStatementValue}
+              onUpdateLabel={onUpdateStatementLabel}
+            />
+          )}
 
-      {activeStatement === 'equity' && (
-        <EquityStatementTable
-          equityData={filteredEquity}
-          currency={companyProfile.reportingCurrency}
-          companyProfile={companyProfile}
-          isEditMode={isEditMode}
-          getVal={getVal}
-          getLbl={getLbl}
-          onUpdateValue={onUpdateStatementValue}
-          onUpdateLabel={onUpdateStatementLabel}
-        />
-      )}
+          {activeStatement === 'equity' && (
+            <EquityStatementTable
+              equityData={filteredEquity}
+              currency={companyProfile.reportingCurrency}
+              companyProfile={companyProfile}
+              isEditMode={isEditMode}
+              getVal={getVal}
+              getLbl={getLbl}
+              onUpdateValue={onUpdateStatementValue}
+              onUpdateLabel={onUpdateStatementLabel}
+            />
+          )}
 
-      {activeStatement === 'fixedAssets' && (
-        <FixedAssetsScheduleTable
-          fixedAssetsData={filteredFixedAssets}
-          currency={companyProfile.reportingCurrency}
-          companyProfile={companyProfile}
-          isEditMode={isEditMode}
-          onUpdateCategory={onUpdateFixedAssetsCategory}
-        />
-      )}
+          {activeStatement === 'fixedAssets' && (
+            <FixedAssetsScheduleTable
+              fixedAssetsData={filteredFixedAssets}
+              currency={companyProfile.reportingCurrency}
+              companyProfile={companyProfile}
+              isEditMode={isEditMode}
+              onUpdateCategory={onUpdateFixedAssetsCategory}
+            />
+          )}
 
-      {activeStatement === 'notes' && (
-        <NotesViewer
-          notes={notes}
-          currency={companyProfile.reportingCurrency}
-          isEditMode={isEditMode}
-          onUpdateNotes={onUpdateNotes}
-        />
-      )}
+          {activeStatement === 'notes' && (
+            <NotesViewer
+              notes={notes}
+              currency={companyProfile.reportingCurrency}
+              isEditMode={isEditMode}
+              onUpdateNotes={onUpdateNotes}
+            />
+          )}
 
-      {activeStatement === 'complete' && (
-        <CompletePackagePreview
-          companyProfile={companyProfile}
-          incomeData={filteredIncome}
-          balanceData={filteredBalance}
-          cashFlowData={filteredCashFlow}
-          equityData={filteredEquity}
-          fixedAssetsData={filteredFixedAssets}
-          notes={notes}
-          onExportExcel={handleExportExcel}
-          onExportWord={handleExportWord}
-          onExportPdf={handleExportPdf}
-        />
+          {activeStatement === 'complete' && (
+            <CompletePackagePreview
+              companyProfile={companyProfile}
+              incomeData={filteredIncome}
+              balanceData={filteredBalance}
+              cashFlowData={filteredCashFlow}
+              equityData={filteredEquity}
+              fixedAssetsData={filteredFixedAssets}
+              notes={notes}
+              onExportExcel={handleExportExcel}
+              onExportWord={handleExportWord}
+              onExportPdf={handleExportPdf}
+            />
+          )}
+        </>
       )}
     </div>
   );
@@ -1879,6 +2027,7 @@ function FixedAssetsScheduleTable({
   isEditMode: boolean;
   onUpdateCategory: (catIndex: number, field: string, val: number | string) => void;
 }) {
+  if (fixedAssetsData.length === 0) return null;
   const latest = fixedAssetsData[fixedAssetsData.length - 1];
 
   return (

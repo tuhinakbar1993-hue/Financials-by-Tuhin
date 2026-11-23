@@ -292,18 +292,229 @@ export interface StatementConfigItem {
 export interface ProjectionAssumptions {
   historicalYearsCount: number; // default 3
   projectedYearsCount: number; // default 15
+  selectedHistoricalYears?: number[]; // individual previous years selected by user
+  selectedProjectedYears?: number[]; // individual projected years selected by user
   revenueGrowthRate: number; // % e.g. 8.5
   grossMarginPct: number; // % e.g. 38.0
-  opexPctOfRevenue: number; // % e.g. 18.0
+  opexPctOfRevenue: number; // % e.g. 17.5
   taxRatePct: number; // % e.g. 25.0
-  capexPctOfRevenue: number; // % e.g. 6.0
+  capexPctOfRevenue: number; // % e.g. 6.2
   depreciationRatePct: number; // % e.g. 10.0
   receivableDays: number; // DSO e.g. 45
   inventoryDays: number; // DIO e.g. 60
-  payableDays: number; // DPO e.g. 40
+  payableDays: number; // DPO e.g. 42
   dividendPayoutRatio: number; // % e.g. 30
-  projectedFinancingCashFlowGrowth: number; // % e.g. -5% (deleveraging)
+  projectedFinancingCashFlowGrowth: number; // % e.g. -4% (deleveraging)
 }
 
 export type StatementCellOverrides = Record<string, Record<number, number>>;
 export type StatementLabelOverrides = Record<string, string>;
+
+export type StatementFormatMode = 'section76' | 'previous_format' | 'projected_format';
+
+export interface FinancialValidationIssue {
+  id: string;
+  year?: number;
+  severity: 'error' | 'warning' | 'info';
+  title: string;
+  message: string;
+}
+
+// ---------------- PREVIOUS FINANCIALS FORMAT (Exact PDF Compliance) ---------------- //
+export interface PreviousFormatYearData {
+  year: number;
+  dateLabel: string; // e.g. "31.12.2023"
+
+  // Statement of Financial Position
+  fixedAssetsWDV: number;
+  advancesDepositsPrepayments: number;
+  stockAndStores: number; // exact closingInventory
+  billsReceivable: number;
+  cashAndCashEquivalents: number;
+  totalCurrentAssets: number;
+  totalAssetsTaka: number;
+
+  openingCapital: number;
+  netProfitForYear: number; // exact netProfit
+  capitalSubtotal: number;
+  drawings: number;
+  capitalAfterDrawings: number;
+  forExpenses: number;
+  accountsPayable: number;
+  shortTermLoan: number;
+  provisionForTaxation: number;
+  totalCurrentLiabilities: number;
+  totalCapitalAndLiabilities: number;
+
+  // Statement of Comprehensive Income
+  sales: number; // exact salesRevenue
+  costOfGoodsSold: number;
+  grossProfit: number;
+  salaryAndAllowances: number;
+  telephoneAndMobileBill: number;
+  postageAndCourier: number;
+  electricCharges: number;
+  entertainment: number;
+  printingAndStationery: number;
+  generalExpenses: number;
+  licenceAndRenewals: number;
+  auditAndProfessionalFee: number;
+  travellingAndConveyance: number;
+  newspaperAndPeriodicals: number;
+  sellingExp: number;
+  depreciation: number;
+  adminAndSellingTotal: number;
+  netOperatingProfit: number;
+  otherIncome: number;
+  operatingSubtotal: number;
+  financialExp: number; // exact financeCost
+  incomeTaxProvision: number;
+  netProfitAfterIncomeTax: number; // exact netProfit
+
+  // Statement of Cash Flows
+  cfNetIncome: number;
+  cfDepreciation: number;
+  cfChangeInCurrentAssets: number;
+  cfChangeInCWIP: number;
+  cfChangeInCurrentLiabilities: number;
+  cfNetCashOperating: number;
+  cfAcquisitionPPE: number;
+  cfDisposalIntangible: number;
+  cfNetCashInvesting: number;
+  cfDrawings: number;
+  cfRepaymentOfBorrowings: number; // exact repaymentOfBorrowings (reflected cleanly)
+  cfOpeningBalance: number;
+  cfNetCashFinancing: number;
+  cfNetIncreaseCash: number;
+  cfCashBeginning: number;
+  cfCashEnding: number;
+
+  // Statement of Changes in Equity
+  eqOpeningShareCapital: number;
+  eqShareCapitalIssued: number;
+  eqClosingShareCapital: number;
+  eqOpeningRetainedEarnings: number;
+  eqNetProfitForYear: number;
+  eqDividendsPaid: number;
+  eqClosingRetainedEarnings: number;
+  eqClosingReserves: number;
+  eqTotalClosingEquity: number;
+
+  // 1.00 Fixed Assets Schedule
+  faOpening: number;
+  faAddition: number;
+  faDisposal: number;
+  faTotal: number;
+  faRatePct: number;
+  faDepreciationCharged: number;
+  faWDV: number;
+  faGrossAssetBase: number; // exact fixedAssetsGross
+}
+
+// ---------------- PROJECTED FINANCIALS FORMAT (Exact PDF Compliance) ---------------- //
+export interface ProjectedFormatYearData {
+  year: number;
+
+  // Statement of Financial Position
+  propertyPlantEquipments: number; // Schedule-A WDV
+  inventories: number; // Note 3.00 (exact closingInventory)
+  tradeAndOtherReceivables: number; // Note 4.00
+  advanceDepositPrepayments: number; // Note 5.00
+  cashAndCashEquivalents: number; // Note 6.00
+  totalCurrentAssets: number;
+  totalAssets: number;
+
+  capital: number;
+  additionalCapital: number;
+  profitDuringYear: number; // exact netProfit
+  equitySubtotal: number;
+  drawings: number;
+  closingCapital: number;
+
+  longTermLoan: number; // Note 7.00
+  tradeAndOtherPayables: number; // Note 8.00
+  provisionsForTax: number; // Note 9.00
+  shortTermLoan: number; // Note 10.00
+  liabilitiesForExp: number;
+  totalCurrentLiabilities: number;
+  totalEquityAndLiabilities: number;
+
+  // Statement of Profit or Loss & Other Comprehensive Income
+  sales: number; // exact salesRevenue
+  costOfGoodsSold: number; // Note 11.00
+  grossProfit: number;
+  othersIncome: number;
+  grossProfitWithOtherIncome: number;
+  adminAndSellingExpenses: number; // Note 12.00
+  totalOperatingProfit: number;
+  financialExpenses: number; // Note 13.00 (exact financeCost)
+  netProfitBeforeTax: number;
+  provisionForIncomeTax: number;
+  netProfitAfterTax: number; // exact netProfit
+
+  // Statement of Cash Flows
+  cfNetIncome: number;
+  cfChangeInventory: number;
+  cfChangeReceivables: number;
+  cfChangeAdvanceDeposit: number;
+  cfChangeCurrentAssets: number;
+  cfChangeCurrentLiabilities: number;
+  cfChangeTradePayables: number;
+  cfChangeProvisionsTax: number;
+  cfChangeLiabilitiesExp: number;
+  cfDepreciation: number;
+  cfNetCashOperating: number;
+
+  cfSalePPE: number;
+  cfInvestingCapitalInflow: number;
+  cfPreliminaryExpenses: number;
+  cfPurchasePPE: number;
+  cfPurchaseInvestment: number;
+  cfNetCashInvesting: number;
+
+  cfLoanReceived: number; // Net debt inflow / (-repaymentOfBorrowings)
+  cfAdditionalCapital: number;
+  cfIssuanceOfDebt: number;
+  cfDividendsToStockholders: number;
+  cfDrawingsOutflow: number;
+  cfRedeemLongTermDebt: number;
+  cfIssuanceBondsPayable: number;
+  cfNetCashFinancing: number;
+
+  cfNetCashIncrease: number;
+  cfOpeningCash: number;
+  cfClosingCash: number;
+
+  // Notes Breakdown (Notes 3.00 - 13.00)
+  note4ReceivablesOpening: number;
+  note4ReceivablesAdded: number;
+  note4ReceivablesReceived: number;
+  note5AdvanceOpening: number;
+  note5AdvanceAdded: number;
+  note5AdvanceAdjusted: number;
+  note8PayablesOpening: number;
+  note8PayablesAdded: number;
+  note8PayablesPaid: number;
+  note9TaxOpening: number;
+  note9TaxAdded: number;
+  note9TaxAdjusted: number;
+  note11OpeningStock: number;
+  note11Purchase: number;
+  note11ClosingStock: number;
+  note11LabourWages: number;
+  note11ElectricityBill: number;
+  note11CarriageInward: number;
+  note11OtherDirectExpenses: number;
+  note11DirectExpensesTotal: number;
+
+  // Schedule-A PPE
+  schedOpeningBalance: number;
+  schedAddition: number;
+  schedDisposals: number;
+  schedBalanceClosing: number;
+  schedRatePct: number;
+  schedDepreciation: number;
+  schedWDV: number;
+  schedGrossAssetBase: number; // exact fixedAssetsGross
+}
+

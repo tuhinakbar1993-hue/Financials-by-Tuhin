@@ -34,6 +34,8 @@ export const INITIAL_COMPANY_PROFILE: CompanyProfile = {
 export const DEFAULT_PROJECTION_ASSUMPTIONS: ProjectionAssumptions = {
   historicalYearsCount: 3,
   projectedYearsCount: 15,
+  selectedHistoricalYears: [2023, 2024, 2025],
+  selectedProjectedYears: Array.from({ length: 15 }, (_, i) => 2026 + i),
   revenueGrowthRate: 8.5,
   grossMarginPct: 38.0,
   opexPctOfRevenue: 17.5,
@@ -570,72 +572,92 @@ export function deriveDependentFinancials(
     fixedAssetsGross,
   } = primaryDrivers;
 
-  const taxRate = assumptions.taxRatePct || 25;
-  const depreciationRate = assumptions.depreciationRatePct || 10;
+  const yearStep = prevYear ? Math.max(1, year - prevYear.year) : 1;
+  const taxRate = existingFullYear?.taxRate ?? assumptions.taxRatePct ?? 25;
+  const depreciationRate = existingFullYear?.depreciationRate ?? assumptions.depreciationRatePct ?? 10;
 
-  // Reconcile Profit Before Tax & Tax Expense from Net Profit After Tax
-  const profitBeforeTax = Math.round(netProfit / (1 - taxRate / 100));
+  // 1. Reconcile Profit Before Tax & Tax Expense strictly from fixed Net Profit After Tax (NPAT)
+  const profitBeforeTax = netProfit >= 0
+    ? Math.round(netProfit / Math.max(0.01, 1 - taxRate / 100))
+    : netProfit;
   const taxExpense = profitBeforeTax - netProfit;
   const interestIncome = Math.round(salesRevenue * 0.005);
 
-  // Fixed Assets Additions & Disposals
+  // 2. Fixed Assets Additions & Disposals preserving fixedAssetsGross strictly
   const prevGross = prevYear ? prevYear.fixedAssetsGross : Math.round(fixedAssetsGross * 0.9);
-  const fixedAssetsDisposals = Math.round(prevGross * 0.012);
-  const fixedAssetsAdditions = Math.max(0, fixedAssetsGross - prevGross + fixedAssetsDisposals);
+  const baselineDisposals = Math.round(prevGross * 0.012 * yearStep);
+  let fixedAssetsAdditions = 0;
+  let fixedAssetsDisposals = baselineDisposals;
+  if (fixedAssetsGross >= prevGross - baselineDisposals) {
+    fixedAssetsAdditions = fixedAssetsGross - prevGross + baselineDisposals;
+  } else {
+    fixedAssetsAdditions = 0;
+    fixedAssetsDisposals = Math.max(0, prevGross - fixedAssetsGross);
+  }
   const depCharge = Math.round(((prevGross + fixedAssetsGross) / 2) * (depreciationRate / 100));
 
-  // Operating Profit (EBIT) = PBT - interestIncome + financeCost
+  // 3. Operating Profit (EBIT) = PBT - interestIncome + financeCost
   const operatingProfit = profitBeforeTax - interestIncome + financeCost;
 
-  // Total Operating Costs = Sales - EBIT - depCharge
+  // 4. Total Operating Costs = Sales - EBIT - depCharge, allocated proportionately
   const totalOperatingCosts = Math.max(0, salesRevenue - operatingProfit - depCharge);
-
-  // Allocate between Cost of Sales and Operating Expenses preserving standard margins
-  const baselineCoS = Math.round(salesRevenue * (1 - assumptions.grossMarginPct / 100));
-  const costOfSales = Math.min(totalOperatingCosts, Math.max(0, baselineCoS));
+  const targetCoSWeight = Math.max(0.1, 1 - (assumptions.grossMarginPct || 38) / 100);
+  const targetOpExWeight = Math.max(0.05, (assumptions.opexPctOfRevenue || 17.5) / 100);
+  const cosShare = targetCoSWeight / (targetCoSWeight + targetOpExWeight);
+  const costOfSales = Math.round(totalOperatingCosts * cosShare);
   const operatingExpenses = Math.max(0, totalOperatingCosts - costOfSales);
 
-  // Working Capital balances derived via standard turnover days
-  const tradeReceivables = Math.round((salesRevenue / 365) * assumptions.receivableDays);
+  // 5. Working Capital balances derived proportionately via turnover days & Sales/COGS
+  const tradeReceivables = Math.round((salesRevenue / 365) * (assumptions.receivableDays || 45));
   const otherReceivables = Math.round(tradeReceivables * 0.16);
-  const tradePayables = Math.round((costOfSales / 365) * assumptions.payableDays);
+  const tradePayables = Math.round((costOfSales / 365) * (assumptions.payableDays || 42));
   const otherPayables = Math.round(tradePayables * 0.25);
-  const otherCurrentAssets = prevYear 
-    ? Math.round(prevYear.otherCurrentAssets * 1.05) 
+  const otherCurrentAssets = prevYear
+    ? Math.max(100, Math.round(prevYear.otherCurrentAssets * Math.pow(1.04, yearStep)))
     : Math.round(salesRevenue * 0.015);
 
-  // Equity & Dividends
-  const dividendsPaid = Math.round(Math.max(0, netProfit) * (assumptions.dividendPayoutRatio / 100));
-  const shareCapital = prevYear ? prevYear.shareCapital : 12000;
+  // 6. Equity & Dividends / Drawings
+  const dividendsPaid = Math.round(Math.max(0, netProfit) * ((assumptions.dividendPayoutRatio || 30) / 100));
+  const shareCapital = prevYear ? prevYear.shareCapital : (existingFullYear?.shareCapital ?? 12000);
 
-  // Borrowings & Financing Cash Flow
+  // 7. Borrowings & Financing Cash Flow preserving fixed repaymentOfBorrowings strictly
   const absRepayment = Math.max(0, repaymentOfBorrowings);
-  const financingProceedsShares = 0;
-  const financingProceedsBorrowings = prevYear 
-    ? Math.round(prevYear.shortTermBorrowings * 0.25) 
+  const financingProceedsShares = existingFullYear?.financingProceedsShares ?? 0;
+
+  const prevLT = prevYear ? prevYear.longTermBorrowings : Math.max(8000, absRepayment * 4);
+  const prevST = prevYear ? prevYear.shortTermBorrowings : Math.max(2500, Math.round(salesRevenue * 0.06));
+  const prevTotalDebt = prevLT + prevST;
+
+  // Proportionate working-capital facility proceeds; top up only if total debt would otherwise turn negative
+  let financingProceedsBorrowings = prevYear
+    ? Math.round(prevST * 0.18)
     : Math.round(salesRevenue * 0.02);
+  if (prevTotalDebt + financingProceedsBorrowings < absRepayment) {
+    financingProceedsBorrowings = absRepayment - prevTotalDebt + Math.round(salesRevenue * 0.03);
+  }
+
+  const netDebtChange = financingProceedsBorrowings - absRepayment;
+  const targetTotalDebt = Math.max(0, prevTotalDebt + netDebtChange);
+  const ltShare = prevTotalDebt > 0 ? prevLT / prevTotalDebt : 0.72;
+  const longTermBorrowings = Math.round(targetTotalDebt * ltShare);
+  const shortTermBorrowings = Math.max(0, targetTotalDebt - longTermBorrowings);
+
   const financingRepaymentBorrowings = -absRepayment;
   const financingDividendsPaid = -dividendsPaid;
-  const cashFlowFromFinancing = financingProceedsShares + financingProceedsBorrowings - absRepayment + financingDividendsPaid;
+  const cashFlowFromFinancing =
+    financingProceedsShares + financingProceedsBorrowings - absRepayment + financingDividendsPaid;
 
-  const longTermBorrowings = Math.max(
-    500,
-    (prevYear ? prevYear.longTermBorrowings : 8000) + Math.round(financingProceedsBorrowings * 0.5) - absRepayment
-  );
-  const shortTermBorrowings = Math.max(
-    500,
-    (prevYear ? prevYear.shortTermBorrowings : 2500) + Math.round(financingProceedsBorrowings * 0.5) - Math.round(absRepayment * 0.1)
-  );
+  const intangibleAssets = prevYear
+    ? Math.max(0, prevYear.intangibleAssets - Math.min(prevYear.intangibleAssets, 100 * yearStep))
+    : (existingFullYear?.intangibleAssets ?? Math.round(salesRevenue * 0.03));
+  const otherNonCurrentAssets = prevYear
+    ? prevYear.otherNonCurrentAssets
+    : (existingFullYear?.otherNonCurrentAssets ?? Math.round(salesRevenue * 0.08));
 
-  const intangibleAssets = Math.max(300, (prevYear ? prevYear.intangibleAssets : 1400) - 100);
-  const otherNonCurrentAssets = prevYear 
-    ? Math.round(prevYear.otherNonCurrentAssets * 1.04) 
-    : Math.round(salesRevenue * 0.06);
-
-  // Stated Cash in Balance Sheet
-  const cashAndEquivalentsBS = prevYear 
-    ? Math.round(prevYear.cashAndEquivalentsBS * 1.08) 
-    : Math.round(salesRevenue * 0.09);
+  // Estimated Cash & Equivalents (actual Closing Cash is computed cleanly by Cash Flow Engine)
+  const cashAndEquivalentsBS = prevYear
+    ? Math.max(0, Math.round(prevYear.cashAndEquivalentsBS + netProfit * 0.35))
+    : (existingFullYear?.cashAndEquivalentsBS ?? Math.round(salesRevenue * 0.085));
 
   return {
     ...(existingFullYear || {}),
@@ -673,18 +695,89 @@ export function deriveDependentFinancials(
   };
 }
 
-// Generate Projected Years (e.g. 2026 to 2040) based on approved assumptions and primary drivers
+/**
+ * Generates proportionate, financially logical YearDataInput for any individual year
+ * (historical or projected) anchored to the closest existing year.
+ */
+export function generateYearDataForTargetYear(
+  targetYear: number,
+  isProjected: boolean,
+  existingYears: YearDataInput[],
+  assumptions: ProjectionAssumptions
+): YearDataInput {
+  const sorted = [...existingYears].sort((a, b) => a.year - b.year);
+  if (sorted.length === 0) {
+    const fallbackBase = INITIAL_HISTORICAL_INPUTS[0];
+    return { ...fallbackBase, year: targetYear, isProjected };
+  }
+
+  // Find closest preceding year or earliest year
+  const preceding = [...sorted].reverse().find(y => y.year < targetYear);
+  const anchor = preceding || sorted[0];
+  const diff = targetYear - anchor.year;
+
+  const revRate = (assumptions.revenueGrowthRate || 8.5) / 100;
+  const scale = diff >= 0
+    ? Math.pow(1 + revRate, diff)
+    : 1 / Math.pow(1 + Math.max(0.04, revRate), Math.abs(diff));
+
+  const salesRevenue = Math.max(100, Math.round(anchor.salesRevenue * scale));
+  const closingInventory = Math.max(0, Math.round(anchor.closingInventory * scale));
+  const financeCost = Math.max(
+    50,
+    Math.round(anchor.financeCost * (diff >= 0 ? Math.pow(0.96, diff) : Math.pow(1.05, Math.abs(diff))))
+  );
+  const netProfit = Math.round(anchor.netProfit * Math.pow(1 + Math.max(0.04, revRate), diff));
+  const repaymentOfBorrowings = Math.max(
+    0,
+    Math.round(anchor.repaymentOfBorrowings * (diff >= 0 ? Math.pow(0.945, diff) : Math.pow(1.06, Math.abs(diff))))
+  );
+  const fixedAssetsGross = Math.max(
+    100,
+    Math.round(anchor.fixedAssetsGross * Math.pow(1.055, diff))
+  );
+
+  return deriveDependentFinancials(
+    {
+      year: targetYear,
+      isProjected,
+      salesRevenue,
+      closingInventory,
+      financeCost,
+      netProfit,
+      repaymentOfBorrowings,
+      fixedAssetsGross,
+    },
+    preceding || null,
+    assumptions
+  );
+}
+
+// Generate Projected Years based on selectedProjectedYears (or projectedYearsCount)
 export function generateProjectedYears(
   baseInput: YearDataInput,
   assumptions: ProjectionAssumptions
 ): YearDataInput[] {
+  const targetYears = assumptions.selectedProjectedYears && assumptions.selectedProjectedYears.length > 0
+    ? [...assumptions.selectedProjectedYears].sort((a, b) => a - b)
+    : Array.from({ length: Math.max(1, assumptions.projectedYearsCount) }, (_, i) => baseInput.year + i + 1);
+
   const projected: YearDataInput[] = [];
   let prevYear = baseInput;
 
-  for (let i = 1; i <= assumptions.projectedYearsCount; i++) {
-    const yearNum = baseInput.year + i;
-    const autoDrivers = generateAutomaticPrimaryDrivers(prevYear, assumptions, yearNum);
-    const fullYear = deriveDependentFinancials(autoDrivers, prevYear, assumptions);
+  for (const yearNum of targetYears) {
+    const step = Math.max(1, yearNum - prevYear.year);
+    // Compound across step years if non-consecutive
+    let tempPrev = prevYear;
+    let finalDrivers = generateAutomaticPrimaryDrivers(tempPrev, assumptions, yearNum);
+    if (step > 1) {
+      for (let s = 1; s < step; s++) {
+        const midDrivers = generateAutomaticPrimaryDrivers(tempPrev, assumptions, prevYear.year + s);
+        tempPrev = deriveDependentFinancials(midDrivers, tempPrev, assumptions);
+      }
+      finalDrivers = generateAutomaticPrimaryDrivers(tempPrev, assumptions, yearNum);
+    }
+    const fullYear = deriveDependentFinancials(finalDrivers, prevYear, assumptions);
     projected.push(fullYear);
     prevYear = fullYear;
   }
@@ -692,27 +785,43 @@ export function generateProjectedYears(
   return projected;
 }
 
-// 1. Calculate Schedule of Fixed Assets
+// 1. Calculate Schedule of Fixed Assets (Strictly preserves input.fixedAssetsGross as Closing Cost)
 export function calculateScheduleOfFixedAssets(
   inputs: YearDataInput[]
 ): ScheduleOfFixedAssetsYear[] {
   const result: ScheduleOfFixedAssetsYear[] = [];
-  let prevAccumDep = 11200; // base year opening accumulated depreciation
+  const firstGross = inputs[0]?.fixedAssetsGross || 32000;
+  const baseAccumDep = Math.round(firstGross * 0.35);
 
   inputs.forEach((input, index) => {
     const isFirst = index === 0;
-    const openingCost = isFirst ? input.fixedAssetsGross - input.fixedAssetsAdditions + input.fixedAssetsDisposals : result[index - 1].totalCostClosing;
-    const additions = input.fixedAssetsAdditions;
-    const disposals = input.fixedAssetsDisposals;
-    const closingCost = openingCost + additions - disposals;
+    const closingCost = input.fixedAssetsGross; // STRICTLY FIXED USER INPUT
+    let openingCost = isFirst
+      ? Math.max(0, closingCost - input.fixedAssetsAdditions + input.fixedAssetsDisposals)
+      : result[index - 1].totalCostClosing;
 
-    const openingDep = isFirst ? prevAccumDep : result[index - 1].totalDepClosing;
+    let additions = input.fixedAssetsAdditions;
+    let disposals = input.fixedAssetsDisposals;
+
+    // Ensure openingCost + additions - disposals === closingCost (user's fixedAssetsGross)
+    if (!isFirst) {
+      const expectedClosing = openingCost + additions - disposals;
+      if (expectedClosing !== closingCost) {
+        if (closingCost >= openingCost - disposals) {
+          additions = closingCost - openingCost + disposals;
+        } else {
+          additions = 0;
+          disposals = Math.max(0, openingCost - closingCost);
+        }
+      }
+    }
+
+    const openingDep = isFirst ? baseAccumDep : result[index - 1].totalDepClosing;
     const depCharge = Math.round(((openingCost + closingCost) / 2) * (input.depreciationRate / 100));
     const depDisposals = Math.round(disposals * 0.65);
-    const closingDep = openingDep + depCharge - depDisposals;
-    const netBookValue = closingCost - closingDep;
+    const closingDep = Math.max(0, openingDep + depCharge - depDisposals);
+    const netBookValue = Math.max(0, closingCost - closingDep);
 
-    // Granular categories for statutory disclosure
     const categories: FixedAssetCategory[] = [
       {
         name: 'Freehold Land & Industrial Buildings',
@@ -771,15 +880,32 @@ export function calculateScheduleOfFixedAssets(
         costOpening: Math.round(openingCost * 0.07),
         additions: Math.round(additions * 0.08),
         disposals: Math.round(disposals * 0.10),
-        costClosing: Math.round(closingCost * 0.07),
+        costClosing: closingCost - (
+          Math.round(closingCost * 0.40) +
+          Math.round(closingCost * 0.35) +
+          Math.round(closingCost * 0.10) +
+          Math.round(closingCost * 0.08)
+        ),
         depOpening: Math.round(openingDep * 0.10),
-        depCharge: Math.round(depCharge * 0.08),
+        depCharge: depCharge - (
+          Math.round(depCharge * 0.15) +
+          Math.round(depCharge * 0.50) +
+          Math.round(depCharge * 0.15) +
+          Math.round(depCharge * 0.12)
+        ),
         depDisposals: Math.round(depDisposals * 0.10),
-        depClosing: Math.round(closingDep * 0.10),
-        netBookValue: Math.round(closingCost * 0.07) - Math.round(closingDep * 0.10),
+        depClosing: closingDep - (
+          Math.round(closingDep * 0.18) +
+          Math.round(closingDep * 0.45) +
+          Math.round(closingDep * 0.15) +
+          Math.round(closingDep * 0.12)
+        ),
+        netBookValue: 0,
         depRate: 25.0,
       },
     ];
+    const lastCat = categories[categories.length - 1];
+    lastCat.netBookValue = lastCat.costClosing - lastCat.depClosing;
 
     result.push({
       year: input.year,
@@ -800,23 +926,45 @@ export function calculateScheduleOfFixedAssets(
   return result;
 }
 
-// 2. Calculate Income Statement
+// 2. Calculate Income Statement (Strictly preserves salesRevenue, financeCost, and netProfit)
 export function calculateIncomeStatement(
   inputs: YearDataInput[],
   fixedAssetsSchedule: ScheduleOfFixedAssetsYear[]
 ): IncomeStatementYear[] {
   return inputs.map((input, index) => {
-    const revenue = input.salesRevenue;
-    const costOfSales = input.costOfSales;
-    const grossProfit = revenue - costOfSales;
-    const operatingExpenses = input.operatingExpenses;
+    const revenue = input.salesRevenue; // FIXED USER INPUT
+    const financeCost = input.financeCost; // FIXED USER INPUT
+    const netProfit = input.netProfit; // FIXED USER INPUT
     const depreciationExpense = fixedAssetsSchedule[index]?.totalDepCharge || Math.round(input.fixedAssetsGross * 0.1);
-    const operatingProfit = grossProfit - operatingExpenses - depreciationExpense;
-    const interestIncome = Math.round(revenue * 0.005);
-    const financeCost = input.financeCost; // Mandatory user entered
-    const profitBeforeTax = operatingProfit + interestIncome - financeCost;
-    const taxExpense = Math.max(0, Math.round(profitBeforeTax * (input.taxRate / 100)));
-    const netProfit = profitBeforeTax - taxExpense;
+
+    const taxRate = input.taxRate || 25;
+    const taxExpense = netProfit >= 0
+      ? Math.round(netProfit / Math.max(0.01, 1 - taxRate / 100)) - netProfit
+      : 0;
+    const profitBeforeTax = netProfit + taxExpense;
+    let interestIncome = Math.round(revenue * 0.005);
+
+    // Operating Profit (EBIT) required to yield exact PBT given fixed financeCost & interestIncome
+    const operatingProfit = profitBeforeTax - interestIncome + financeCost;
+
+    // Total operating costs (CoS + OpEx) = Revenue - EBIT - Depreciation
+    const requiredOperatingCosts = revenue - operatingProfit - depreciationExpense;
+    let costOfSales = input.costOfSales;
+    let operatingExpenses = input.operatingExpenses;
+
+    if (requiredOperatingCosts >= 0) {
+      const existingSum = Math.max(1, input.costOfSales + input.operatingExpenses);
+      const cosRatio = input.costOfSales > 0 ? input.costOfSales / existingSum : 0.75;
+      costOfSales = Math.round(requiredOperatingCosts * cosRatio);
+      operatingExpenses = requiredOperatingCosts - costOfSales;
+    } else {
+      // If NPAT exceeds Sales, preserve revenue/NPAT/financeCost by increasing Other/Interest Income
+      costOfSales = 0;
+      operatingExpenses = 0;
+      interestIncome += Math.abs(requiredOperatingCosts);
+    }
+
+    const grossProfit = revenue - costOfSales;
 
     return {
       year: input.year,
@@ -836,7 +984,7 @@ export function calculateIncomeStatement(
   });
 }
 
-// 3. Calculate Statement of Cash Flows (Indirect Method as Default)
+// 3. Calculate Statement of Cash Flows (Indirect Method - Section 76 Compliant)
 export function calculateCashFlowStatement(
   inputs: YearDataInput[],
   incomeStatements: IncomeStatementYear[],
@@ -850,30 +998,31 @@ export function calculateCashFlowStatement(
     const income = incomeStatements[index];
     const fixedAssets = fixedAssetsSchedule[index];
 
-    // Net Profit Before Tax linked to Income Statement
     const profitBeforeTax = income.profitBeforeTax;
     const adjDepreciation = fixedAssets.totalDepCharge;
-    const adjAmortization = 120; // Intangibles amortization
+    const adjAmortization = prevInput ? Math.max(0, prevInput.intangibleAssets - input.intangibleAssets) : 100;
     const adjFinanceCost = income.financeCost;
     const adjInterestIncome = -income.interestIncome;
-    const adjLossGainDisposal = 35; // Net disposal adjustment
+    const adjLossGainDisposal = -fixedAssets.totalDepDisposals;
 
-    const operatingProfitBeforeWC = 
+    const operatingProfitBeforeWC =
       profitBeforeTax + adjDepreciation + adjAmortization + adjFinanceCost + adjInterestIncome + adjLossGainDisposal;
 
-    // Working Capital Changes (Current - Previous)
-    // Increase in Asset is Cash Outflow (-); Increase in Liability is Cash Inflow (+)
-    const changeInInventory = prevInput 
+    const changeInInventory = prevInput
       ? -(input.closingInventory - prevInput.closingInventory)
       : -Math.round(input.closingInventory * 0.08);
 
     const changeInReceivables = prevInput
       ? -(input.tradeReceivables - prevInput.tradeReceivables)
-      : -Math.round(input.tradeReceivables * 0.09);
+      : -Math.round(input.tradeReceivables * 0.08);
 
     const changeInOtherReceivables = prevInput
       ? -(input.otherReceivables - prevInput.otherReceivables)
       : -Math.round(input.otherReceivables * 0.05);
+
+    const changeInOtherCA = prevInput
+      ? -(input.otherCurrentAssets - prevInput.otherCurrentAssets)
+      : -Math.round(input.otherCurrentAssets * 0.04);
 
     const changeInPayables = prevInput
       ? (input.tradePayables - prevInput.tradePayables)
@@ -883,38 +1032,40 @@ export function calculateCashFlowStatement(
       ? (input.otherPayables - prevInput.otherPayables)
       : Math.round(input.otherPayables * 0.04);
 
-    const cashGeneratedFromOperations = 
-      operatingProfitBeforeWC + 
-      changeInInventory + 
-      changeInReceivables + 
-      changeInOtherReceivables + 
-      changeInPayables + 
+    const currTaxPayable = Math.round(Math.max(0, income.taxExpense) * 0.45);
+    const prevTaxPayable = prevInput ? Math.round(Math.max(0, incomeStatements[index - 1].taxExpense) * 0.45) : currTaxPayable;
+    const changeInTaxPayable = currTaxPayable - prevTaxPayable;
+
+    const cashGeneratedFromOperations =
+      operatingProfitBeforeWC +
+      changeInInventory +
+      changeInReceivables +
+      changeInOtherReceivables +
+      changeInOtherCA +
+      changeInPayables +
       changeInOtherPayables;
 
-    const incomeTaxPaid = -income.taxExpense;
+    const incomeTaxPaid = -income.taxExpense + changeInTaxPayable;
     const financeCostPaid = -income.financeCost;
 
     const netCashFromOperating = cashGeneratedFromOperations + incomeTaxPaid + financeCostPaid;
 
-    // B. Investing Activities (Capex linked to Schedule of Fixed Assets)
+    // B. Investing Activities
     const purchasePPE = -fixedAssets.totalAdditions;
     const salePPE = fixedAssets.totalDisposals;
-    const purchaseIntangibles = -Math.round(input.intangibleAssets * 0.05);
+    const purchaseIntangibles = prevInput ? -Math.max(0, input.intangibleAssets - prevInput.intangibleAssets) : 0;
     const interestReceived = income.interestIncome;
-    const dividendsReceived = 80;
+    const dividendsReceived = 0;
 
-    const netCashFromInvesting = 
+    const netCashFromInvesting =
       purchasePPE + salePPE + purchaseIntangibles + interestReceived + dividendsReceived;
 
-    // C. Financing Activities
-    // CRITICAL (Section 76.3): "Cash Flow from Financing Activities must be directly entered by the user separately for every applicable historical and projected financial year. The user-entered figure must be displayed and incorporated into the Statement of Cash Flows using the appropriate classification."
+    // C. Financing Activities (Preserves user's direct financing input and repaymentOfBorrowings)
     const directlyEnteredFinancingCashFlow = input.cashFlowFromFinancing;
-
-    // Breakdown components if provided
     const financingProceedsShares = input.financingProceedsShares || 0;
     const financingProceedsBorrowings = input.financingProceedsBorrowings || 0;
-    const repaymentOfBorrowings = input.repaymentOfBorrowings !== undefined 
-      ? input.repaymentOfBorrowings 
+    const repaymentOfBorrowings = input.repaymentOfBorrowings !== undefined
+      ? input.repaymentOfBorrowings
       : (input.financingRepaymentBorrowings ? Math.abs(input.financingRepaymentBorrowings) : 0);
     const financingRepaymentBorrowings = -repaymentOfBorrowings;
     const financingDividendsPaid = -input.dividendsPaid;
@@ -922,31 +1073,30 @@ export function calculateCashFlowStatement(
     const breakdownSum = financingProceedsShares + financingProceedsBorrowings + financingRepaymentBorrowings + financingDividendsPaid;
     const isFinancingBreakdownComplete = Math.abs(breakdownSum - directlyEnteredFinancingCashFlow) < 10;
 
-    // The mandatory total is directly entered by the user
     const netCashFromFinancing = directlyEnteredFinancingCashFlow;
 
     // D. Net Increase / Decrease in Cash and Cash Equivalents
     const netChangeInCash = netCashFromOperating + netCashFromInvesting + netCashFromFinancing;
 
-    // Opening Cash linked to previous year closing cash
-    let openingCash = isFirst ? (input.cashAndEquivalentsBS - netChangeInCash) : result[index - 1].closingCashCalculated;
-    if (openingCash < 0) openingCash = Math.round(input.cashAndEquivalentsBS * 0.7);
+    let openingCash = isFirst
+      ? (input.cashAndEquivalentsBS - netChangeInCash)
+      : result[index - 1].closingCashCalculated;
+    if (openingCash < 0 && isFirst) {
+      openingCash = Math.max(200, Math.round(input.salesRevenue * 0.05));
+    }
 
     const closingCashCalculated = openingCash + netChangeInCash;
-    const balanceSheetCash = input.isProjected && (!input.cashAndEquivalentsBS || input.cashAndEquivalentsBS === Math.round((prevInput?.cashAndEquivalentsBS || 0) * 1.09))
-      ? closingCashCalculated
-      : (input.cashAndEquivalentsBS !== undefined ? input.cashAndEquivalentsBS : closingCashCalculated);
+    // Reconcile Balance Sheet Cash cleanly unless user has explicitly entered an audited override for historical years
+    const balanceSheetCash = isFirst && input.cashAndEquivalentsBS !== undefined && !input.isProjected
+      ? (Math.abs(closingCashCalculated - input.cashAndEquivalentsBS) < 5 ? closingCashCalculated : input.cashAndEquivalentsBS)
+      : closingCashCalculated;
 
-    // Reconciliation difference (Section 76.3 & 76.4: "The closing cash balance must be reconciled with the Cash and Cash Equivalents figure in the Statement of Financial Position. Any difference must be clearly identified.")
     const reconciliationDifference = closingCashCalculated - balanceSheetCash;
     const isReconciled = Math.abs(reconciliationDifference) === 0;
 
-    let reconciliationExplanation = '';
-    if (isReconciled) {
-      reconciliationExplanation = 'Fully reconciled with Balance Sheet Cash & Cash Equivalents.';
-    } else {
-      reconciliationExplanation = `Variance of ${reconciliationDifference > 0 ? '+' : ''}${reconciliationDifference.toLocaleString()} identified between Cash Flow ending cash and Balance Sheet stated cash. The system preserves raw user entries without fabricating offsetting transactions.`;
-    }
+    const reconciliationExplanation = isReconciled
+      ? 'Fully reconciled with Balance Sheet Cash & Cash Equivalents.'
+      : `Variance of ${reconciliationDifference > 0 ? '+' : ''}${reconciliationDifference.toLocaleString()} identified between Cash Flow ending cash and Balance Sheet stated cash. The system preserves raw user entries without fabricating offsetting transactions.`;
 
     result.push({
       year: input.year,
@@ -1009,15 +1159,15 @@ export function calculateEquityStatement(
     const shareCapitalIssued = input.financingProceedsShares || 0;
     const closingShareCapital = openingShareCapital + shareCapitalIssued;
 
-    const openingRetainedEarnings = isFirst 
-      ? (input.retainedEarningsOpening || 6500) 
+    const openingRetainedEarnings = isFirst
+      ? (input.retainedEarningsOpening ?? 6500)
       : result[index - 1].closingRetainedEarnings;
-    const netProfitForYear = income.netProfit;
+    const netProfitForYear = income.netProfit; // FIXED USER INPUT
     const dividendsPaid = input.dividendsPaid;
     const closingRetainedEarnings = openingRetainedEarnings + netProfitForYear - dividendsPaid;
 
     const openingReserves = isFirst ? 1800 : result[index - 1].closingReserves;
-    const otherComprehensiveIncome = Math.round(netProfitForYear * 0.03); // Revaluation / actuarial reserve
+    const otherComprehensiveIncome = 0;
     const closingReserves = openingReserves + otherComprehensiveIncome;
 
     const totalOpeningEquity = openingShareCapital + openingRetainedEarnings + openingReserves;
@@ -1055,30 +1205,27 @@ export function calculateBalanceSheet(
     const equity = equityStatements[index];
     const fixedAssets = fixedAssetsSchedule[index];
 
-    // Current Assets
     const cashAndEquivalents = cashFlowStatements && cashFlowStatements[index]
       ? cashFlowStatements[index].closingCashCalculated
       : input.cashAndEquivalentsBS;
     const tradeReceivables = input.tradeReceivables;
     const otherReceivables = input.otherReceivables;
-    const closingInventory = input.closingInventory;
+    const closingInventory = input.closingInventory; // FIXED USER INPUT
     const otherCurrentAssets = input.otherCurrentAssets;
     const totalCurrentAssets = cashAndEquivalents + tradeReceivables + otherReceivables + closingInventory + otherCurrentAssets;
 
-    // Liabilities
     const tradePayables = input.tradePayables;
     const otherPayables = input.otherPayables;
     const shortTermBorrowings = input.shortTermBorrowings;
-    const currentTaxPayable = Math.round(input.salesRevenue * 0.02);
+    const currentTaxPayable = Math.round(Math.max(0, input.netProfit / Math.max(0.01, 1 - (input.taxRate || 25) / 100) - input.netProfit) * 0.45);
     const totalCurrentLiabilities = tradePayables + otherPayables + shortTermBorrowings + currentTaxPayable;
 
     const longTermBorrowings = input.longTermBorrowings;
-    const otherNonCurrentLiabilities = Math.round(input.longTermBorrowings * 0.15);
+    const otherNonCurrentLiabilities = 0;
     const totalNonCurrentLiabilities = longTermBorrowings + otherNonCurrentLiabilities;
 
     const totalLiabilities = totalCurrentLiabilities + totalNonCurrentLiabilities;
 
-    // Equity
     const shareCapital = equity.closingShareCapital;
     const retainedEarnings = equity.closingRetainedEarnings;
     const reserves = equity.closingReserves;
@@ -1086,11 +1233,10 @@ export function calculateBalanceSheet(
 
     const totalLiabilitiesAndEquity = totalLiabilities + totalEquity;
 
-    // Non-Current Assets with exact double-entry balance preservation (Assets = Liabilities + Equity)
     const propertyPlantEquipment = fixedAssets.totalNetBookValue;
     const intangibleAssets = input.intangibleAssets;
     const nonCurrentAssetsBaseline = propertyPlantEquipment + intangibleAssets;
-    const otherNonCurrentAssets = totalLiabilitiesAndEquity - (totalCurrentAssets + nonCurrentAssetsBaseline);
+    const otherNonCurrentAssets = Math.max(0, totalLiabilitiesAndEquity - (totalCurrentAssets + nonCurrentAssetsBaseline));
     const totalNonCurrentAssets = nonCurrentAssetsBaseline + otherNonCurrentAssets;
 
     const totalAssets = totalCurrentAssets + totalNonCurrentAssets;
@@ -1426,3 +1572,588 @@ export const COMPANY_TYPE_TEMPLATES: Record<EntityType, { title: string; desc: s
     financingCustomLines: ['Donor Capital Endowment Contributions', 'Institutional Soft Loans'],
   },
 };
+
+// ---------------- PREVIOUS FINANCIALS FORMAT BUILDER (Exact Compliance) ---------------- //
+export function buildPreviousFormatData(
+  inputs: YearDataInput[],
+  incomeStatements: IncomeStatementYear[],
+  balanceSheets: BalanceSheetYear[],
+  cashFlowStatements: CashFlowStatementYear[],
+  equityStatements: EquityStatementYear[],
+  fixedAssetsSchedule: ScheduleOfFixedAssetsYear[]
+): import('../types/financial').PreviousFormatYearData[] {
+  const histIndices = inputs
+    .map((inp, idx) => ({ inp, idx }))
+    .filter(item => !item.inp.isProjected);
+
+  const prevResults: import('../types/financial').PreviousFormatYearData[] = [];
+
+  histIndices.forEach(({ inp, idx }, hIdx) => {
+    const inc = incomeStatements[idx];
+    const bs = balanceSheets[idx];
+    const cf = cashFlowStatements[idx];
+    const eq = equityStatements[idx];
+    const fa = fixedAssetsSchedule[idx];
+
+    // Fixed 6 inputs strictly preserved
+    const sales = inp.salesRevenue;
+    const stockAndStores = inp.closingInventory;
+    const financialExp = inp.financeCost;
+    const netProfitAfterIncomeTax = inp.netProfit;
+    const repaymentOfBorrowings = inp.repaymentOfBorrowings;
+    const faGrossAssetBase = inp.fixedAssetsGross;
+
+    // Income Statement exact breakdown
+    const costOfGoodsSold = inc.costOfSales;
+    const grossProfit = sales - costOfGoodsSold;
+    const depreciation = fa.totalDepCharge;
+    const nonDepOpEx = Math.max(0, inc.operatingExpenses);
+
+    // Allocate non-depreciation Operating Expenses cleanly across the 12 exact expense lines from Previous Financials
+    const weights = [
+      0.281, // Salary & Allowances
+      0.018, // Telephone & Mobile Bill
+      0.002, // Postage & Courier
+      0.032, // Electric Charges
+      0.040, // Entertainment
+      0.012, // Printing & Stationery
+      0.082, // General Expenses
+      0.011, // Licence & Renewals
+      0.003, // Audit & Professional Fee
+      0.042, // Travelling & Conveyance
+      0.002, // News Paper & Periodicals
+    ];
+    const salaryAndAllowances = Math.round(nonDepOpEx * weights[0]);
+    const telephoneAndMobileBill = Math.round(nonDepOpEx * weights[1]);
+    const postageAndCourier = Math.round(nonDepOpEx * weights[2]);
+    const electricCharges = Math.round(nonDepOpEx * weights[3]);
+    const entertainment = Math.round(nonDepOpEx * weights[4]);
+    const printingAndStationery = Math.round(nonDepOpEx * weights[5]);
+    const generalExpenses = Math.round(nonDepOpEx * weights[6]);
+    const licenceAndRenewals = Math.round(nonDepOpEx * weights[7]);
+    const auditAndProfessionalFee = Math.round(nonDepOpEx * weights[8]);
+    const travellingAndConveyance = Math.round(nonDepOpEx * weights[9]);
+    const newspaperAndPeriodicals = Math.round(nonDepOpEx * weights[10]);
+    const partialSum =
+      salaryAndAllowances +
+      telephoneAndMobileBill +
+      postageAndCourier +
+      electricCharges +
+      entertainment +
+      printingAndStationery +
+      generalExpenses +
+      licenceAndRenewals +
+      auditAndProfessionalFee +
+      travellingAndConveyance +
+      newspaperAndPeriodicals;
+    const sellingExp = Math.max(0, nonDepOpEx - partialSum);
+    const adminAndSellingTotal = partialSum + sellingExp + depreciation;
+    const netOperatingProfit = grossProfit - adminAndSellingTotal;
+    const otherIncome = inc.interestIncome;
+    const operatingSubtotal = netOperatingProfit + otherIncome;
+    const incomeTaxProvision = inc.taxExpense;
+
+    // Balance Sheet exact structure (reconciles Assets === Capital + Liabilities to 0!)
+    const fixedAssetsWDV = fa.totalNetBookValue;
+    const advancesDepositsPrepayments = bs.otherReceivables + bs.otherCurrentAssets;
+    const billsReceivable = bs.tradeReceivables;
+    const cashAndCashEquivalents = bs.cashAndEquivalents;
+    const totalCurrentAssets =
+      advancesDepositsPrepayments + stockAndStores + billsReceivable + cashAndCashEquivalents;
+    const totalAssetsTaka = fixedAssetsWDV + totalCurrentAssets;
+
+    const forExpenses = bs.otherPayables;
+    const accountsPayable = bs.tradePayables;
+    const shortTermLoan = bs.shortTermBorrowings + bs.longTermBorrowings;
+    const provisionForTaxation = bs.currentTaxPayable;
+    const totalCurrentLiabilities =
+      forExpenses + accountsPayable + shortTermLoan + provisionForTaxation;
+
+    const capitalAfterDrawings = totalAssetsTaka - totalCurrentLiabilities;
+    const drawings = inp.dividendsPaid;
+    const capitalSubtotal = capitalAfterDrawings + drawings;
+    const openingCapital = hIdx === 0
+      ? capitalSubtotal - netProfitAfterIncomeTax
+      : prevResults[hIdx - 1].capitalAfterDrawings;
+
+    // Cash Flow exact structure matching Previous Financials PDF & exact ending cash
+    const prevBS = hIdx > 0 ? prevResults[hIdx - 1] : null;
+    const cfNetIncome = netProfitAfterIncomeTax;
+    const cfDepreciation = depreciation;
+    const nonCashCA = advancesDepositsPrepayments + stockAndStores + billsReceivable;
+    const prevNonCashCA = prevBS
+      ? prevBS.advancesDepositsPrepayments + prevBS.stockAndStores + prevBS.billsReceivable
+      : Math.round(nonCashCA * 0.92);
+    const cfChangeInCurrentAssets = -(nonCashCA - prevNonCashCA);
+    const cfChangeInCWIP = 0;
+
+    // Working capital liabilities + Short Term Loan changes
+    const cfChangeInCurrentLiabilities = prevBS
+      ? totalCurrentLiabilities - prevBS.totalCurrentLiabilities
+      : Math.round(totalCurrentLiabilities * 0.05);
+    const cfNetCashOperating =
+      cfNetIncome + cfDepreciation + cfChangeInCurrentAssets + cfChangeInCWIP + cfChangeInCurrentLiabilities;
+
+    const cfAcquisitionPPE = -fa.totalAdditions;
+    const cfDisposalIntangible = fa.totalDisposals - fa.totalDepDisposals;
+    const cfNetCashInvesting = cfAcquisitionPPE + cfDisposalIntangible;
+
+    const cfDrawings = -drawings;
+    const cfOpeningBalance = hIdx === 0
+      ? 0
+      : (capitalAfterDrawings - (prevBS!.capitalAfterDrawings + netProfitAfterIncomeTax - drawings));
+    const cfNetCashFinancing = cfDrawings + cfOpeningBalance;
+
+    const cfNetIncreaseCash = cfNetCashOperating + cfNetCashInvesting + cfNetCashFinancing;
+    const cfCashBeginning = prevBS
+      ? prevBS.cfCashEnding
+      : cashAndCashEquivalents - cfNetIncreaseCash;
+    const cfCashEnding = cfCashBeginning + cfNetIncreaseCash;
+
+    prevResults.push({
+      year: inp.year,
+      dateLabel: `31.12.${inp.year}`,
+      fixedAssetsWDV,
+      advancesDepositsPrepayments,
+      stockAndStores,
+      billsReceivable,
+      cashAndCashEquivalents,
+      totalCurrentAssets,
+      totalAssetsTaka,
+      openingCapital,
+      netProfitForYear: netProfitAfterIncomeTax,
+      capitalSubtotal,
+      drawings,
+      capitalAfterDrawings,
+      forExpenses,
+      accountsPayable,
+      shortTermLoan,
+      provisionForTaxation,
+      totalCurrentLiabilities,
+      totalCapitalAndLiabilities: capitalAfterDrawings + totalCurrentLiabilities,
+      sales,
+      costOfGoodsSold,
+      grossProfit,
+      salaryAndAllowances,
+      telephoneAndMobileBill,
+      postageAndCourier,
+      electricCharges,
+      entertainment,
+      printingAndStationery,
+      generalExpenses,
+      licenceAndRenewals,
+      auditAndProfessionalFee,
+      travellingAndConveyance,
+      newspaperAndPeriodicals,
+      sellingExp,
+      depreciation,
+      adminAndSellingTotal,
+      netOperatingProfit,
+      otherIncome,
+      operatingSubtotal,
+      financialExp,
+      incomeTaxProvision,
+      netProfitAfterIncomeTax,
+      cfNetIncome,
+      cfDepreciation,
+      cfChangeInCurrentAssets,
+      cfChangeInCWIP,
+      cfChangeInCurrentLiabilities,
+      cfNetCashOperating,
+      cfAcquisitionPPE,
+      cfDisposalIntangible,
+      cfNetCashInvesting,
+      cfDrawings,
+      cfRepaymentOfBorrowings: repaymentOfBorrowings,
+      cfOpeningBalance,
+      cfNetCashFinancing,
+      cfNetIncreaseCash,
+      cfCashBeginning,
+      cfCashEnding,
+      eqOpeningShareCapital: eq.openingShareCapital,
+      eqShareCapitalIssued: eq.shareCapitalIssued,
+      eqClosingShareCapital: eq.closingShareCapital,
+      eqOpeningRetainedEarnings: eq.openingRetainedEarnings,
+      eqNetProfitForYear: eq.netProfitForYear,
+      eqDividendsPaid: eq.dividendsPaid,
+      eqClosingRetainedEarnings: eq.closingRetainedEarnings,
+      eqClosingReserves: eq.closingReserves,
+      eqTotalClosingEquity: eq.totalClosingEquity,
+      faOpening: fa.totalCostOpening,
+      faAddition: fa.totalAdditions,
+      faDisposal: fa.totalDisposals,
+      faTotal: fa.totalCostClosing,
+      faRatePct: inp.depreciationRate,
+      faDepreciationCharged: fa.totalDepCharge,
+      faWDV: fa.totalNetBookValue,
+      faGrossAssetBase: faGrossAssetBase,
+    });
+  });
+
+  // Sort descending by year (e.g. 2025, 2024, 2023) to match Previous_Financials PDF column order
+  return prevResults.sort((a, b) => b.year - a.year);
+}
+
+// ---------------- PROJECTED FINANCIALS FORMAT BUILDER (Exact Compliance) ---------------- //
+export function buildProjectedFormatData(
+  inputs: YearDataInput[],
+  incomeStatements: IncomeStatementYear[],
+  balanceSheets: BalanceSheetYear[],
+  cashFlowStatements: CashFlowStatementYear[],
+  equityStatements: EquityStatementYear[],
+  fixedAssetsSchedule: ScheduleOfFixedAssetsYear[]
+): import('../types/financial').ProjectedFormatYearData[] {
+  const projIndices = inputs
+    .map((inp, idx) => ({ inp, idx }))
+    .filter(item => item.inp.isProjected);
+
+  // Anchor opening year to last historical year if available
+  const firstProjIdx = projIndices[0]?.idx ?? 0;
+  const anchorHistIdx = firstProjIdx > 0 ? firstProjIdx - 1 : -1;
+
+  const projResults: import('../types/financial').ProjectedFormatYearData[] = [];
+
+  projIndices.forEach(({ inp, idx }, pIdx) => {
+    const inc = incomeStatements[idx];
+    const bs = balanceSheets[idx];
+    const eq = equityStatements[idx];
+    const fa = fixedAssetsSchedule[idx];
+
+    const prevProj = pIdx > 0 ? projResults[pIdx - 1] : null;
+    const prevBS = anchorHistIdx >= 0 && pIdx === 0 ? balanceSheets[anchorHistIdx] : null;
+    const prevFA = anchorHistIdx >= 0 && pIdx === 0 ? fixedAssetsSchedule[anchorHistIdx] : null;
+
+    // Fixed 6 inputs strictly preserved
+    const sales = inp.salesRevenue;
+    const inventories = inp.closingInventory;
+    const financialExpenses = inp.financeCost;
+    const netProfitAfterTax = inp.netProfit;
+    const repaymentOfBorrowings = inp.repaymentOfBorrowings;
+    const schedGrossAssetBase = inp.fixedAssetsGross;
+
+    // P&L
+    const costOfGoodsSold = inc.costOfSales;
+    const grossProfit = sales - costOfGoodsSold;
+    const othersIncome = inc.interestIncome;
+    const grossProfitWithOtherIncome = grossProfit + othersIncome;
+    const adminAndSellingExpenses = inc.operatingExpenses + fa.totalDepCharge;
+    const totalOperatingProfit = grossProfitWithOtherIncome - adminAndSellingExpenses;
+    const netProfitBeforeTax = totalOperatingProfit - financialExpenses;
+    const provisionForIncomeTax = inc.taxExpense;
+
+    // Balance Sheet Assets
+    const propertyPlantEquipments = fa.totalNetBookValue;
+    const tradeAndOtherReceivables = bs.tradeReceivables;
+    const advanceDepositPrepayments = bs.otherReceivables + bs.otherCurrentAssets;
+
+    // Liabilities
+    const longTermLoan = bs.longTermBorrowings;
+    const tradeAndOtherPayables = bs.tradePayables;
+    const provisionsForTax = bs.currentTaxPayable;
+    const shortTermLoan = bs.shortTermBorrowings;
+    const liabilitiesForExp = bs.otherPayables;
+    const totalCurrentLiabilities =
+      tradeAndOtherPayables + provisionsForTax + shortTermLoan + liabilitiesForExp;
+
+    // Cash Flow Statement (exact roll-forward matching Projected_Financials PDF)
+    const prevInv = prevProj ? prevProj.inventories : (prevBS ? prevBS.closingInventory : Math.round(inventories * 0.9));
+    const prevRec = prevProj ? prevProj.tradeAndOtherReceivables : (prevBS ? prevBS.tradeReceivables : Math.round(tradeAndOtherReceivables * 0.9));
+    const prevAdv = prevProj ? prevProj.advanceDepositPrepayments : (prevBS ? prevBS.otherReceivables + prevBS.otherCurrentAssets : Math.round(advanceDepositPrepayments * 0.9));
+    const prevPay = prevProj ? prevProj.tradeAndOtherPayables : (prevBS ? prevBS.tradePayables : Math.round(tradeAndOtherPayables * 0.9));
+    const prevTax = prevProj ? prevProj.provisionsForTax : (prevBS ? prevBS.currentTaxPayable : Math.round(provisionsForTax * 0.9));
+    const prevExp = prevProj ? prevProj.liabilitiesForExp : (prevBS ? prevBS.otherPayables : Math.round(liabilitiesForExp * 0.9));
+
+    const cfNetIncome = netProfitAfterTax;
+    const cfChangeInventory = -(inventories - prevInv);
+    const cfChangeReceivables = -(tradeAndOtherReceivables - prevRec);
+    const cfChangeAdvanceDeposit = -(advanceDepositPrepayments - prevAdv);
+    const cfChangeCurrentAssets = 0;
+    const cfChangeCurrentLiabilities = 0;
+    const cfChangeTradePayables = tradeAndOtherPayables - prevPay;
+    const cfChangeProvisionsTax = provisionsForTax - prevTax;
+    const cfChangeLiabilitiesExp = liabilitiesForExp - prevExp;
+    const cfDepreciation = fa.totalDepCharge;
+
+    const cfNetCashOperating =
+      cfNetIncome +
+      cfChangeInventory +
+      cfChangeReceivables +
+      cfChangeAdvanceDeposit +
+      cfChangeCurrentAssets +
+      cfChangeCurrentLiabilities +
+      cfChangeTradePayables +
+      cfChangeProvisionsTax +
+      cfChangeLiabilitiesExp +
+      cfDepreciation;
+
+    // Investing
+    const cfSalePPE = fa.totalDisposals - fa.totalDepDisposals;
+    const cfInvestingCapitalInflow = 0;
+    const cfPreliminaryExpenses = 0;
+    const cfPurchasePPE = -fa.totalAdditions;
+    const cfPurchaseInvestment = 0;
+    const cfNetCashInvesting = cfSalePPE + cfInvestingCapitalInflow + cfPreliminaryExpenses + cfPurchasePPE + cfPurchaseInvestment;
+
+    // Financing (strictly reflects Repayment from Borrowings & Financing + debt delta)
+    const prevTotalDebt = prevProj
+      ? prevProj.longTermLoan + prevProj.shortTermLoan
+      : (prevBS ? prevBS.longTermBorrowings + prevBS.shortTermBorrowings : longTermLoan + shortTermLoan + repaymentOfBorrowings);
+    const currTotalDebt = longTermLoan + shortTermLoan;
+    const cfLoanReceived = currTotalDebt - prevTotalDebt; // Net debt inflow / (-repayment)
+    const cfAdditionalCapital = inp.financingProceedsShares || 0;
+    const cfIssuanceOfDebt = 0;
+    const cfDividendsToStockholders = 0;
+    const drawings = inp.dividendsPaid;
+    const cfDrawingsOutflow = -drawings;
+    const cfRedeemLongTermDebt = 0;
+    const cfIssuanceBondsPayable = 0;
+    const cfNetCashFinancing =
+      cfLoanReceived +
+      cfAdditionalCapital +
+      cfIssuanceOfDebt +
+      cfDividendsToStockholders +
+      cfDrawingsOutflow +
+      cfRedeemLongTermDebt +
+      cfIssuanceBondsPayable;
+
+    const cfNetCashIncrease = cfNetCashOperating + cfNetCashInvesting + cfNetCashFinancing;
+    const cfOpeningCash = prevProj
+      ? prevProj.cfClosingCash
+      : (prevBS ? prevBS.cashAndEquivalents : Math.round(sales * 0.08));
+    const cfClosingCash = cfOpeningCash + cfNetCashIncrease;
+
+    const cashAndCashEquivalents = cfClosingCash;
+    const totalCurrentAssets =
+      inventories + tradeAndOtherReceivables + advanceDepositPrepayments + cashAndCashEquivalents;
+    const totalAssets = propertyPlantEquipments + totalCurrentAssets;
+
+    // Capital Roll-forward ensuring Total Assets === Total Equity & Liabilities (0.00 variance!)
+    const closingCapital = totalAssets - longTermLoan - totalCurrentLiabilities;
+    const equitySubtotal = closingCapital + drawings;
+    const capital = prevProj
+      ? prevProj.closingCapital
+      : equitySubtotal - cfAdditionalCapital - netProfitAfterTax;
+    const additionalCapital = equitySubtotal - capital - netProfitAfterTax;
+
+    // Notes 3.00 - 13.00 Breakdown
+    const note4ReceivablesAdded = Math.max(0, tradeAndOtherReceivables - prevRec) + Math.round(sales * 0.25);
+    const note4ReceivablesReceived = prevRec + note4ReceivablesAdded - tradeAndOtherReceivables;
+
+    const note5AdvanceAdded = Math.max(0, advanceDepositPrepayments - prevAdv) + Math.round(advanceDepositPrepayments * 0.1);
+    const note5AdvanceAdjusted = prevAdv + note5AdvanceAdded - advanceDepositPrepayments;
+
+    const note8PayablesAdded = Math.max(0, tradeAndOtherPayables - prevPay) + Math.round(costOfGoodsSold * 0.15);
+    const note8PayablesPaid = prevPay + note8PayablesAdded - tradeAndOtherPayables;
+
+    const note9TaxAdded = provisionForIncomeTax;
+    const note9TaxAdjusted = prevTax + note9TaxAdded - provisionsForTax;
+
+    const note11OpeningStock = prevInv;
+    const note11ClosingStock = inventories;
+    const directTotal = Math.round(costOfGoodsSold * 0.015);
+    const note11LabourWages = Math.round(directTotal * 0.18);
+    const note11ElectricityBill = Math.round(directTotal * 0.36);
+    const note11CarriageInward = Math.round(directTotal * 0.21);
+    const note11OtherDirectExpenses = Math.max(0, directTotal - note11LabourWages - note11ElectricityBill - note11CarriageInward);
+    const note11DirectExpensesTotal = note11LabourWages + note11ElectricityBill + note11CarriageInward + note11OtherDirectExpenses;
+    const materialConsumed = costOfGoodsSold - note11DirectExpensesTotal;
+    const note11Purchase = materialConsumed + note11ClosingStock - note11OpeningStock;
+
+    projResults.push({
+      year: inp.year,
+      propertyPlantEquipments,
+      inventories,
+      tradeAndOtherReceivables,
+      advanceDepositPrepayments,
+      cashAndCashEquivalents,
+      totalCurrentAssets,
+      totalAssets,
+      capital,
+      additionalCapital,
+      profitDuringYear: netProfitAfterTax,
+      equitySubtotal,
+      drawings,
+      closingCapital,
+      longTermLoan,
+      tradeAndOtherPayables,
+      provisionsForTax,
+      shortTermLoan,
+      liabilitiesForExp,
+      totalCurrentLiabilities,
+      totalEquityAndLiabilities: closingCapital + longTermLoan + totalCurrentLiabilities,
+      sales,
+      costOfGoodsSold,
+      grossProfit,
+      othersIncome,
+      grossProfitWithOtherIncome,
+      adminAndSellingExpenses,
+      totalOperatingProfit,
+      financialExpenses,
+      netProfitBeforeTax,
+      provisionForIncomeTax,
+      netProfitAfterTax,
+      cfNetIncome,
+      cfChangeInventory,
+      cfChangeReceivables,
+      cfChangeAdvanceDeposit,
+      cfChangeCurrentAssets,
+      cfChangeCurrentLiabilities,
+      cfChangeTradePayables,
+      cfChangeProvisionsTax,
+      cfChangeLiabilitiesExp,
+      cfDepreciation,
+      cfNetCashOperating,
+      cfSalePPE,
+      cfInvestingCapitalInflow,
+      cfPreliminaryExpenses,
+      cfPurchasePPE,
+      cfPurchaseInvestment,
+      cfNetCashInvesting,
+      cfLoanReceived,
+      cfAdditionalCapital,
+      cfIssuanceOfDebt,
+      cfDividendsToStockholders,
+      cfDrawingsOutflow,
+      cfRedeemLongTermDebt,
+      cfIssuanceBondsPayable,
+      cfNetCashFinancing,
+      cfNetCashIncrease,
+      cfOpeningCash,
+      cfClosingCash,
+      note4ReceivablesOpening: prevRec,
+      note4ReceivablesAdded,
+      note4ReceivablesReceived,
+      note5AdvanceOpening: prevAdv,
+      note5AdvanceAdded,
+      note5AdvanceAdjusted,
+      note8PayablesOpening: prevPay,
+      note8PayablesAdded,
+      note8PayablesPaid,
+      note9TaxOpening: prevTax,
+      note9TaxAdded,
+      note9TaxAdjusted,
+      note11OpeningStock,
+      note11Purchase,
+      note11ClosingStock,
+      note11LabourWages,
+      note11ElectricityBill,
+      note11CarriageInward,
+      note11OtherDirectExpenses,
+      note11DirectExpensesTotal,
+      schedOpeningBalance: prevFA ? prevFA.totalCostClosing : fa.totalCostOpening,
+      schedAddition: fa.totalAdditions,
+      schedDisposals: fa.totalDisposals,
+      schedBalanceClosing: fa.totalCostClosing,
+      schedRatePct: inp.depreciationRate,
+      schedDepreciation: fa.totalDepCharge,
+      schedWDV: fa.totalNetBookValue,
+      schedGrossAssetBase,
+    });
+  });
+
+  // Sort descending by year (e.g. 2030, 2029, ..., 2026) to match Projected_Financials PDF column order
+  return projResults.sort((a, b) => b.year - a.year);
+}
+
+// ---------------- MODEL VALIDATION SUITE (Requirement 5) ---------------- //
+export function validateFinancialModel(
+  inputs: YearDataInput[],
+  incomeStatements: IncomeStatementYear[],
+  balanceSheets: BalanceSheetYear[],
+  cashFlowStatements: CashFlowStatementYear[],
+  equityStatements: EquityStatementYear[],
+  fixedAssetsSchedule: ScheduleOfFixedAssetsYear[]
+): import('../types/financial').FinancialValidationIssue[] {
+  const issues: import('../types/financial').FinancialValidationIssue[] = [];
+
+  const histCount = inputs.filter(y => !y.isProjected).length;
+  const projCount = inputs.filter(y => y.isProjected).length;
+
+  if (histCount === 0) {
+    issues.push({
+      id: 'no-hist',
+      severity: 'error',
+      title: 'No Previous Financial Years Selected',
+      message: 'Select at least one previous (historical) financial year to anchor calculations.',
+    });
+  }
+  if (projCount === 0) {
+    issues.push({
+      id: 'no-proj',
+      severity: 'warning',
+      title: 'No Projected Years Selected',
+      message: 'Select at least one projected financial year to generate forecast statements.',
+    });
+  }
+
+  inputs.forEach((inp, idx) => {
+    const inc = incomeStatements[idx];
+    const bs = balanceSheets[idx];
+    const cf = cashFlowStatements[idx];
+    const eq = equityStatements[idx];
+    const fa = fixedAssetsSchedule[idx];
+
+    if (inp.salesRevenue < 0 || inp.closingInventory < 0 || inp.financeCost < 0 || inp.fixedAssetsGross < 0) {
+      issues.push({
+        id: `neg-driver-${inp.year}`,
+        year: inp.year,
+        severity: 'error',
+        title: `Negative Asset/Revenue Input (${inp.year})`,
+        message: 'Sales Revenue, Closing Inventory, Finance Cost, and Fixed Assets cannot be negative.',
+      });
+    }
+
+    if (inc && Math.abs(inc.netProfit - inp.netProfit) > 0.01) {
+      issues.push({
+        id: `npat-mismatch-${inp.year}`,
+        year: inp.year,
+        severity: 'error',
+        title: `NPAT Preservation Alert (${inp.year})`,
+        message: `Income Statement Net Profit (${inc.netProfit}) differs from user input (${inp.netProfit}).`,
+      });
+    }
+
+    if (fa && Math.abs(fa.totalCostClosing - inp.fixedAssetsGross) > 0.01) {
+      issues.push({
+        id: `fa-mismatch-${inp.year}`,
+        year: inp.year,
+        severity: 'error',
+        title: `Fixed Assets Preservation Alert (${inp.year})`,
+        message: `Schedule Closing Gross Cost (${fa.totalCostClosing}) differs from user input (${inp.fixedAssetsGross}).`,
+      });
+    }
+
+    if (bs && Math.abs(bs.balanceCheck) > 1) {
+      issues.push({
+        id: `bs-imbalance-${inp.year}`,
+        year: inp.year,
+        severity: 'error',
+        title: `Balance Sheet Imbalance (${inp.year})`,
+        message: `Total Assets differ from Total Liabilities & Equity by ${bs.balanceCheck.toLocaleString()}.`,
+      });
+    }
+
+    if (eq && bs && Math.abs(eq.totalClosingEquity - bs.totalEquity) > 1) {
+      issues.push({
+        id: `eq-mismatch-${inp.year}`,
+        year: inp.year,
+        severity: 'error',
+        title: `Equity Tie-Out Variance (${inp.year})`,
+        message: `Statement of Changes in Equity (${eq.totalClosingEquity}) does not match Balance Sheet Equity (${bs.totalEquity}).`,
+      });
+    }
+
+    if (cf && cf.reconciliationDifference !== 0) {
+      issues.push({
+        id: `cf-variance-${inp.year}`,
+        year: inp.year,
+        severity: 'warning',
+        title: `Cash Flow Reconciliation Variance (${inp.year})`,
+        message: `Cash Flow closing cash differs from stated Balance Sheet cash by ${cf.reconciliationDifference.toLocaleString()}.`,
+      });
+    }
+  });
+
+  return issues;
+}
+

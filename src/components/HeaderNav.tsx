@@ -11,6 +11,12 @@ interface HeaderNavProps {
   onExportPackageExcel: () => void;
   onExportPackageWord: () => void;
   onExportPackagePdf: () => void;
+  onExportPreviousExcel?: () => void;
+  onExportPreviousWord?: () => void;
+  onExportPreviousPdf?: () => void;
+  onExportProjectedExcel?: () => void;
+  onExportProjectedWord?: () => void;
+  onExportProjectedPdf?: () => void;
 }
 
 export const HeaderNav: React.FC<HeaderNavProps> = ({
@@ -22,6 +28,12 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
   onExportPackageExcel,
   onExportPackageWord,
   onExportPackagePdf,
+  onExportPreviousExcel,
+  onExportPreviousWord,
+  onExportPreviousPdf,
+  onExportProjectedExcel,
+  onExportProjectedWord,
+  onExportProjectedPdf,
 }) => {
   const [showExportMenu, setShowExportMenu] = React.useState(false);
 
@@ -91,9 +103,9 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
             })}
           </nav>
 
-          {/* Mobile / Compact Navigation (Fallback for medium screens) */}
+          {/* Mobile / Compact Navigation */}
           <div className="flex lg:hidden items-center gap-1 text-xs">
-            {navItems.slice(0, 3).map((item) => {
+            {navItems.map((item) => {
               const Icon = item.icon;
               const isActive = activeTab === item.id;
               return (
@@ -136,7 +148,7 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
 
               {showExportMenu && (
                 <div 
-                  className="absolute right-0 mt-2 w-72 bg-slate-900/95 backdrop-blur-xl border border-slate-700/80 rounded-xl shadow-2xl p-2 z-50 text-xs animate-in fade-in slide-in-from-top-2 duration-150 ring-1 ring-black/40"
+                  className="absolute right-0 mt-2 w-80 bg-slate-900/95 backdrop-blur-xl border border-slate-700/80 rounded-xl shadow-2xl p-2 z-50 text-xs animate-in fade-in slide-in-from-top-2 duration-150 ring-1 ring-black/40"
                   onMouseLeave={() => setShowExportMenu(false)}
                 >
                   <div className="px-3 py-2 border-b border-slate-800/80 mb-1">
@@ -154,7 +166,7 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
                       setShowExportMenu(false);
                       onExportPackageExcel();
                     }}
-                    className="w-full text-left px-3 py-2.5 hover:bg-slate-800/90 rounded-lg text-slate-200 flex items-center gap-3 transition-colors group"
+                    className="w-full text-left px-3 py-2 hover:bg-slate-800/90 rounded-lg text-slate-200 flex items-center gap-3 transition-colors group"
                   >
                     <div className="w-8 h-8 rounded-lg bg-emerald-950/80 border border-emerald-800/60 flex items-center justify-center shrink-0 group-hover:border-emerald-600 transition-colors">
                       <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
@@ -173,7 +185,7 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
                       setShowExportMenu(false);
                       onExportPackageWord();
                     }}
-                    className="w-full text-left px-3 py-2.5 hover:bg-slate-800/90 rounded-lg text-slate-200 flex items-center gap-3 transition-colors group"
+                    className="w-full text-left px-3 py-2 hover:bg-slate-800/90 rounded-lg text-slate-200 flex items-center gap-3 transition-colors group"
                   >
                     <div className="w-8 h-8 rounded-lg bg-sky-950/80 border border-sky-800/60 flex items-center justify-center shrink-0 group-hover:border-sky-600 transition-colors">
                       <FileText className="w-4 h-4 text-sky-400" />
@@ -192,7 +204,7 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
                       setShowExportMenu(false);
                       onExportPackagePdf();
                     }}
-                    className="w-full text-left px-3 py-2.5 hover:bg-slate-800/90 rounded-lg text-slate-200 flex items-center gap-3 transition-colors group"
+                    className="w-full text-left px-3 py-2 hover:bg-slate-800/90 rounded-lg text-slate-200 flex items-center gap-3 transition-colors group"
                   >
                     <div className="w-8 h-8 rounded-lg bg-rose-950/80 border border-rose-800/60 flex items-center justify-center shrink-0 group-hover:border-rose-600 transition-colors">
                       <Download className="w-4 h-4 text-rose-400" />
@@ -205,6 +217,68 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
                       <div className="text-[11px] text-slate-400">Auditor-ready publication format with cover</div>
                     </div>
                   </button>
+
+                  {(onExportPreviousExcel || onExportProjectedExcel) && (
+                    <div className="mt-2 pt-2 border-t border-slate-800/80 space-y-2 px-1">
+                      {onExportPreviousExcel && (
+                        <div className="bg-slate-950/70 border border-slate-800/80 rounded-lg p-2 space-y-1.5">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-bold text-emerald-300">Previous Financials Format</span>
+                            <span className="text-[9px] font-mono text-slate-400">31.12.YYYY</span>
+                          </div>
+                          <div className="grid grid-cols-3 gap-1.5">
+                            <button
+                              onClick={() => { setShowExportMenu(false); onExportPreviousExcel?.(); }}
+                              className="py-1 rounded bg-emerald-950/80 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-800/60 font-mono text-[10px] font-bold transition-colors"
+                            >
+                              .XLSX
+                            </button>
+                            <button
+                              onClick={() => { setShowExportMenu(false); onExportPreviousWord?.(); }}
+                              className="py-1 rounded bg-sky-950/80 hover:bg-sky-600 text-sky-300 hover:text-white border border-sky-800/60 font-mono text-[10px] font-bold transition-colors"
+                            >
+                              .DOCX
+                            </button>
+                            <button
+                              onClick={() => { setShowExportMenu(false); onExportPreviousPdf?.(); }}
+                              className="py-1 rounded bg-rose-950/80 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-800/60 font-mono text-[10px] font-bold transition-colors"
+                            >
+                              .PDF
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {onExportProjectedExcel && (
+                        <div className="bg-slate-950/70 border border-slate-800/80 rounded-lg p-2 space-y-1.5">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-bold text-sky-300">Projected Financials Format</span>
+                            <span className="text-[9px] font-mono text-slate-400">Notes 1–13</span>
+                          </div>
+                          <div className="grid grid-cols-3 gap-1.5">
+                            <button
+                              onClick={() => { setShowExportMenu(false); onExportProjectedExcel?.(); }}
+                              className="py-1 rounded bg-emerald-950/80 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-800/60 font-mono text-[10px] font-bold transition-colors"
+                            >
+                              .XLSX
+                            </button>
+                            <button
+                              onClick={() => { setShowExportMenu(false); onExportProjectedWord?.(); }}
+                              className="py-1 rounded bg-sky-950/80 hover:bg-sky-600 text-sky-300 hover:text-white border border-sky-800/60 font-mono text-[10px] font-bold transition-colors"
+                            >
+                              .DOCX
+                            </button>
+                            <button
+                              onClick={() => { setShowExportMenu(false); onExportProjectedPdf?.(); }}
+                              className="py-1 rounded bg-rose-950/80 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-800/60 font-mono text-[10px] font-bold transition-colors"
+                            >
+                              .PDF
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </div>

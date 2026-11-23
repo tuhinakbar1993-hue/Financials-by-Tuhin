@@ -22,6 +22,7 @@ import {
   INITIAL_HISTORICAL_INPUTS,
   DEFAULT_STATEMENT_CONFIG_ITEMS,
   generateProjectedYears,
+  generateYearDataForTargetYear,
   calculateScheduleOfFixedAssets,
   calculateIncomeStatement,
   calculateCashFlowStatement,
@@ -31,11 +32,20 @@ import {
   deriveDependentFinancials,
   calculateDriverAutoFillSeries,
   recalculateAllYearsWithUpdatedDriver,
+  buildPreviousFormatData,
+  buildProjectedFormatData,
+  validateFinancialModel,
 } from './services/financialEngine';
 import {
   exportCompletePackageExcel,
   exportCompletePackageWord,
   exportCompletePackagePdf,
+  exportPreviousFinancialsExcel,
+  exportPreviousFinancialsWord,
+  exportPreviousFinancialsPdf,
+  exportProjectedFinancialsExcel,
+  exportProjectedFinancialsWord,
+  exportProjectedFinancialsPdf,
 } from './services/exportService';
 import {
   CompanyProfile,
@@ -48,14 +58,18 @@ import {
   InputMode,
   PrimaryDriverKey,
   AutoFillConfigs,
+  StatementFormatMode,
 } from './types/financial';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>('statements');
+  const [formatMode, setFormatMode] = useState<StatementFormatMode>('section76');
   const [companyProfile, setCompanyProfile] = useState<CompanyProfile>(INITIAL_COMPANY_PROFILE);
   const [assumptions, setAssumptions] = useState<ProjectionAssumptions>(DEFAULT_PROJECTION_ASSUMPTIONS);
   const [inputMode, setInputMode] = useState<InputMode>('manual');
-  const [historicalInputs, setHistoricalInputs] = useState<YearDataInput[]>(INITIAL_HISTORICAL_INPUTS);
+  const [historicalYearsStore, setHistoricalYearsStore] = useState<Record<number, YearDataInput>>(() =>
+    Object.fromEntries(INITIAL_HISTORICAL_INPUTS.map(item => [item.year, item]))
+  );
   const [customProjectedOverrides, setCustomProjectedOverrides] = useState<Record<number, YearDataInput>>({});
   const [statementConfig, setStatementConfig] = useState<StatementConfigItem[]>(DEFAULT_STATEMENT_CONFIG_ITEMS);
 
@@ -71,17 +85,42 @@ export default function App() {
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isDeveloperModalOpen, setIsDeveloperModalOpen] = useState(false);
 
-  // Derived: Generate Projected Years based on user's selected projectedYearsCount
-  const baseYearInput = historicalInputs[historicalInputs.length - 1];
+  // Derived: Active Historical Years based on user's flexible individual year selection
+  const activeHistoricalInputs = useMemo(() => {
+    const selectedHist = assumptions.selectedHistoricalYears && assumptions.selectedHistoricalYears.length > 0
+      ? [...assumptions.selectedHistoricalYears].sort((a, b) => a - b)
+      : INITIAL_HISTORICAL_INPUTS.map(h => h.year);
+
+    const existingList = Object.values(historicalYearsStore).sort((a, b) => a.year - b.year);
+    const resolved: YearDataInput[] = [];
+    for (const yr of selectedHist) {
+      if (historicalYearsStore[yr]) {
+        resolved.push({ ...historicalYearsStore[yr], isProjected: false });
+      } else {
+        resolved.push(
+          generateYearDataForTargetYear(
+            yr,
+            false,
+            resolved.length > 0 ? resolved : existingList,
+            assumptions
+          )
+        );
+      }
+    }
+    return resolved;
+  }, [assumptions, historicalYearsStore]);
+
+  // Derived: Generate Projected Years based on user's selected projected years / horizon
+  const baseYearInput = activeHistoricalInputs[activeHistoricalInputs.length - 1] || INITIAL_HISTORICAL_INPUTS[INITIAL_HISTORICAL_INPUTS.length - 1];
   const generatedProjected = useMemo(() => {
     const raw = generateProjectedYears(baseYearInput, assumptions);
     return raw.map(y => customProjectedOverrides[y.year] || y);
   }, [baseYearInput, assumptions, customProjectedOverrides]);
 
-  // Combined All Years (Historical + Projected)
+  // Combined All Years (Selected Historical + Selected Projected)
   const allYearsInputs = useMemo(() => {
-    return [...historicalInputs, ...generatedProjected];
-  }, [historicalInputs, generatedProjected]);
+    return [...activeHistoricalInputs, ...generatedProjected];
+  }, [activeHistoricalInputs, generatedProjected]);
 
   // Five Standard Financial Statements + Schedule of Fixed Assets Calculations
   const fixedAssetsSchedule = useMemo(() => {
@@ -117,10 +156,168 @@ export default function App() {
 
   const effectiveNotes = customNotes || defaultNotes;
 
+  // Exact Compliance Format Datasets (Previous Financials & Projected Financials)
+  const previousFormatData = useMemo(() => {
+    return buildPreviousFormatData(
+      allYearsInputs,
+      incomeStatements,
+      balanceSheets,
+      cashFlowStatements,
+      equityStatements,
+      fixedAssetsSchedule
+    );
+  }, [allYearsInputs, incomeStatements, balanceSheets, cashFlowStatements, equityStatements, fixedAssetsSchedule]);
+
+  const projectedFormatData = useMemo(() => {
+    return buildProjectedFormatData(
+      allYearsInputs,
+      incomeStatements,
+      balanceSheets,
+      cashFlowStatements,
+      equityStatements,
+      fixedAssetsSchedule
+    );
+  }, [allYearsInputs, incomeStatements, balanceSheets, cashFlowStatements, equityStatements, fixedAssetsSchedule]);
+
+  // Model-Wide Accounting & Fixed-Driver Validation
+  const validationIssues = useMemo(() => {
+    return validateFinancialModel(
+      allYearsInputs,
+      incomeStatements,
+      balanceSheets,
+      cashFlowStatements,
+      equityStatements,
+      fixedAssetsSchedule
+    );
+  }, [allYearsInputs, incomeStatements, balanceSheets, cashFlowStatements, equityStatements, fixedAssetsSchedule]);
+
+  // Unified Assumptions Updater (keeps Horizon slider & selectedProjectedYears synchronized)
+  const handleUpdateAssumptions = (updated: ProjectionAssumptions) => {
+    const countChanged = updated.projectedYearsCount !== assumptions.projectedYearsCount;
+    const sameProjArray = updated.selectedProjectedYears === assumptions.selectedProjectedYears;
+    const histYears = updated.selectedHistoricalYears && updated.selectedHistoricalYears.length > 0
+      ? [...updated.selectedHistoricalYears].sort((a, b) => a - b)
+      : activeHistoricalInputs.map(y => y.year);
+    const maxHist = histYears[histYears.length - 1] || 2025;
+
+    let nextProjYears = updated.selectedProjectedYears;
+    if (countChanged && sameProjArray) {
+      const targetCount = Math.max(1, updated.projectedYearsCount);
+      nextProjYears = Array.from({ length: targetCount }, (_, i) => maxHist + 1 + i);
+    }
+
+    setAssumptions({
+      ...updated,
+      historicalYearsCount: histYears.length,
+      selectedHistoricalYears: histYears,
+      selectedProjectedYears: nextProjYears,
+      projectedYearsCount: nextProjYears ? nextProjYears.length : updated.projectedYearsCount,
+    });
+  };
+
+  // Individual Year Selection Handlers (Previous & Projected)
+  const handleToggleHistoricalYear = (year: number) => {
+    const current = activeHistoricalInputs.map(y => y.year);
+    if (current.includes(year)) {
+      if (current.length <= 1) return;
+      const nextHist = current.filter(y => y !== year).sort((a, b) => a - b);
+      setAssumptions(prev => ({
+        ...prev,
+        historicalYearsCount: nextHist.length,
+        selectedHistoricalYears: nextHist,
+      }));
+      return;
+    }
+
+    if (!historicalYearsStore[year]) {
+      const generated = generateYearDataForTargetYear(year, false, activeHistoricalInputs, assumptions);
+      setHistoricalYearsStore(prev => ({ ...prev, [year]: generated }));
+    }
+    const nextHist = [...current, year].sort((a, b) => a - b);
+    const currentProj = (assumptions.selectedProjectedYears || generatedProjected.map(y => y.year)).filter(y => y !== year);
+    const nextProj = currentProj.length > 0 ? currentProj : [nextHist[nextHist.length - 1] + 1];
+
+    setAssumptions(prev => ({
+      ...prev,
+      historicalYearsCount: nextHist.length,
+      selectedHistoricalYears: nextHist,
+      selectedProjectedYears: nextProj,
+      projectedYearsCount: nextProj.length,
+    }));
+  };
+
+  const handleToggleProjectedYear = (year: number) => {
+    const current = assumptions.selectedProjectedYears || generatedProjected.map(y => y.year);
+    if (current.includes(year)) {
+      if (current.length <= 1) return;
+      const nextProj = current.filter(y => y !== year).sort((a, b) => a - b);
+      setAssumptions(prev => ({
+        ...prev,
+        selectedProjectedYears: nextProj,
+        projectedYearsCount: nextProj.length,
+      }));
+      return;
+    }
+
+    const nextProj = [...current, year].sort((a, b) => a - b);
+    setAssumptions(prev => ({
+      ...prev,
+      selectedProjectedYears: nextProj,
+      projectedYearsCount: nextProj.length,
+    }));
+  };
+
+  const handleSetHistoricalYears = (years: number[]) => {
+    const uniqueSorted = Array.from(new Set(years)).sort((a, b) => a - b);
+    if (uniqueSorted.length === 0) return;
+
+    setHistoricalYearsStore(prev => {
+      const nextStore = { ...prev };
+      const seedList = Object.values(nextStore).sort((a, b) => a.year - b.year);
+      for (const yr of uniqueSorted) {
+        if (!nextStore[yr]) {
+          nextStore[yr] = generateYearDataForTargetYear(yr, false, seedList, assumptions);
+          seedList.push(nextStore[yr]);
+          seedList.sort((a, b) => a.year - b.year);
+        }
+      }
+      return nextStore;
+    });
+
+    const filteredProj = (assumptions.selectedProjectedYears || generatedProjected.map(y => y.year)).filter(
+      y => !uniqueSorted.includes(y)
+    );
+    const maxHist = uniqueSorted[uniqueSorted.length - 1];
+    const nextProj = filteredProj.length > 0 ? filteredProj : [maxHist + 1];
+
+    setAssumptions(prev => ({
+      ...prev,
+      historicalYearsCount: uniqueSorted.length,
+      selectedHistoricalYears: uniqueSorted,
+      selectedProjectedYears: nextProj,
+      projectedYearsCount: nextProj.length,
+    }));
+  };
+
+  const handleSetProjectedYears = (years: number[]) => {
+    const histSet = new Set(activeHistoricalInputs.map(y => y.year));
+    const uniqueSorted = Array.from(new Set(years)).filter(y => !histSet.has(y)).sort((a, b) => a - b);
+    if (uniqueSorted.length === 0) return;
+
+    setAssumptions(prev => ({
+      ...prev,
+      selectedProjectedYears: uniqueSorted,
+      projectedYearsCount: uniqueSorted.length,
+    }));
+  };
+
   // Handler: Update Year Input
   const handleUpdateYearData = (updated: YearDataInput) => {
     if (!updated.isProjected) {
-      setHistoricalInputs(prev => prev.map(y => y.year === updated.year ? updated : y));
+      setHistoricalYearsStore(prev => ({
+        ...prev,
+        [updated.year]: { ...updated, isProjected: false },
+      }));
     } else {
       setCustomProjectedOverrides(prev => ({
         ...prev,
@@ -156,15 +353,21 @@ export default function App() {
       assumptions
     );
 
-    // 3. Update both historical inputs and custom projected overrides
-    const newHistorical = updatedAllYears.filter(y => !y.isProjected);
-    const newProjectedOverrides: Record<number, YearDataInput> = {};
-    updatedAllYears.filter(y => y.isProjected).forEach(y => {
-      newProjectedOverrides[y.year] = y;
+    // 3. Update both historical inputs store and custom projected overrides
+    setHistoricalYearsStore(prev => {
+      const nextStore = { ...prev };
+      updatedAllYears.filter(y => !y.isProjected).forEach(y => {
+        nextStore[y.year] = y;
+      });
+      return nextStore;
     });
-
-    setHistoricalInputs(newHistorical);
-    setCustomProjectedOverrides(newProjectedOverrides);
+    setCustomProjectedOverrides(prev => {
+      const nextOverrides = { ...prev };
+      updatedAllYears.filter(y => y.isProjected).forEach(y => {
+        nextOverrides[y.year] = y;
+      });
+      return nextOverrides;
+    });
 
     // 4. Save active Auto-Fill configuration for dynamic recalculation
     setAutoFillConfigs(prev => ({
@@ -199,9 +402,7 @@ export default function App() {
       driver === 'fixedAssetsGross'
     );
 
-    // Requirement 6: Dynamic Recalculation
-    // If auto-fill is active for this driver AND the user changes the base-year value,
-    // automatically recalculate the entire auto-filled sequence dynamically!
+    // Dynamic Recalculation when Auto-Fill anchor base year is changed
     if (isPrimaryDriver) {
       const driverKey = driver as PrimaryDriverKey;
       const activeConfig = autoFillConfigs[driverKey];
@@ -217,7 +418,6 @@ export default function App() {
     const currentYearObj = allYearsInputs[yearIdx];
     const prevYearObj = yearIdx > 0 ? allYearsInputs[yearIdx - 1] : null;
 
-    // Build the updated primary driver set
     const updatedDrivers = {
       year: currentYearObj.year,
       isProjected: currentYearObj.isProjected,
@@ -229,11 +429,13 @@ export default function App() {
       fixedAssetsGross: driver === 'fixedAssetsGross' ? val : currentYearObj.fixedAssetsGross,
     };
 
-    // Derive all dependent financials maintaining complete double-entry integrity
     const recomputedYear = deriveDependentFinancials(updatedDrivers, prevYearObj, assumptions, currentYearObj);
 
     if (!currentYearObj.isProjected) {
-      setHistoricalInputs(prev => prev.map(y => y.year === year ? recomputedYear : y));
+      setHistoricalYearsStore(prev => ({
+        ...prev,
+        [year]: { ...recomputedYear, isProjected: false },
+      }));
     } else {
       setCustomProjectedOverrides(prev => ({
         ...prev,
@@ -259,7 +461,6 @@ export default function App() {
       },
     }));
 
-    // Feed back into the core calculation engine if this corresponds to an underlying financial parameter
     const fieldMapping: Record<string, keyof YearDataInput> = {
       'revenue': 'salesRevenue',
       'salesRevenue': 'salesRevenue',
@@ -298,16 +499,15 @@ export default function App() {
           [targetField]: field === 'purchasePPE' || field === 'dividendsPaid' ? Math.abs(val) : val,
         };
 
-        // When Repayment of Borrowings is modified, cascade to Financing Cash Flow, Debt and Interest Cost
         if (targetField === 'repaymentOfBorrowings') {
           const absVal = Math.abs(val);
           const diff = absVal - (yearObj.repaymentOfBorrowings || 0);
           updatedYear.repaymentOfBorrowings = absVal;
           updatedYear.financingRepaymentBorrowings = -absVal;
-          updatedYear.cashFlowFromFinancing = 
-            (updatedYear.financingProceedsShares || 0) + 
-            (updatedYear.financingProceedsBorrowings || 0) - 
-            absVal - 
+          updatedYear.cashFlowFromFinancing =
+            (updatedYear.financingProceedsShares || 0) +
+            (updatedYear.financingProceedsBorrowings || 0) -
+            absVal -
             updatedYear.dividendsPaid;
           updatedYear.longTermBorrowings = Math.max(0, (yearObj.longTermBorrowings || 0) - diff);
           updatedYear.cashAndEquivalentsBS = Math.max(0, (yearObj.cashAndEquivalentsBS || 0) - diff);
@@ -334,7 +534,7 @@ export default function App() {
     setCustomNotes(null);
   };
 
-  // Handler: Export Complete Package
+  // Handler: Export Complete Package (Section 76)
   const handleExportPackageExcel = () => {
     exportCompletePackageExcel(
       companyProfile,
@@ -371,6 +571,17 @@ export default function App() {
     );
   };
 
+  // Handlers: Export Previous & Projected Exact Format Suites
+  const handleExportPreviousExcel = () => exportPreviousFinancialsExcel(companyProfile, previousFormatData, effectiveNotes);
+  const handleExportPreviousWord = () => exportPreviousFinancialsWord(companyProfile, previousFormatData, effectiveNotes);
+  const handleExportPreviousPdf = () => exportPreviousFinancialsPdf(companyProfile, previousFormatData, effectiveNotes);
+  const handleExportProjectedExcel = () => exportProjectedFinancialsExcel(companyProfile, projectedFormatData);
+  const handleExportProjectedWord = () => exportProjectedFinancialsWord(companyProfile, projectedFormatData);
+  const handleExportProjectedPdf = () => exportProjectedFinancialsPdf(companyProfile, projectedFormatData);
+
+  const selectedHistYears = activeHistoricalInputs.map(y => y.year);
+  const selectedProjYears = generatedProjected.map(y => y.year);
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
       {/* 3-Zone Header Contract */}
@@ -383,17 +594,29 @@ export default function App() {
         onExportPackageExcel={handleExportPackageExcel}
         onExportPackageWord={handleExportPackageWord}
         onExportPackagePdf={handleExportPackagePdf}
+        onExportPreviousExcel={handleExportPreviousExcel}
+        onExportPreviousWord={handleExportPreviousWord}
+        onExportPreviousPdf={handleExportPreviousPdf}
+        onExportProjectedExcel={handleExportProjectedExcel}
+        onExportProjectedWord={handleExportProjectedWord}
+        onExportProjectedPdf={handleExportProjectedPdf}
       />
 
       {/* Main Workspace Body */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        {/* First Look Developer Showcase Card with Interactive Horizon Controller */}
+        {/* First Look Developer Showcase Card with Interactive Horizon & Year Selector */}
         <DeveloperFirstLookCard
           assumptions={assumptions}
-          onUpdateAssumptions={setAssumptions}
+          onUpdateAssumptions={handleUpdateAssumptions}
           onOpenDeveloperModal={() => setIsDeveloperModalOpen(true)}
           companyProfile={companyProfile}
           baseYear={baseYearInput.year}
+          selectedHistoricalYears={selectedHistYears}
+          selectedProjectedYears={selectedProjYears}
+          onToggleHistoricalYear={handleToggleHistoricalYear}
+          onToggleProjectedYear={handleToggleProjectedYear}
+          onSetHistoricalYears={handleSetHistoricalYears}
+          onSetProjectedYears={handleSetProjectedYears}
         />
 
         {activeTab === 'statements' && (
@@ -407,13 +630,25 @@ export default function App() {
             notes={effectiveNotes}
             statementConfig={statementConfig}
             assumptions={assumptions}
-            onUpdateAssumptions={setAssumptions}
+            onUpdateAssumptions={handleUpdateAssumptions}
             cellOverrides={cellOverrides}
             labelOverrides={labelOverrides}
             onUpdateStatementValue={handleUpdateStatementValue}
             onUpdateStatementLabel={handleUpdateStatementLabel}
             onResetOverrides={handleResetOverrides}
             onUpdateNotes={setCustomNotes}
+            previousFormatData={previousFormatData}
+            projectedFormatData={projectedFormatData}
+            formatMode={formatMode}
+            onChangeFormatMode={setFormatMode}
+            validationIssues={validationIssues}
+            selectedHistoricalYears={selectedHistYears}
+            selectedProjectedYears={selectedProjYears}
+            onToggleHistoricalYear={handleToggleHistoricalYear}
+            onToggleProjectedYear={handleToggleProjectedYear}
+            onSetHistoricalYears={handleSetHistoricalYears}
+            onSetProjectedYears={handleSetProjectedYears}
+            onUpdatePrimaryDriver={handleUpdatePrimaryDriver}
           />
         )}
 
@@ -424,7 +659,7 @@ export default function App() {
             onUpdateYearData={handleUpdateYearData}
             companyProfile={companyProfile}
             assumptions={assumptions}
-            onUpdateAssumptions={setAssumptions}
+            onUpdateAssumptions={handleUpdateAssumptions}
             inputMode={inputMode}
             onToggleInputMode={setInputMode}
             onGenerateAutomaticProjections={handleGenerateAutomaticProjections}
@@ -434,6 +669,13 @@ export default function App() {
             autoFillConfigs={autoFillConfigs}
             onApplyAutoFill={handleApplyAutoFill}
             onClearAutoFill={handleClearAutoFill}
+            validationIssues={validationIssues}
+            selectedHistoricalYears={selectedHistYears}
+            selectedProjectedYears={selectedProjYears}
+            onToggleHistoricalYear={handleToggleHistoricalYear}
+            onToggleProjectedYear={handleToggleProjectedYear}
+            onSetHistoricalYears={handleSetHistoricalYears}
+            onSetProjectedYears={handleSetProjectedYears}
           />
         )}
 
@@ -448,9 +690,15 @@ export default function App() {
         {activeTab === 'projections' && (
           <ProjectionEngineView
             assumptions={assumptions}
-            onUpdateAssumptions={setAssumptions}
+            onUpdateAssumptions={handleUpdateAssumptions}
             onApplyAndRecalculate={() => setActiveTab('statements')}
             onResetDefaults={() => setAssumptions(DEFAULT_PROJECTION_ASSUMPTIONS)}
+            selectedHistoricalYears={selectedHistYears}
+            selectedProjectedYears={selectedProjYears}
+            onToggleHistoricalYear={handleToggleHistoricalYear}
+            onToggleProjectedYear={handleToggleProjectedYear}
+            onSetHistoricalYears={handleSetHistoricalYears}
+            onSetProjectedYears={handleSetProjectedYears}
           />
         )}
 
@@ -459,6 +707,7 @@ export default function App() {
             cashFlowYears={cashFlowStatements}
             balanceSheetYears={balanceSheets}
             companyProfile={companyProfile}
+            validationIssues={validationIssues}
           />
         )}
       </main>

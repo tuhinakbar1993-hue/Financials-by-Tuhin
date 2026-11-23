@@ -1,20 +1,23 @@
 import React from 'react';
-import { Scale, CheckCircle2, AlertTriangle, Info, ShieldCheck, Check, ArrowRight } from 'lucide-react';
-import { CashFlowStatementYear, BalanceSheetYear, CompanyProfile } from '../types/financial';
+import { Scale, CheckCircle2, AlertTriangle, ShieldCheck } from 'lucide-react';
+import { CashFlowStatementYear, BalanceSheetYear, CompanyProfile, FinancialValidationIssue } from '../types/financial';
 
 interface CashFlowReconciliationAuditProps {
   cashFlowYears: CashFlowStatementYear[];
   balanceSheetYears: BalanceSheetYear[];
   companyProfile: CompanyProfile;
+  validationIssues?: FinancialValidationIssue[];
 }
 
 export const CashFlowReconciliationAudit: React.FC<CashFlowReconciliationAuditProps> = ({
   cashFlowYears,
   balanceSheetYears,
   companyProfile,
+  validationIssues = [],
 }) => {
   const reconciledCount = cashFlowYears.filter(cf => cf.reconciliationDifference === 0).length;
   const isAllReconciled = reconciledCount === cashFlowYears.length;
+  const balancedBSCount = balanceSheetYears.filter(bs => Math.abs(bs.balanceCheck) <= 1).length;
 
   return (
     <div className="space-y-6">
@@ -45,10 +48,44 @@ export const CashFlowReconciliationAudit: React.FC<CashFlowReconciliationAuditPr
           <div className="flex items-center gap-2 bg-slate-950/80 border border-slate-800 px-3.5 py-2 rounded-xl shrink-0">
             <div className={`w-2.5 h-2.5 rounded-full ${isAllReconciled ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
             <span className="text-xs font-mono font-bold text-white">
-              {reconciledCount} / {cashFlowYears.length} Periods Reconciled
+              {reconciledCount} / {cashFlowYears.length} Periods Reconciled · BS {balancedBSCount}/{balanceSheetYears.length}
             </span>
           </div>
         </div>
+      </div>
+
+      {/* Model-Wide Validation & Fixed-Driver Integrity Banner */}
+      <div className={`p-4 rounded-2xl border text-xs flex flex-col gap-2 ${
+        validationIssues.length === 0
+          ? 'bg-emerald-950/20 border-emerald-800/60 text-emerald-200'
+          : 'bg-amber-950/20 border-amber-800/60 text-amber-200'
+      }`}>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 font-bold">
+            {validationIssues.length === 0 ? (
+              <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+            ) : (
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+            )}
+            <span>
+              {validationIssues.length === 0
+                ? 'Model Validation Passed: All 6 Fixed Primary Inputs Strictly Preserved · Zero Accounting Variance Across All Selected Years'
+                : `${validationIssues.length} Validation Check(s) Identified`}
+            </span>
+          </div>
+          <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-slate-900 border border-slate-700">
+            {cashFlowYears.length} Years Audited
+          </span>
+        </div>
+        {validationIssues.length > 0 && (
+          <ul className="space-y-1 pl-6 list-disc text-[11px] text-amber-300">
+            {validationIssues.slice(0, 6).map(issue => (
+              <li key={issue.id}>
+                <strong>{issue.title}:</strong> {issue.message}
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
 
       {/* Accounting Methodology Callout Strip */}

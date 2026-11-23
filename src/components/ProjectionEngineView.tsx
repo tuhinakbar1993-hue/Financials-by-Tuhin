@@ -1,12 +1,19 @@
 import React from 'react';
 import { Sliders, TrendingUp, Calendar, Zap, Shield, RotateCcw } from 'lucide-react';
 import { ProjectionAssumptions } from '../types/financial';
+import { YearSelectorControl } from './YearSelectorControl';
 
 interface ProjectionEngineViewProps {
   assumptions: ProjectionAssumptions;
   onUpdateAssumptions: (updated: ProjectionAssumptions) => void;
   onApplyAndRecalculate: () => void;
   onResetDefaults: () => void;
+  selectedHistoricalYears?: number[];
+  selectedProjectedYears?: number[];
+  onToggleHistoricalYear?: (year: number) => void;
+  onToggleProjectedYear?: (year: number) => void;
+  onSetHistoricalYears?: (years: number[]) => void;
+  onSetProjectedYears?: (years: number[]) => void;
 }
 
 export const ProjectionEngineView: React.FC<ProjectionEngineViewProps> = ({
@@ -14,6 +21,12 @@ export const ProjectionEngineView: React.FC<ProjectionEngineViewProps> = ({
   onUpdateAssumptions,
   onApplyAndRecalculate,
   onResetDefaults,
+  selectedHistoricalYears = [2023, 2024, 2025],
+  selectedProjectedYears,
+  onToggleHistoricalYear,
+  onToggleProjectedYear,
+  onSetHistoricalYears,
+  onSetProjectedYears,
 }) => {
   const handleChange = (field: keyof ProjectionAssumptions, val: number) => {
     onUpdateAssumptions({
@@ -21,6 +34,12 @@ export const ProjectionEngineView: React.FC<ProjectionEngineViewProps> = ({
       [field]: val,
     });
   };
+
+  const sortedHist = [...selectedHistoricalYears].sort((a, b) => a - b);
+  const maxHist = sortedHist[sortedHist.length - 1] || 2025;
+  const projYears = selectedProjectedYears && selectedProjectedYears.length > 0
+    ? [...selectedProjectedYears].sort((a, b) => a - b)
+    : Array.from({ length: assumptions.projectedYearsCount }, (_, i) => maxHist + 1 + i);
 
   return (
     <div className="space-y-6">
@@ -30,14 +49,14 @@ export const ProjectionEngineView: React.FC<ProjectionEngineViewProps> = ({
           <div className="flex items-center gap-2">
             <Sliders className="w-5 h-5 text-amber-400" />
             <h2 className="text-lg font-bold text-white tracking-tight">
-              15-Year Financial Projection & Assumptions Engine
+              Financial Projection, Horizon & Year Selection Engine
             </h2>
             <span className="text-[11px] font-semibold text-amber-300 bg-amber-950/60 border border-amber-800/50 px-2 py-0.5 rounded-md">
               Section 76.8
             </span>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Standard baseline: Previous 3 Historical Years + Next 15 Projected Years. Dynamically models revenue escalation, cost structures, and working capital cycles across all five financial statements.
+            Configure previous ({sortedHist.length}Y) and projected ({projYears.length}Y) financial years individually, plus revenue escalation, cost structures, and working capital cycles across all five financial statements.
           </p>
         </div>
 
@@ -59,6 +78,17 @@ export const ProjectionEngineView: React.FC<ProjectionEngineViewProps> = ({
         </div>
       </div>
 
+      {onToggleHistoricalYear && onToggleProjectedYear && onSetHistoricalYears && onSetProjectedYears && (
+        <YearSelectorControl
+          selectedHistoricalYears={sortedHist}
+          selectedProjectedYears={projYears}
+          onToggleHistoricalYear={onToggleHistoricalYear}
+          onToggleProjectedYear={onToggleProjectedYear}
+          onSetHistoricalYears={onSetHistoricalYears}
+          onSetProjectedYears={onSetProjectedYears}
+        />
+      )}
+
       {/* Assumptions Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
         {/* Card 1: Time Horizon */}
@@ -71,13 +101,13 @@ export const ProjectionEngineView: React.FC<ProjectionEngineViewProps> = ({
             <div className="space-y-1">
               <label className="text-slate-300 font-medium flex justify-between">
                 <span>Select Projected Years Horizon (1 to 20 Years)</span>
-                <span className="font-mono text-emerald-400 font-bold">{assumptions.projectedYearsCount} Years</span>
+                <span className="font-mono text-emerald-400 font-bold">{projYears.length} Years</span>
               </label>
               <input
                 type="range"
                 min={1}
                 max={20}
-                value={assumptions.projectedYearsCount}
+                value={Math.min(20, Math.max(1, projYears.length))}
                 onChange={(e) => handleChange('projectedYearsCount', Number(e.target.value))}
                 className="w-full accent-emerald-500"
               />
@@ -98,7 +128,7 @@ export const ProjectionEngineView: React.FC<ProjectionEngineViewProps> = ({
                   type="button"
                   onClick={() => handleChange('projectedYearsCount', yr)}
                   className={`px-2 py-0.5 rounded text-[11px] font-semibold transition-colors ${
-                    assumptions.projectedYearsCount === yr
+                    projYears.length === yr
                       ? 'bg-emerald-600 text-white'
                       : 'bg-slate-800 text-slate-400 hover:text-slate-200'
                   }`}
@@ -108,18 +138,17 @@ export const ProjectionEngineView: React.FC<ProjectionEngineViewProps> = ({
               ))}
             </div>
 
-            <div className="space-y-1">
-              <label className="text-slate-300 font-medium flex justify-between">
-                <span>Historical Years Stored</span>
-                <span className="font-mono text-slate-200">{assumptions.historicalYearsCount} Years</span>
-              </label>
-              <input
-                type="number"
-                disabled
-                value={assumptions.historicalYearsCount}
-                className="w-full bg-slate-800/60 border border-slate-800 rounded-lg px-3 py-1.5 text-slate-400 font-mono"
-              />
-              <span className="text-[10px] text-slate-500">Default: Previous 3 Years (2023–2025)</span>
+            <div className="space-y-1 bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+              <div className="flex justify-between text-slate-300 font-medium">
+                <span>Selected Previous Years ({sortedHist.length})</span>
+                <span className="font-mono text-emerald-400 font-bold">{sortedHist.join(', ')}</span>
+              </div>
+              <div className="flex justify-between text-slate-300 font-medium pt-1">
+                <span>Selected Projected Years ({projYears.length})</span>
+                <span className="font-mono text-sky-400 font-bold truncate max-w-[170px]" title={projYears.join(', ')}>
+                  {projYears[0]}–{projYears[projYears.length - 1]}
+                </span>
+              </div>
             </div>
           </div>
         </div>
