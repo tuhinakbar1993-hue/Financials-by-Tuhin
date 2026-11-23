@@ -1804,6 +1804,95 @@ export function buildPreviousFormatData(
   return prevResults.sort((a, b) => b.year - a.year);
 }
 
+/**
+ * Splits selected previous financial years into consecutive 2-year comparative pairs.
+ * Example: [2023, 2024, 2025] -> Pair 1: (2023 & 2024) [31.12.2024 | 31.12.2023],
+ *                                 Pair 2: (2024 & 2025) [31.12.2025 | 31.12.2024].
+ * Works dynamically for any number of selected historical years.
+ */
+export function buildPreviousComparativePairs(
+  prevData: import('../types/financial').PreviousFormatYearData[]
+): import('../types/financial').PreviousComparativePair[] {
+  if (prevData.length === 0) return [];
+  const asc = [...prevData].sort((a, b) => a.year - b.year);
+  if (asc.length === 1) {
+    const only = asc[0];
+    return [
+      {
+        id: `${only.year}`,
+        label: `${only.year}`,
+        earlierYear: only.year,
+        laterYear: only.year,
+        data: [only],
+      },
+    ];
+  }
+
+  const pairs: import('../types/financial').PreviousComparativePair[] = [];
+  for (let i = 0; i < asc.length - 1; i++) {
+    const earlier = asc[i];
+    const later = asc[i + 1];
+    pairs.push({
+      id: `${earlier.year}_${later.year}`,
+      label: `${earlier.year} & ${later.year}`,
+      earlierYear: earlier.year,
+      laterYear: later.year,
+      data: [later, earlier], // Descending column order: later year left, earlier year right
+    });
+  }
+  return pairs;
+}
+
+/**
+ * Builds Statutory Notes (1 to 12) strictly scoped to a specific Previous Comparative Pair
+ * (e.g. 2023 & 2024 or 2024 & 2025) while preserving any user-customized note text.
+ */
+export function buildPreviousPairScopedNotes(
+  company: CompanyProfile,
+  pairYearsDesc: number[],
+  allYearsInputs: YearDataInput[],
+  incomeStatements: IncomeStatementYear[],
+  balanceSheets: BalanceSheetYear[],
+  cashFlowStatements: CashFlowStatementYear[],
+  fixedAssetsSchedule: ScheduleOfFixedAssetsYear[],
+  baseNotes?: FinancialNoteItem[],
+  defaultNotesRef?: FinancialNoteItem[]
+): FinancialNoteItem[] {
+  const pairAsc = [...pairYearsDesc].sort((a, b) => a - b);
+  const indices = pairAsc
+    .map(yr => allYearsInputs.findIndex(y => y.year === yr))
+    .filter(idx => idx !== -1);
+
+  if (indices.length === 0) return baseNotes || [];
+
+  const scopedNotes = generateNotesToFinancialStatements(
+    company,
+    indices.map(i => allYearsInputs[i].year),
+    indices.map(i => incomeStatements[i]),
+    indices.map(i => balanceSheets[i]),
+    indices.map(i => cashFlowStatements[i]),
+    indices.map(i => fixedAssetsSchedule[i])
+  );
+
+  // Preserve custom user edits to title/textDescription if user modified baseNotes
+  if (baseNotes && defaultNotesRef && baseNotes !== defaultNotesRef) {
+    return scopedNotes.map(n => {
+      const custom = baseNotes.find(b => b.noteNumber === n.noteNumber);
+      const origDef = defaultNotesRef.find(d => d.noteNumber === n.noteNumber);
+      if (!custom) return n;
+      const titleEdited = origDef && custom.title !== origDef.title;
+      const descEdited = origDef && custom.textDescription !== origDef.textDescription;
+      return {
+        ...n,
+        title: titleEdited ? custom.title : n.title,
+        textDescription: descEdited ? custom.textDescription : n.textDescription,
+      };
+    });
+  }
+
+  return scopedNotes;
+}
+
 // ---------------- PROJECTED FINANCIALS FORMAT BUILDER (Exact Compliance) ---------------- //
 export function buildProjectedFormatData(
   inputs: YearDataInput[],

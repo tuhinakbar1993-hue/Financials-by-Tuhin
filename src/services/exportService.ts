@@ -1206,8 +1206,52 @@ function renderPdfHeader(doc: jsPDF, company: CompanyProfile, title: string) {
 // columns from "Previous Financials.pdf"
 // ============================================================================
 
+export function sanitizeFilePrefix(name: string): string {
+  return (name || 'Financial_Statements')
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+export function buildPreviousPairFilename(
+  company: CompanyProfile,
+  prevData: PreviousFormatYearData[],
+  ext: 'xlsx' | 'docx' | 'pdf'
+): string {
+  const prefix = sanitizeFilePrefix(company.companyName);
+  if (prevData.length === 0) return `${prefix}_Previous_Financials.${ext}`;
+  const years = prevData.map(d => d.year);
+  const minYear = Math.min(...years);
+  const maxYear = Math.max(...years);
+  if (minYear === maxYear) {
+    return `${prefix}_Previous_Financials_${minYear}.${ext}`;
+  }
+  return `${prefix}_Previous_Financials_${minYear}_${maxYear}.${ext}`;
+}
+
+export function buildProjectedFilename(
+  company: CompanyProfile,
+  projData: ProjectedFormatYearData[],
+  ext: 'xlsx' | 'docx' | 'pdf'
+): string {
+  const prefix = sanitizeFilePrefix(company.companyName);
+  if (projData.length === 0) return `${prefix}_Projected_Financials.${ext}`;
+  const years = projData.map(d => d.year);
+  const minYear = Math.min(...years);
+  const maxYear = Math.max(...years);
+  if (minYear === maxYear) {
+    return `${prefix}_Projected_Financials_${minYear}.${ext}`;
+  }
+  return `${prefix}_Projected_Financials_${minYear}_${maxYear}.${ext}`;
+}
+
 function getCurrencyUnitCaption(company: CompanyProfile): string {
   const ccy = company.reportingCurrency === '৳' ? 'BDT' : company.reportingCurrency;
+  if (company.reportingUnit === 'Units') {
+    return `(Figure in ${ccy})`;
+  }
   return `(Figure in ${ccy} · ${company.reportingUnit})`;
 }
 
@@ -1219,36 +1263,17 @@ export function exportPreviousFinancialsExcel(
   company: CompanyProfile,
   prevData: PreviousFormatYearData[],
   notes: FinancialNoteItem[],
-  filename = `${company.companyName.replace(/\s+/g, '_')}_Previous_Financials.xlsx`
+  filename?: string
 ) {
   if (prevData.length === 0) return;
+  const resolvedFilename = filename || buildPreviousPairFilename(company, prevData, 'xlsx');
   const wb = XLSX.utils.book_new();
   const maxYear = prevData[0].year; // prevData sorted descending
   const unitLabel = getCurrencyUnitCaption(company);
   const colHeaders = ['Particulars', ...prevData.map(d => d.dateLabel)];
   const widths = [46, ...prevData.map(() => 18)];
 
-  // 1. STATEMENT OF FINANCIAL POSITION (Row 6 is header -> Data starts Row 7)
-  // Row 7: PROPERTIES & ASSETS
-  // Row 8: Fixed Assets (at cost less depreciation)
-  // Row 9: Current Assets = SUM(10:13)
-  // Row 10: Advances, Deposits & Pre-payments
-  // Row 11: Stock & Stores
-  // Row 12: Bills Receivable
-  // Row 13: Cash & Cash Equivalents
-  // Row 14: Taka = R8 + R9
-  // Row 15: CAPITAL & LIABILITIES
-  // Row 16: Opening Capital
-  // Row 17: Add. Net Profit for the year
-  // Row 18: Subtotal = R16 + R17
-  // Row 19: Less: Drawings
-  // Row 20: Capital after drawings = R18 - R19
-  // Row 21: Current Liabilities = SUM(22:25)
-  // Row 22: For Expenses
-  // Row 23: Accounts Payable
-  // Row 24: Short Term Loan
-  // Row 25: Provision for Taxation
-  // Row 26: Total = R20 + R21
+  // 1. STATEMENT OF FINANCIAL POSITION
   const bsRows: ExcelCellValue[][] = [
     [company.companyName.toUpperCase()],
     ['STATEMENT OF FINANCIAL POSITION'],
@@ -1299,18 +1324,7 @@ export function exportPreviousFinancialsExcel(
   applyColumnWidths(wsBS, widths);
   XLSX.utils.book_append_sheet(wb, wsBS, '1. Financial Position');
 
-  // 2. STATEMENT OF COMPREHENSIVE INCOME (Data starts Row 7)
-  // Row 7: Sales
-  // Row 8: Less- Cost of Goods Sold
-  // Row 9: Gross Profit = R7 - R8
-  // Row 10: Less- Administrative & Selling Expenses = SUM(11:23)
-  // Rows 11..23: 13 expense items
-  // Row 24: Net Operating Profit = R9 - R10
-  // Row 25: Add: Other Income
-  // Row 26: Subtotal = R24 + R25
-  // Row 27: Less: Financial Exp.
-  // Row 28: Less- Income Tax Provision
-  // Row 29: Net Profit After Income Tax = R26 - R27 - R28
+  // 2. STATEMENT OF COMPREHENSIVE INCOME
   const isRows: ExcelCellValue[][] = [
     [company.companyName.toUpperCase()],
     ['Statement of Comprehensive Income'],
@@ -1361,25 +1375,7 @@ export function exportPreviousFinancialsExcel(
   applyColumnWidths(wsIS, widths);
   XLSX.utils.book_append_sheet(wb, wsIS, '2. Comprehensive Income');
 
-  // 3. STATEMENT OF CASH FLOWS (Data starts Row 7)
-  // Row 7: a) CASH FLOWS FROM OPERATING ACTIVITIES:
-  // Row 8: Net Income
-  // Row 9: Add: Depreciation of Tangible Fixed Assets
-  // Row 10: Add: (Increase) or decrease in Current Assets
-  // Row 11: Add: (Increase) or decrease in Construction Working Progress
-  // Row 12: Add: Increase or (decrease) in Current Liabilities
-  // Row 13: Net Cash from operating activities = SUM(8:12)
-  // Row 14: b) CASH FLOWS FROM INVESTING ACTIVITIES:
-  // Row 15: Acquisition of Tangible Fixed Assets
-  // Row 16: Disposal of Intangible Assets
-  // Row 17: Net Cash used in investing Activities = SUM(15:16)
-  // Row 18: c) CASH FLOWS FROM FINANCING ACTIVITIES:
-  // Row 19: Drawings
-  // Row 20: Opening Balance
-  // Row 21: Net Cash used in Financing Activities = SUM(19:20)
-  // Row 22: d) Net Increase decrease in cash & cash equivalents (A+B+C) = R13+R17+R21
-  // Row 23: e) Cash & Cash Equivalents at beginning of period
-  // Row 24: f) Cash & Cash Equivalents at end of period (D+E) = R22+R23
+  // 3. STATEMENT OF CASH FLOWS
   const cfRows: ExcelCellValue[][] = [
     [company.companyName.toUpperCase()],
     ['STATEMENT OF CASH FLOWS'],
@@ -1426,15 +1422,6 @@ export function exportPreviousFinancialsExcel(
   XLSX.utils.book_append_sheet(wb, wsCF, '3. Cash Flows');
 
   // 4. STATEMENT OF CHANGES IN EQUITY
-  // Row 7: Opening Share Capital
-  // Row 8: Share Capital Issued
-  // Row 9: Closing Share Capital = R7+R8
-  // Row 10: Opening Retained Earnings
-  // Row 11: Net Profit for the Year
-  // Row 12: Dividends Paid (negative)
-  // Row 13: Closing Retained Earnings = R10+R11+R12
-  // Row 14: Closing Reserves
-  // Row 15: TOTAL CLOSING EQUITY = R9+R13+R14
   const eqRows: ExcelCellValue[][] = [
     [company.companyName.toUpperCase()],
     ['STATEMENT OF CHANGES IN EQUITY'],
@@ -1474,7 +1461,7 @@ export function exportPreviousFinancialsExcel(
     [],
   ];
   faAsc.forEach(d => {
-    const startIdx = faRows.length + 1; // 1-indexed header row
+    const startIdx = faRows.length + 1;
     faRows.push([
       'Particulars',
       `Opening at 01.01.${d.year}`,
@@ -1524,16 +1511,17 @@ export function exportPreviousFinancialsExcel(
   applyColumnWidths(wsFA, [34, 20, 22, 20, 12, 26, 20]);
   XLSX.utils.book_append_sheet(wb, wsFA, '5. Fixed Assets & Notes');
 
-  XLSX.writeFile(wb, filename);
+  XLSX.writeFile(wb, resolvedFilename);
 }
 
 export async function exportPreviousFinancialsWord(
   company: CompanyProfile,
   prevData: PreviousFormatYearData[],
   notes: FinancialNoteItem[],
-  filename = `${company.companyName.replace(/\s+/g, '_')}_Previous_Financials.docx`
+  filename?: string
 ) {
   if (prevData.length === 0) return;
+  const resolvedFilename = filename || buildPreviousPairFilename(company, prevData, 'docx');
   const maxYear = prevData[0].year;
   const unitLabel = getCurrencyUnitCaption(company);
   const colHeaders = ['Particulars', ...prevData.map(d => d.dateLabel)];
@@ -1672,7 +1660,14 @@ export async function exportPreviousFinancialsWord(
           ...notes.flatMap(n => [
             new Paragraph({ children: [new TextRun({ text: `Note ${n.noteNumber}: ${n.title}`, bold: true, size: 18 })] }),
             new Paragraph({ children: [new TextRun({ text: n.textDescription, size: 17 })] }),
-            ...(n.tableData ? [createDocxTable(n.tableData.headers, n.tableData.rows.map(r => [r.label, ...r.values]))] : []),
+            ...(n.tableData
+              ? [
+                  createDocxTable(n.tableData.headers, [
+                    ...n.tableData.rows.map(r => [r.label, ...r.values]),
+                    ...(n.tableData.totalRow ? [[n.tableData.totalRow.label, ...n.tableData.totalRow.values]] : []),
+                  ]),
+                ]
+              : []),
             new Paragraph({ text: '' }),
           ]),
         ],
@@ -1681,24 +1676,26 @@ export async function exportPreviousFinancialsWord(
   });
 
   const blob = await Packer.toBlob(doc);
-  downloadBlob(blob, filename);
+  downloadBlob(blob, resolvedFilename);
 }
 
 export function exportPreviousFinancialsPdf(
   company: CompanyProfile,
   prevData: PreviousFormatYearData[],
   notes: FinancialNoteItem[],
-  filename = `${company.companyName.replace(/\s+/g, '_')}_Previous_Financials.pdf`
+  filename?: string
 ) {
   if (prevData.length === 0) return;
+  const resolvedFilename = filename || buildPreviousPairFilename(company, prevData, 'pdf');
   const orientation = prevData.length > 4 ? 'landscape' : 'portrait';
   const doc = new jsPDF({ orientation, unit: 'mm', format: 'a4' });
   const pageW = orientation === 'landscape' ? 297 : 210;
+  const pageH = orientation === 'landscape' ? 210 : 297;
   const maxYear = prevData[0].year;
   const unitLabel = getCurrencyUnitCaption(company);
   const colHeaders = ['Particulars', ...prevData.map(d => d.dateLabel)];
 
-  const drawClassicHeader = (stmtTitle: string, subtitle: string) => {
+  const drawClassicHeader = (stmtTitle: string, subtitle: string, showUnitCaption = true) => {
     doc.setTextColor(15, 23, 42);
     doc.setFont('times', 'bold');
     doc.setFontSize(13);
@@ -1707,23 +1704,25 @@ export function exportPreviousFinancialsPdf(
     doc.text(stmtTitle, pageW / 2, 23, { align: 'center' });
     doc.setFontSize(9.5);
     doc.text(subtitle, pageW / 2, 29, { align: 'center' });
-    doc.setFont('times', 'normal');
-    doc.setFontSize(8.5);
-    doc.text(unitLabel, pageW - 14, 34, { align: 'right' });
+    if (showUnitCaption) {
+      doc.setFont('times', 'normal');
+      doc.setFontSize(8.5);
+      doc.text(unitLabel, pageW - 14, 34.5, { align: 'right' });
+    }
   };
 
   const renderTablePage = (stmtTitle: string, subtitle: string, rows: (string | number)[][], isFirst = false) => {
     if (!isFirst) doc.addPage();
-    drawClassicHeader(stmtTitle, subtitle);
+    drawClassicHeader(stmtTitle, subtitle, true);
     autoTable(doc, {
       head: [colHeaders],
       body: rows.map(r => r.map((c, idx) => idx === 0 ? String(c) : (typeof c === 'number' ? fmtExactNum(c) : String(c)))),
       startY: 36,
       theme: 'grid',
-      styles: { font: 'times', fontSize: 8.5, cellPadding: 1.8, textColor: [15, 23, 42], lineColor: [71, 85, 105], lineWidth: 0.2 },
-      headStyles: { fillColor: [248, 250, 252], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'center' },
+      styles: { font: 'times', fontSize: 8.8, cellPadding: 1.8, textColor: [15, 23, 42], lineColor: [51, 65, 85], lineWidth: 0.2 },
+      headStyles: { fillColor: [255, 255, 255], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'center', lineColor: [51, 65, 85], lineWidth: 0.25 },
       columnStyles: {
-        0: { halign: 'left', cellWidth: orientation === 'landscape' ? 110 : 85 },
+        0: { halign: 'left', cellWidth: orientation === 'landscape' ? 115 : 92 },
         ...Object.fromEntries(prevData.map((_, i) => [i + 1, { halign: 'right' }])),
       },
       didParseCell: (data) => {
@@ -1738,6 +1737,9 @@ export function exportPreviousFinancialsPdf(
           ];
           if (boldLabels.includes(lbl) || lbl.startsWith('a)') || lbl.startsWith('b)') || lbl.startsWith('c)')) {
             data.cell.styles.fontStyle = 'bold';
+          }
+          if (data.column.index === 0 && (lbl === 'Taka' || lbl === 'Total')) {
+            data.cell.styles.halign = 'right';
           }
         }
       },
@@ -1833,9 +1835,17 @@ export function exportPreviousFinancialsPdf(
 
   // Page 5: 1.00 FIXED ASSETS SCHEDULE & NOTES
   doc.addPage();
-  drawClassicHeader('1.00 FIXED ASSETS SCHEDULE', `For the Year ended 31 December ${maxYear}`);
+  doc.setTextColor(15, 23, 42);
+  doc.setFont('times', 'bold');
+  doc.setFontSize(13);
+  doc.text(company.companyName.toUpperCase(), pageW / 2, 16, { align: 'center' });
+  doc.setFontSize(9.5);
+  doc.text(`For the Year ended 31 December ${maxYear}`, pageW / 2, 23, { align: 'center' });
+  doc.setFontSize(10);
+  doc.text('1.00 FIXED ASSETS SCHEDULE', 14, 31);
+
   const faAsc = [...prevData].sort((a, b) => a.year - b.year);
-  let yCursor = 38;
+  let yCursor = 34;
   faAsc.forEach((d) => {
     autoTable(doc, {
       head: [[
@@ -1848,28 +1858,43 @@ export function exportPreviousFinancialsPdf(
         `W.D.V. at 31.12.${d.year}`,
       ]],
       body: [
-        ['Fixed Assets', fmtExactNum(d.faOpening), fmtExactNum(d.faAddition - d.faDisposal), fmtExactNum(d.faTotal), `${d.faRatePct}%`, fmtExactNum(d.faDepreciationCharged), fmtExactNum(d.faWDV)],
+        ['Fixed Assets', fmtExactNum(d.faOpening), fmtExactNum(d.faAddition - d.faDisposal), fmtExactNum(d.faTotal), `${d.faRatePct}`, fmtExactNum(d.faDepreciationCharged), fmtExactNum(d.faWDV)],
         ['Taka', fmtExactNum(d.faOpening), fmtExactNum(d.faAddition - d.faDisposal), fmtExactNum(d.faTotal), '', fmtExactNum(d.faDepreciationCharged), fmtExactNum(d.faWDV)],
       ],
       startY: yCursor,
       theme: 'grid',
-      styles: { font: 'times', fontSize: 8, cellPadding: 1.6, textColor: [15, 23, 42], lineColor: [71, 85, 105], lineWidth: 0.2 },
-      headStyles: { fillColor: [248, 250, 252], textColor: [15, 23, 42], fontStyle: 'bold' },
+      styles: { font: 'times', fontSize: 8.2, cellPadding: 1.6, textColor: [15, 23, 42], lineColor: [51, 65, 85], lineWidth: 0.2 },
+      headStyles: { fillColor: [255, 255, 255], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'center', lineColor: [51, 65, 85], lineWidth: 0.25 },
+      columnStyles: {
+        0: { halign: 'left' },
+        1: { halign: 'right' },
+        2: { halign: 'right' },
+        3: { halign: 'right' },
+        4: { halign: 'center' },
+        5: { halign: 'right' },
+        6: { halign: 'right' },
+      },
+      didParseCell: (data) => {
+        if (data.section === 'body' && data.row.index === 1) {
+          data.cell.styles.fontStyle = 'bold';
+        }
+      },
       margin: { left: 14, right: 14 },
     });
     yCursor = ((doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? yCursor + 22) + 6;
   });
 
-  if (yCursor > 220) {
+  if (yCursor > pageH - 40) {
     doc.addPage();
-    yCursor = 20;
+    yCursor = 18;
   }
   doc.setFont('times', 'bold');
   doc.setFontSize(10);
-  doc.text('NOTES TO THE FINANCIAL STATEMENTS:', 14, yCursor);
-  yCursor += 6;
+  doc.text('NOTES TO THE FINANCIAL STATEMENTS:', 14, yCursor + 4);
+  yCursor += 10;
+
   notes.forEach(note => {
-    if (yCursor > (orientation === 'landscape' ? 180 : 265)) {
+    if (yCursor > pageH - 35) {
       doc.addPage();
       yCursor = 18;
     }
@@ -1881,10 +1906,79 @@ export function exportPreviousFinancialsPdf(
     doc.setFontSize(8.5);
     const lines = doc.splitTextToSize(note.textDescription, pageW - 28);
     doc.text(lines, 14, yCursor);
-    yCursor += lines.length * 4 + 3;
+    yCursor += lines.length * 3.8 + 2;
+
+    if (note.tableData) {
+      if (yCursor > pageH - 40) {
+        doc.addPage();
+        yCursor = 18;
+      }
+      const nCols = note.tableData.headers.length;
+      const bodyRows = [
+        ...note.tableData.rows.map(r => [r.label, ...r.values.map(v => String(v))]),
+        ...(note.tableData.totalRow ? [[note.tableData.totalRow.label, ...note.tableData.totalRow.values.map(v => String(v))]] : []),
+      ];
+      autoTable(doc, {
+        head: [note.tableData.headers],
+        body: bodyRows,
+        startY: yCursor,
+        theme: 'grid',
+        styles: { font: 'times', fontSize: 8, cellPadding: 1.4, textColor: [15, 23, 42], lineColor: [148, 163, 184], lineWidth: 0.15 },
+        headStyles: { fillColor: [248, 250, 252], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'left' },
+        columnStyles: Object.fromEntries(
+          Array.from({ length: nCols }, (_, idx) => [idx, { halign: idx === 0 ? 'left' : 'right' }])
+        ),
+        didParseCell: (data) => {
+          if (data.section === 'body' && note.tableData?.totalRow && data.row.index === bodyRows.length - 1) {
+            data.cell.styles.fontStyle = 'bold';
+          }
+        },
+        margin: { left: 14, right: 14 },
+      });
+      yCursor = ((doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? yCursor + 18) + 5;
+    } else {
+      yCursor += 2;
+    }
   });
 
-  doc.save(filename);
+  doc.save(resolvedFilename);
+}
+
+// Batch exporters for all overlapping Previous Comparative Pairs (e.g. 2023 & 2024 + 2024 & 2025)
+export function exportAllPreviousComparativePairsExcel(
+  company: CompanyProfile,
+  pairs: { earlierYear: number; laterYear: number; data: PreviousFormatYearData[] }[],
+  getScopedNotes: (pairData: PreviousFormatYearData[]) => FinancialNoteItem[]
+) {
+  pairs.forEach((pair, idx) => {
+    setTimeout(() => {
+      exportPreviousFinancialsExcel(company, pair.data, getScopedNotes(pair.data));
+    }, idx * 250);
+  });
+}
+
+export function exportAllPreviousComparativePairsWord(
+  company: CompanyProfile,
+  pairs: { earlierYear: number; laterYear: number; data: PreviousFormatYearData[] }[],
+  getScopedNotes: (pairData: PreviousFormatYearData[]) => FinancialNoteItem[]
+) {
+  pairs.forEach((pair, idx) => {
+    setTimeout(() => {
+      void exportPreviousFinancialsWord(company, pair.data, getScopedNotes(pair.data));
+    }, idx * 250);
+  });
+}
+
+export function exportAllPreviousComparativePairsPdf(
+  company: CompanyProfile,
+  pairs: { earlierYear: number; laterYear: number; data: PreviousFormatYearData[] }[],
+  getScopedNotes: (pairData: PreviousFormatYearData[]) => FinancialNoteItem[]
+) {
+  pairs.forEach((pair, idx) => {
+    setTimeout(() => {
+      exportPreviousFinancialsPdf(company, pair.data, getScopedNotes(pair.data));
+    }, idx * 250);
+  });
 }
 
 // ============================================================================
@@ -1900,43 +1994,17 @@ function getProjectedAmountCaption(company: CompanyProfile): string {
 export function exportProjectedFinancialsExcel(
   company: CompanyProfile,
   projData: ProjectedFormatYearData[],
-  filename = `${company.companyName.replace(/\s+/g, '_')}_Projected_Financials.xlsx`
+  filename?: string
 ) {
   if (projData.length === 0) return;
+  const resolvedFilename = filename || buildProjectedFilename(company, projData, 'xlsx');
   const wb = XLSX.utils.book_new();
   const maxYear = projData[0].year; // projData sorted descending
   const amtLabel = getProjectedAmountCaption(company);
   const yearStartColIdx = 2; // Col A: Particulars, Col B: Notes, Col C+: years
   const widths = [42, 14, ...projData.map(() => 18)];
 
-  // 1. Statement of Financial Position (Rows 6..7 are two-row header -> Data starts Row 8)
-  // R8: Assets
-  // R9: Non Current Assets
-  // R10: Property Plant & Equiptments | Schedule-A
-  // R11: (Non Current Assets Subtotal) = R10
-  // R12: Current Assets
-  // R13: Inventories | 3.00
-  // R14: Trade & Other Receivables | 4.00
-  // R15: Advance, Deposit & Prepayments | 5.00
-  // R16: Cash & Cash Equivalents | 6.00
-  // R17: (Current Assets Subtotal) = SUM(13:16)
-  // R18: Total Assets = R11 + R17
-  // R19: Equity & Liabilities
-  // R20: Capital
-  // R21: Additional Capital
-  // R22: Profit during the year
-  // R23: (Equity Subtotal) = SUM(20:22)
-  // R24: Drawings
-  // R25: (Closing Capital) = R23 - R24
-  // R26: Non-Current Liabilities
-  // R27: Long Term Loan | 7.00
-  // R28: Current Liabilities
-  // R29: Trade & Other Payables | 8.00
-  // R30: Provisions For Tax | 9.00
-  // R31: Short Term Loan | 10.00
-  // R32: Liabilities for exp.
-  // R33: (Current Liabilities Subtotal) = SUM(29:32)
-  // R34: Total Equity & Liabilities = R25 + R27 + R33
+  // 1. Statement of Financial Position
   const bsRows: ExcelCellValue[][] = [
     [company.companyName],
     ['Statement of Financial Position'],
@@ -2000,19 +2068,7 @@ export function exportProjectedFinancialsExcel(
   applyColumnWidths(wsBS, widths);
   XLSX.utils.book_append_sheet(wb, wsBS, '1. Financial Position');
 
-  // 2. Statement of Profit or Loss & Other Comprehensive Income (Data starts Row 8)
-  // R8: Sales
-  // R9: Less: Cost of Goods Sold | 11.00
-  // R10: Gross Profit = R8 - R9
-  // R11: Add; Others Income
-  // R12: Subtotal = R10 + R11
-  // R13: Less: Operating Expenses:
-  // R14: Administrative & Selling Expenses | 12.00
-  // R15: Total Operating Profit/(Loss) = R12 - R14
-  // R16: Less: Financial Expenses | 13.00
-  // R17: Net Profit/(Loss) Before Income Tax = R15 - R16
-  // R18: Less: Provision For Income Tax
-  // R19: Net Profit/(Loss) After Income Tax = R17 - R18
+  // 2. Statement of Profit or Loss & Other Comprehensive Income
   const plRows: ExcelCellValue[][] = [
     [company.companyName],
     ['Statement of Profit or Loss & Other Comprehensive Income'],
@@ -2055,18 +2111,7 @@ export function exportProjectedFinancialsExcel(
   applyColumnWidths(wsPL, widths);
   XLSX.utils.book_append_sheet(wb, wsPL, '2. Profit or Loss');
 
-  // 3. Statement Of Cash Flows (Data starts Row 7, Col A = Particulars, Col B+ = years)
-  // R7: Net Income ... R16: Depreciation
-  // R17: Net Cash Used by Operating Activities = SUM(7:16)
-  // R18: 2. CASH FLOW FROM INVESTING ACTIVITIES:
-  // R19: Inflows:, R20: Sale PPE, R21: Capital, R22: Outflows:, R23..R25: Prelim, Purchase PPE, Invest
-  // R26: Net Cash Used by Investing Activities = R20+R21+R23+R24+R25
-  // R27: 3. CASH FLOW FROM FINANCIAL ACTIVITIES:
-  // R28: Inflows:, R29..R31: Loan Received, Add Capital, Debt Issuance, R32: Outflows:, R33..R36: Div, Drawings, Redeem Debt, Bonds
-  // R37: Net Cash Provided by Financial Activities = SUM(29:31)+SUM(33:36)
-  // R38: Net Cash Increase = R17+R26+R37
-  // R39: Opening Cash & Bank Balance
-  // R40: Closing Cash & Bank Balance = R38+R39
+  // 3. Statement Of Cash Flows
   const cfRows: ExcelCellValue[][] = [
     [company.companyName],
     [company.registeredAddress],
@@ -2128,7 +2173,7 @@ export function exportProjectedFinancialsExcel(
   applyColumnWidths(wsCF, [50, ...projData.map(() => 18)]);
   XLSX.utils.book_append_sheet(wb, wsCF, '3. Cash Flows');
 
-  // 4. Notes to the Financial Statements (Notes 1, 2.1-2.5, 3.00-13.00)
+  // 4. Notes to the Financial Statements (Notes 1, 2.1-2.6, 3.00-13.00)
   const notesRows: ExcelCellValue[][] = [
     [company.companyName],
     [company.registeredAddress],
@@ -2199,7 +2244,7 @@ export function exportProjectedFinancialsExcel(
   applyColumnWidths(wsNotes, [12, 42, ...projData.map(() => 18)]);
   XLSX.utils.book_append_sheet(wb, wsNotes, '4. Notes to Financials');
 
-  // 5. Schedule of Property Plant & Equipments (Schedule-A, ascending year by year)
+  // 5. Schedule of Property Plant & Equipments (Schedule-A)
   const projAsc = [...projData].sort((a, b) => a.year - b.year);
   const schedRows: ExcelCellValue[][] = [
     [company.companyName],
@@ -2250,19 +2295,20 @@ export function exportProjectedFinancialsExcel(
   applyColumnWidths(wsSched, [8, 28, 18, 20, 20, 20, 14, 26, 20]);
   XLSX.utils.book_append_sheet(wb, wsSched, '5. Schedule-A PPE');
 
-  XLSX.writeFile(wb, filename);
+  XLSX.writeFile(wb, resolvedFilename);
 }
 
 export async function exportProjectedFinancialsWord(
   company: CompanyProfile,
   projData: ProjectedFormatYearData[],
-  filename = `${company.companyName.replace(/\s+/g, '_')}_Projected_Financials.docx`
+  filename?: string
 ) {
   if (projData.length === 0) return;
+  const resolvedFilename = filename || buildProjectedFilename(company, projData, 'docx');
   const maxYear = projData[0].year;
   const amtLabel = getProjectedAmountCaption(company);
   const bsHeaders = ['Particulars', 'Notes', ...projData.map(d => `${amtLabel}\n${d.year}`)];
-  const cfHeaders = ['Particulars', ...projData.map(d => String(d.year))];
+  const cfHeaders = ['1. CASH FLOW FROM OPERATING ACTIVITIES:', ...projData.map(d => String(d.year))];
   const projAsc = [...projData].sort((a, b) => a.year - b.year);
 
   const bsRows: (string | number)[][] = [
@@ -2311,7 +2357,6 @@ export async function exportProjectedFinancialsWord(
   ];
 
   const cfRows: (string | number)[][] = [
-    ['1. CASH FLOW FROM OPERATING ACTIVITIES:', ...projData.map(() => '')],
     ['Net Income', ...projData.map(d => d.cfNetIncome)],
     ['(Increase)/Decrease In Inventory', ...projData.map(d => d.cfChangeInventory)],
     ['(Increase)/Decrease In Trade & Other Receivables', ...projData.map(d => d.cfChangeReceivables)],
@@ -2346,17 +2391,47 @@ export async function exportProjectedFinancialsWord(
 
   const quantNotesRows: (string | number)[][] = [
     ['3.00', 'Inventories', ...projData.map(d => d.inventories)],
-    ['4.00', 'Trade & Other Receivables — Closing', ...projData.map(d => d.tradeAndOtherReceivables)],
-    ['5.00', 'Advance, Deposit & Prepayments — Closing', ...projData.map(d => d.advanceDepositPrepayments)],
-    ['6.00', 'Cash & Equivalent (Cash In Hand & Bank)', ...projData.map(d => d.cashAndCashEquivalents)],
+    ['4.00', 'Trade & Other Receivables', ...projData.map(() => '')],
+    ['', 'As Per Last Year', ...projData.map(d => d.note4ReceivablesOpening)],
+    ['', 'Add: Credit Sales During the Year', ...projData.map(d => d.note4ReceivablesAdded)],
+    ['', 'Subtotal', ...projData.map(d => d.note4ReceivablesOpening + d.note4ReceivablesAdded)],
+    ['', 'Less: Received During the Year', ...projData.map(d => d.note4ReceivablesReceived)],
+    ['', 'Closing Trade & Other Receivables', ...projData.map(d => d.tradeAndOtherReceivables)],
+    ['5.00', 'Advance, Deposit & Prepayments', ...projData.map(() => '')],
+    ['', 'As Per Last Year', ...projData.map(d => d.note5AdvanceOpening)],
+    ['', 'Add: During the Year', ...projData.map(d => d.note5AdvanceAdded)],
+    ['', 'Subtotal', ...projData.map(d => d.note5AdvanceOpening + d.note5AdvanceAdded)],
+    ['', 'Less: Adjustment', ...projData.map(d => d.note5AdvanceAdjusted)],
+    ['', 'Closing Advance, Deposit & Prepayments', ...projData.map(d => d.advanceDepositPrepayments)],
+    ['6.00', 'Cash & Equivalent', ...projData.map(() => '')],
+    ['', 'Cash In Hand & Bank', ...projData.map(d => d.cashAndCashEquivalents)],
     ['7.00', 'Long Term Loan', ...projData.map(d => d.longTermLoan)],
-    ['8.00', 'Trade & Other Payables — Closing', ...projData.map(d => d.tradeAndOtherPayables)],
-    ['9.00', 'Provisions For Tax — Closing', ...projData.map(d => d.provisionsForTax)],
-    ['10.00', 'Short Term Loan (Bank Loan)', ...projData.map(d => d.shortTermLoan)],
-    ['11.00', 'Cost of Goods Sold — Opening Stock', ...projData.map(d => d.note11OpeningStock)],
+    ['8.00', 'Trade & Other Payables', ...projData.map(() => '')],
+    ['', 'As Per Last Year', ...projData.map(d => d.note8PayablesOpening)],
+    ['', 'Add: During the Year', ...projData.map(d => d.note8PayablesAdded)],
+    ['', 'Subtotal', ...projData.map(d => d.note8PayablesOpening + d.note8PayablesAdded)],
+    ['', 'Less: Payment During the Year', ...projData.map(d => d.note8PayablesPaid)],
+    ['', 'Closing Trade & Other Payables', ...projData.map(d => d.tradeAndOtherPayables)],
+    ['9.00', 'Provisions For Tax', ...projData.map(() => '')],
+    ['', 'As Per Last Year', ...projData.map(d => d.note9TaxOpening)],
+    ['', 'Add: During the Year', ...projData.map(d => d.note9TaxAdded)],
+    ['', 'Subtotal', ...projData.map(d => d.note9TaxOpening + d.note9TaxAdded)],
+    ['', 'Less: Adjustment', ...projData.map(d => d.note9TaxAdjusted)],
+    ['', 'Closing Provisions For Tax', ...projData.map(d => d.provisionsForTax)],
+    ['10.00', 'Short Term Loan', ...projData.map(() => '')],
+    ['', 'Bank Loan', ...projData.map(d => d.shortTermLoan)],
+    ['11.00', 'Cost of Goods Sold', ...projData.map(() => '')],
+    ['', 'Opening Stock', ...projData.map(d => d.note11OpeningStock)],
     ['', 'Add: Purchase', ...projData.map(d => d.note11Purchase)],
+    ['', 'Subtotal', ...projData.map(d => d.note11OpeningStock + d.note11Purchase)],
     ['', 'Less: Closing Stock', ...projData.map(d => d.note11ClosingStock)],
-    ['', 'Direct Expenses (Labour, Electricity, Carriage, Other)', ...projData.map(d => d.note11DirectExpensesTotal)],
+    ['', 'Material Consumed', ...projData.map(d => d.note11OpeningStock + d.note11Purchase - d.note11ClosingStock)],
+    ['', 'Add: Direct Expenses', ...projData.map(() => '')],
+    ['', 'Labour & Wages', ...projData.map(d => d.note11LabourWages)],
+    ['', 'Electricity Bill', ...projData.map(d => d.note11ElectricityBill)],
+    ['', 'Carriage Inward', ...projData.map(d => d.note11CarriageInward)],
+    ['', 'Other Direct Expenses', ...projData.map(d => d.note11OtherDirectExpenses)],
+    ['', 'Total Direct Expenses', ...projData.map(d => d.note11DirectExpensesTotal)],
     ['', 'Total Cost of Goods Sold', ...projData.map(d => d.costOfGoodsSold)],
     ['12.00', 'Administrative & Selling Expenses', ...projData.map(d => d.adminAndSellingExpenses)],
     ['13.00', 'Financial Expenses (Bank Charges & Interest)', ...projData.map(d => d.financialExpenses)],
@@ -2399,8 +2474,15 @@ export async function exportProjectedFinancialsWord(
           new Paragraph({ children: [new TextRun({ text: 'Notes to the Financial Statements', bold: true, size: 22 })], alignment: AlignmentType.CENTER }),
           new Paragraph({ children: [new TextRun({ text: `For the year ended 31st December, ${maxYear}(Projected)`, size: 18 })], alignment: AlignmentType.CENTER }),
           new Paragraph({ text: '' }),
-          new Paragraph({ children: [new TextRun({ text: `1 Reporting Entity: ${company.companyName} (${company.registeredAddress})`, bold: true, size: 17 })] }),
-          new Paragraph({ children: [new TextRun({ text: `2 SIGNIFICANT ACCOUNTING POLICIES: Prepared under ${company.accountingFramework} in ${company.reportingCurrency} (${company.reportingUnit}).`, size: 16 })] }),
+          new Paragraph({ children: [new TextRun({ text: '1  Reporting Entity:', bold: true, size: 18 })] }),
+          new Paragraph({ children: [new TextRun({ text: `${company.companyName} is a ${company.entityType.replace(/_/g, ' ')} entity and its office is situated at ${company.registeredAddress}.`, size: 16 })] }),
+          new Paragraph({ children: [new TextRun({ text: '2  SIGNIFICANT ACCOUNTING POLICIES:', bold: true, size: 18 })] }),
+          new Paragraph({ children: [new TextRun({ text: `2.1 Basis of Accounting: Prepared on a going concern basis using accrual method of accounting in accordance with ${company.accountingFramework} and applicable statutory provisions.`, size: 16 })] }),
+          new Paragraph({ children: [new TextRun({ text: '2.2 Accounting Policies: Selected and applied consistently for significant transactions and events to all periods presented in these financial statements.', size: 16 })] }),
+          new Paragraph({ children: [new TextRun({ text: '2.3 Property, Plant and Equipment: Stated at cost less accumulated depreciation over estimated useful lives consistently.', size: 16 })] }),
+          new Paragraph({ children: [new TextRun({ text: `2.4 Reporting Period: Financial statements cover the annual reporting period ending ${company.financialYearEnd}.`, size: 16 })] }),
+          new Paragraph({ children: [new TextRun({ text: `2.5 Reporting currency and level of precision: Figures represent ${company.reportingCurrency} (${company.reportingUnit}) rounded cleanly.`, size: 16 })] }),
+          new Paragraph({ children: [new TextRun({ text: '2.6 Comparative Information: Disclosed for all selected years and narratives relevant for understanding the financial statements.', size: 16 })] }),
           new Paragraph({ text: '' }),
           createDocxTable(['Note No.', 'Particulars', ...projData.map(d => `${amtLabel}\n${d.year}`)], quantNotesRows, 2),
 
@@ -2412,7 +2494,7 @@ export async function exportProjectedFinancialsWord(
           new Paragraph({ text: '' }),
           ...projAsc.flatMap(d => [
             createDocxTable(
-              ['SL No.', 'Particulars', 'Opening Balance', 'Addition', 'Disposals', `Balance as on 31.12.${d.year}`, 'Rate (%)', 'Depreciation', `W.D.V as on 31.12.${d.year}`],
+              ['SL No.', 'Particulars', 'Opening Balance', 'Addition During the Year', 'Disposals During the Year', `Balance as on 31.12.${d.year}`, 'Rate (%)', 'Depreciation Charged During the Year', `W.D.V as on 31.12.${d.year}`],
               [
                 [1, 'Property Plant & Equipment', d.schedOpeningBalance, d.schedAddition, d.schedDisposals, d.schedBalanceClosing, `${d.schedRatePct}%`, d.schedDepreciation, d.schedWDV],
                 ['', 'Total', d.schedOpeningBalance, d.schedAddition, d.schedDisposals, d.schedBalanceClosing, '', d.schedDepreciation, d.schedWDV],
@@ -2427,49 +2509,71 @@ export async function exportProjectedFinancialsWord(
   });
 
   const blob = await Packer.toBlob(doc);
-  downloadBlob(blob, filename);
+  downloadBlob(blob, resolvedFilename);
 }
 
 export function exportProjectedFinancialsPdf(
   company: CompanyProfile,
   projData: ProjectedFormatYearData[],
-  filename = `${company.companyName.replace(/\s+/g, '_')}_Projected_Financials.pdf`
+  filename?: string
 ) {
   if (projData.length === 0) return;
+  const resolvedFilename = filename || buildProjectedFilename(company, projData, 'pdf');
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
   const maxYear = projData[0].year;
   const amtLabel = getProjectedAmountCaption(company);
+  const shortAmtLabel = projData.length >= 10
+    ? (company.reportingCurrency === '৳' ? 'In Taka' : `In ${company.reportingCurrency}`)
+    : amtLabel;
   const projAsc = [...projData].sort((a, b) => a.year - b.year);
+
+  const nCols = projData.length;
+  const usableW = 277; // 297mm - 20mm margins
+  const partW = nCols > 15 ? 46 : nCols >= 12 ? 50 : nCols >= 8 ? 56 : 66;
+  const notesW = nCols > 15 ? 13 : nCols >= 12 ? 15 : 18;
+  const yearW = Math.max(11, (usableW - partW - notesW) / nCols);
+  const bodyFontSize = nCols > 15 ? 5.1 : nCols >= 12 ? 5.6 : nCols >= 8 ? 6.6 : 7.6;
+  const headFontSize = nCols > 15 ? 5.0 : nCols >= 12 ? 5.5 : nCols >= 8 ? 6.5 : 7.5;
+  const cellPad = nCols > 15 ? 0.6 : nCols >= 12 ? 0.8 : 1.1;
+
+  const cfPartW = nCols > 15 ? 60 : nCols >= 12 ? 66 : 82;
+  const cfYearW = Math.max(11, (usableW - cfPartW) / nCols);
 
   const drawProjHeader = (title: string, subtitle: string, includeAddress = false) => {
     doc.setTextColor(15, 23, 42);
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(12);
-    doc.text(company.companyName, 148.5, 13, { align: 'center' });
-    let y = 18;
+    doc.setFontSize(11.5);
+    doc.text(company.companyName, 148.5, 11.5, { align: 'center' });
+    let y = 16;
     if (includeAddress) {
       doc.setFont('helvetica', 'normal');
-      doc.setFontSize(8.5);
+      doc.setFontSize(8);
       doc.text(company.registeredAddress, 148.5, y, { align: 'center' });
-      y += 5;
+      y += 4.5;
     }
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(11);
+    doc.setFontSize(10.5);
     doc.text(title, 148.5, y, { align: 'center' });
-    y += 4.5;
+    y += 4.2;
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(9);
+    doc.setFontSize(8.5);
     doc.text(subtitle, 148.5, y, { align: 'center' });
-    return y + 4;
+    return y + 3.5;
   };
 
   const drawProprietorFooter = (yPos: number) => {
-    const safeY = Math.min(190, Math.max(yPos + 10, 170));
+    let safeY = yPos + 10;
+    if (safeY > 192) {
+      doc.addPage();
+      safeY = 24;
+    } else {
+      safeY = Math.min(190, Math.max(safeY, 170));
+    }
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(8.5);
     doc.setTextColor(15, 23, 42);
-    doc.text('...........................', 18, safeY);
-    doc.text('Proprietor', 24, safeY + 4);
+    doc.text('...........................', 16, safeY);
+    doc.text('Proprietor', 22, safeY + 4);
     doc.setFont('helvetica', 'normal');
     doc.text('Signed in terms of our separate report of even date.', 148.5, safeY + 6, { align: 'center' });
   };
@@ -2478,7 +2582,7 @@ export function exportProjectedFinancialsPdf(
     [
       { content: 'Particulars', rowSpan: 2, styles: { valign: 'middle' as const, halign: 'center' as const } },
       { content: 'Notes', rowSpan: 2, styles: { valign: 'middle' as const, halign: 'center' as const } },
-      ...projData.map(() => ({ content: amtLabel, styles: { halign: 'center' as const } })),
+      ...projData.map(() => ({ content: shortAmtLabel, styles: { halign: 'center' as const } })),
     ],
     projData.map(d => ({ content: String(d.year), styles: { halign: 'center' as const } })),
   ];
@@ -2514,19 +2618,41 @@ export function exportProjectedFinancialsPdf(
     ['Total Current Liabilities', '', ...projData.map(d => d.totalCurrentLiabilities)],
     ['Total Equity & Liabilities', '', ...projData.map(d => d.totalEquityAndLiabilities)],
   ];
+  const bsBoldRows = new Set([
+    'Assets', 'Non Current Assets', 'Total Non Current Assets', 'Current Assets', 'Total Current Assets',
+    'Total Assets', 'Equity & Liabilities', 'Subtotal', 'Closing Capital', 'Non-Current Liabilities',
+    'Current Liabilities', 'Total Current Liabilities', 'Total Equity & Liabilities',
+  ]);
+  const bsRuleRows = new Set([
+    'Total Non Current Assets', 'Total Current Assets', 'Total Assets',
+    'Subtotal', 'Closing Capital', 'Total Current Liabilities', 'Total Equity & Liabilities',
+  ]);
   autoTable(doc, {
     head: twoRowHead,
     body: bsBody.map(r => r.map((c, idx) => idx < 2 ? String(c) : (typeof c === 'number' ? fmtExactNum(c) : String(c)))),
     startY: startY1,
     theme: 'plain',
-    styles: { fontSize: 7.5, cellPadding: 1.2, textColor: [15, 23, 42] },
-    headStyles: { fillColor: [248, 250, 252], textColor: [15, 23, 42], fontStyle: 'bold', lineWidth: 0.2, lineColor: [51, 65, 85] },
+    styles: { fontSize: bodyFontSize, cellPadding: cellPad, textColor: [15, 23, 42], overflow: 'ellipsize' },
+    headStyles: { fontSize: headFontSize, fillColor: [255, 255, 255], textColor: [15, 23, 42], fontStyle: 'bold', lineWidth: 0.2, lineColor: [30, 41, 59] },
     columnStyles: {
-      0: { halign: 'left', cellWidth: 68 },
-      1: { halign: 'center', cellWidth: 20 },
-      ...Object.fromEntries(projData.map((_, i) => [i + 2, { halign: 'right' }])),
+      0: { halign: 'left', cellWidth: partW },
+      1: { halign: 'center', cellWidth: notesW },
+      ...Object.fromEntries(projData.map((_, i) => [i + 2, { halign: 'right', cellWidth: yearW }])),
     },
-    margin: { left: 12, right: 12 },
+    didParseCell: (data) => {
+      if (data.section === 'body') {
+        const lbl = Array.isArray(data.row.raw) ? String(data.row.raw[0] ?? '') : '';
+        if (bsBoldRows.has(lbl)) data.cell.styles.fontStyle = 'bold';
+        if (data.column.index === 0 && (lbl === 'Total Assets' || lbl === 'Total Equity & Liabilities')) {
+          data.cell.styles.halign = 'right';
+        }
+        if (data.column.index >= 2 && bsRuleRows.has(lbl)) {
+          data.cell.styles.lineWidth = { top: 0.25, bottom: (lbl === 'Total Assets' || lbl === 'Total Equity & Liabilities') ? 0.55 : 0.25, left: 0, right: 0 };
+          data.cell.styles.lineColor = [15, 23, 42];
+        }
+      }
+    },
+    margin: { left: 10, right: 10 },
   });
   drawProprietorFooter(((doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? 170));
 
@@ -2547,19 +2673,35 @@ export function exportProjectedFinancialsPdf(
     ['Less: Provision For Income Tax', '', ...projData.map(d => d.provisionForIncomeTax)],
     ['Net Profit/(Loss) After Income Tax', '', ...projData.map(d => d.netProfitAfterTax)],
   ];
+  const plRuleRows = new Set([
+    'Gross Profit', 'Subtotal', 'Total Operating Profit/(Loss)',
+    'Net Profit/(Loss) Before Income Tax', 'Net Profit/(Loss) After Income Tax',
+  ]);
   autoTable(doc, {
     head: twoRowHead,
     body: plBody.map(r => r.map((c, idx) => idx < 2 ? String(c) : (typeof c === 'number' ? fmtExactNum(c) : String(c)))),
     startY: startY2,
     theme: 'plain',
-    styles: { fontSize: 8, cellPadding: 1.5, textColor: [15, 23, 42] },
-    headStyles: { fillColor: [248, 250, 252], textColor: [15, 23, 42], fontStyle: 'bold', lineWidth: 0.2, lineColor: [51, 65, 85] },
+    styles: { fontSize: Math.max(bodyFontSize, 5.8), cellPadding: Math.max(cellPad, 1.0), textColor: [15, 23, 42], overflow: 'ellipsize' },
+    headStyles: { fontSize: headFontSize, fillColor: [255, 255, 255], textColor: [15, 23, 42], fontStyle: 'bold', lineWidth: 0.2, lineColor: [30, 41, 59] },
     columnStyles: {
-      0: { halign: 'left', cellWidth: 68 },
-      1: { halign: 'center', cellWidth: 20 },
-      ...Object.fromEntries(projData.map((_, i) => [i + 2, { halign: 'right' }])),
+      0: { halign: 'left', cellWidth: partW },
+      1: { halign: 'center', cellWidth: notesW },
+      ...Object.fromEntries(projData.map((_, i) => [i + 2, { halign: 'right', cellWidth: yearW }])),
     },
-    margin: { left: 12, right: 12 },
+    didParseCell: (data) => {
+      if (data.section === 'body') {
+        const lbl = Array.isArray(data.row.raw) ? String(data.row.raw[0] ?? '') : '';
+        if (lbl === 'Sales' || lbl === 'Less: Operating Expenses:' || plRuleRows.has(lbl)) {
+          data.cell.styles.fontStyle = 'bold';
+        }
+        if (data.column.index >= 2 && plRuleRows.has(lbl)) {
+          data.cell.styles.lineWidth = { top: 0.25, bottom: lbl === 'Net Profit/(Loss) After Income Tax' ? 0.55 : 0.25, left: 0, right: 0 };
+          data.cell.styles.lineColor = [15, 23, 42];
+        }
+      }
+    },
+    margin: { left: 10, right: 10 },
   });
   drawProprietorFooter(((doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? 150));
 
@@ -2580,82 +2722,194 @@ export function exportProjectedFinancialsPdf(
     ['Depreciation', ...projData.map(d => d.cfDepreciation)],
     ['Net Cash Used by Operating Activities', ...projData.map(d => d.cfNetCashOperating)],
     ['2. CASH FLOW FROM INVESTING ACTIVITIES:', ...projData.map(() => '')],
-    ['Inflows: Sale Of Property, Plant & Equipment', ...projData.map(d => d.cfSalePPE)],
-    ['Inflows: Capital', ...projData.map(d => d.cfInvestingCapitalInflow)],
-    ['Outflows: Preliminary Expenses', ...projData.map(d => d.cfPreliminaryExpenses)],
-    ['Outflows: Purchase Property, Plant & Equipment', ...projData.map(d => d.cfPurchasePPE)],
-    ['Outflows: Purchase Investment In Debt Or Securities', ...projData.map(d => d.cfPurchaseInvestment)],
+    ['Inflows:', ...projData.map(() => '')],
+    ['Sale Of Property, Plant & Equipment', ...projData.map(d => d.cfSalePPE)],
+    ['Capital', ...projData.map(d => d.cfInvestingCapitalInflow)],
+    ['Outflows:', ...projData.map(() => '')],
+    ['Preliminary Expenses', ...projData.map(d => d.cfPreliminaryExpenses)],
+    ['Purchase Property, Plant & Equipment', ...projData.map(d => d.cfPurchasePPE)],
+    ['Purchase Investment In Debt Or Securities', ...projData.map(d => d.cfPurchaseInvestment)],
     ['Net Cash Used by Investing Activities', ...projData.map(d => d.cfNetCashInvesting)],
     ['3. CASH FLOW FROM FINANCIAL ACTIVITIES:', ...projData.map(() => '')],
-    ['Inflows: Loan Received', ...projData.map(d => d.cfLoanReceived)],
-    ['Inflows: Additional Capital', ...projData.map(d => d.cfAdditionalCapital)],
-    ['Inflows: Issuance Of Debt (Bond & Notes)', ...projData.map(d => d.cfIssuanceOfDebt)],
-    ['Outflows: To Stockholders as Dividend', ...projData.map(d => d.cfDividendsToStockholders)],
-    ['Outflows: Drawings / Dividend', ...projData.map(d => d.cfDrawingsOutflow)],
-    ['Outflows: To Redeem Long Term Debt (Treasury Stock)', ...projData.map(d => d.cfRedeemLongTermDebt)],
-    ['Outflows: Issuance Of Bonds Payable', ...projData.map(d => d.cfIssuanceBondsPayable)],
+    ['Inflows:', ...projData.map(() => '')],
+    ['Loan Received', ...projData.map(d => d.cfLoanReceived)],
+    ['Additional Capital', ...projData.map(d => d.cfAdditionalCapital)],
+    ['Issuance Of Debt (Bond & Notes)', ...projData.map(d => d.cfIssuanceOfDebt)],
+    ['Outflows:', ...projData.map(() => '')],
+    ['To Stockholders as Dividend', ...projData.map(d => d.cfDividendsToStockholders)],
+    ['Drawings / Dividend', ...projData.map(d => d.cfDrawingsOutflow)],
+    ['To Redeem Long Term Debt (Treasury Stock)', ...projData.map(d => d.cfRedeemLongTermDebt)],
+    ['Issuance Of Bonds Payable', ...projData.map(d => d.cfIssuanceBondsPayable)],
     ['Net Cash Provided by Financial Activities', ...projData.map(d => d.cfNetCashFinancing)],
     ['Net Cash Increase', ...projData.map(d => d.cfNetCashIncrease)],
     ['Opening Cash & Bank Balance', ...projData.map(d => d.cfOpeningCash)],
     ['Closing Cash & Bank Balance', ...projData.map(d => d.cfClosingCash)],
   ];
+  const cfTotalRows = new Set([
+    'Net Cash Used by Operating Activities',
+    'Net Cash Used by Investing Activities',
+    'Net Cash Provided by Financial Activities',
+    'Net Cash Increase',
+    'Opening Cash & Bank Balance',
+    'Closing Cash & Bank Balance',
+  ]);
   autoTable(doc, {
     head: [cfHead],
     body: cfBody.map(r => r.map((c, idx) => idx === 0 ? String(c) : (typeof c === 'number' ? fmtExactNum(c) : String(c)))),
     startY: startY3,
     theme: 'plain',
-    styles: { fontSize: 7.2, cellPadding: 1.1, textColor: [15, 23, 42] },
-    headStyles: { fillColor: [248, 250, 252], textColor: [15, 23, 42], fontStyle: 'bold', lineWidth: 0.2, lineColor: [51, 65, 85] },
+    styles: { fontSize: bodyFontSize, cellPadding: Math.max(0.6, cellPad * 0.9), textColor: [15, 23, 42], overflow: 'ellipsize' },
+    headStyles: { fontSize: headFontSize, fillColor: [255, 255, 255], textColor: [15, 23, 42], fontStyle: 'bold', lineWidth: 0.25, lineColor: [30, 41, 59] },
     columnStyles: {
-      0: { halign: 'left', cellWidth: 85 },
-      ...Object.fromEntries(projData.map((_, i) => [i + 1, { halign: 'right' }])),
+      0: { halign: 'left', cellWidth: cfPartW },
+      ...Object.fromEntries(projData.map((_, i) => [i + 1, { halign: 'right', cellWidth: cfYearW }])),
     },
-    margin: { left: 12, right: 12 },
+    didParseCell: (data) => {
+      if (data.section === 'body') {
+        const lbl = Array.isArray(data.row.raw) ? String(data.row.raw[0] ?? '') : '';
+        if (cfTotalRows.has(lbl) || lbl.startsWith('2.') || lbl.startsWith('3.') || lbl === 'Inflows:' || lbl === 'Outflows:') {
+          data.cell.styles.fontStyle = 'bold';
+        }
+        if (data.column.index >= 1 && (lbl === 'Net Cash Used by Operating Activities' || lbl === 'Closing Cash & Bank Balance')) {
+          data.cell.styles.lineWidth = { top: 0.25, bottom: lbl === 'Closing Cash & Bank Balance' ? 0.55 : 0.25, left: 0, right: 0 };
+          data.cell.styles.lineColor = [15, 23, 42];
+        }
+      }
+    },
+    margin: { left: 10, right: 10 },
   });
 
-  // Page 4: Notes to the Financial Statements (3.00 - 13.00)
+  // Page 4: Narrative Notes to the Financial Statements (Notes 1 & 2.1-2.6)
+  doc.addPage();
+  const startYNotes1 = drawProjHeader('Notes to the Financial Statements', `For the year ended 31st December, ${maxYear}(Projected)`, true);
+  autoTable(doc, {
+    head: [['Note No.', 'Particulars']],
+    body: [
+      ['1', 'Reporting Entity:'],
+      ['', `${company.companyName} is a ${company.entityType.replace(/_/g, ' ')} entity and its office is situated at ${company.registeredAddress}.`],
+      ['2', 'SIGNIFICANT ACCOUNTING POLICIES:'],
+      ['2.1', `Basis of Accounting:\nThe Financial Statements have been prepared on a going concern basis using accrual method of accounting and in accordance with ${company.accountingFramework} and applicable statutory requirements.`],
+      ['2.2', 'Accounting Policies:\nThe Accounting policies were selected and applied consistently for significant transactions and events to all periods presented in these financial statements.'],
+      ['2.3', 'Property, Plant and Equipment:\nItems of PPE are stated at cost less accumulated depreciation. Depreciation is computed over the estimated useful lives consistently.'],
+      ['2.4', `Reporting Period:\nFinancial Statements of the entity cover the annual reporting period ending ${company.financialYearEnd} consistently.`],
+      ['2.5', `Reporting currency and level of precision:\nThe figures in the Financial Statements represent ${company.reportingCurrency} (${company.reportingUnit}) currency rounded off cleanly.`],
+      ['2.6', 'Comparative Information:\nComparative Information has been disclosed in respect of all selected years for numerical information, narratives, and descriptive schedules.'],
+    ],
+    startY: startYNotes1 + 2,
+    theme: 'plain',
+    styles: { fontSize: 8.5, cellPadding: 2, textColor: [15, 23, 42] },
+    headStyles: { fillColor: [255, 255, 255], textColor: [15, 23, 42], fontStyle: 'bold', lineWidth: 0.25, lineColor: [30, 41, 59] },
+    columnStyles: {
+      0: { halign: 'center', cellWidth: 22, fontStyle: 'bold' },
+      1: { halign: 'left' },
+    },
+    didParseCell: (data) => {
+      if (data.section === 'body') {
+        const raw = Array.isArray(data.row.raw) ? data.row.raw : [];
+        const no = String(raw[0] ?? '');
+        const txt = String(raw[1] ?? '');
+        if (no === '1' || no === '2' || txt.startsWith(company.companyName)) {
+          data.cell.styles.fontStyle = 'bold';
+        }
+      }
+    },
+    margin: { left: 14, right: 14 },
+  });
+
+  // Page 5+: Full Quantitative Notes 3.00 - 13.00 (including all roll-forward lines)
   doc.addPage();
   const startY4 = drawProjHeader('Notes to the Financial Statements', `For the year ended 31st December, ${maxYear}(Projected)`, true);
   const notesBody: (string | number)[][] = [
     ['3.00', 'Inventories', ...projData.map(d => d.inventories)],
-    ['4.00', 'Trade & Other Receivables (Closing)', ...projData.map(d => d.tradeAndOtherReceivables)],
-    ['5.00', 'Advance, Deposit & Prepayments (Closing)', ...projData.map(d => d.advanceDepositPrepayments)],
-    ['6.00', 'Cash & Equivalent — Cash In Hand & Bank', ...projData.map(d => d.cashAndCashEquivalents)],
+    ['4.00', 'Trade & Other Receivables', ...projData.map(() => '')],
+    ['', 'As Per Last Year', ...projData.map(d => d.note4ReceivablesOpening)],
+    ['', 'Add: Credit Sales During the Year', ...projData.map(d => d.note4ReceivablesAdded)],
+    ['', 'Subtotal', ...projData.map(d => d.note4ReceivablesOpening + d.note4ReceivablesAdded)],
+    ['', 'Less: Received During the Year', ...projData.map(d => d.note4ReceivablesReceived)],
+    ['', 'Closing Trade & Other Receivables', ...projData.map(d => d.tradeAndOtherReceivables)],
+    ['5.00', 'Advance, Deposit & Prepayments', ...projData.map(() => '')],
+    ['', 'As Per Last Year', ...projData.map(d => d.note5AdvanceOpening)],
+    ['', 'Add: During the Year', ...projData.map(d => d.note5AdvanceAdded)],
+    ['', 'Subtotal', ...projData.map(d => d.note5AdvanceOpening + d.note5AdvanceAdded)],
+    ['', 'Less: Adjustment', ...projData.map(d => d.note5AdvanceAdjusted)],
+    ['', 'Closing Advance, Deposit & Prepayments', ...projData.map(d => d.advanceDepositPrepayments)],
+    ['6.00', 'Cash & Equivalent', ...projData.map(() => '')],
+    ['', 'Cash In Hand & Bank', ...projData.map(d => d.cashAndCashEquivalents)],
     ['7.00', 'Long Term Loan', ...projData.map(d => d.longTermLoan)],
-    ['8.00', 'Trade & Other Payables (Closing)', ...projData.map(d => d.tradeAndOtherPayables)],
-    ['9.00', 'Provisions For Tax (Closing)', ...projData.map(d => d.provisionsForTax)],
-    ['10.00', 'Short Term Loan — Bank Loan', ...projData.map(d => d.shortTermLoan)],
-    ['11.00', 'Cost of Goods Sold — Opening Stock', ...projData.map(d => d.note11OpeningStock)],
+    ['8.00', 'Trade & Other Payables', ...projData.map(() => '')],
+    ['', 'As Per Last Year', ...projData.map(d => d.note8PayablesOpening)],
+    ['', 'Add: During the Year', ...projData.map(d => d.note8PayablesAdded)],
+    ['', 'Subtotal', ...projData.map(d => d.note8PayablesOpening + d.note8PayablesAdded)],
+    ['', 'Less: Payment During the Year', ...projData.map(d => d.note8PayablesPaid)],
+    ['', 'Closing Trade & Other Payables', ...projData.map(d => d.tradeAndOtherPayables)],
+    ['9.00', 'Provisions For Tax', ...projData.map(() => '')],
+    ['', 'As Per Last Year', ...projData.map(d => d.note9TaxOpening)],
+    ['', 'Add: During the Year', ...projData.map(d => d.note9TaxAdded)],
+    ['', 'Subtotal', ...projData.map(d => d.note9TaxOpening + d.note9TaxAdded)],
+    ['', 'Less: Adjustment', ...projData.map(d => d.note9TaxAdjusted)],
+    ['', 'Closing Provisions For Tax', ...projData.map(d => d.provisionsForTax)],
+    ['10.00', 'Short Term Loan', ...projData.map(() => '')],
+    ['', 'Bank Loan', ...projData.map(d => d.shortTermLoan)],
+    ['11.00', 'Cost of Goods Sold', ...projData.map(() => '')],
+    ['', 'Opening Stock', ...projData.map(d => d.note11OpeningStock)],
     ['', 'Add: Purchase', ...projData.map(d => d.note11Purchase)],
+    ['', 'Subtotal', ...projData.map(d => d.note11OpeningStock + d.note11Purchase)],
     ['', 'Less: Closing Stock', ...projData.map(d => d.note11ClosingStock)],
-    ['', 'Add: Direct Expenses (Labour, Electricity, Carriage, Other)', ...projData.map(d => d.note11DirectExpensesTotal)],
+    ['', 'Material Consumed', ...projData.map(d => d.note11OpeningStock + d.note11Purchase - d.note11ClosingStock)],
+    ['', 'Add: Direct Expenses', ...projData.map(() => '')],
+    ['', 'Labour & Wages', ...projData.map(d => d.note11LabourWages)],
+    ['', 'Electricity Bill', ...projData.map(d => d.note11ElectricityBill)],
+    ['', 'Carriage Inward', ...projData.map(d => d.note11CarriageInward)],
+    ['', 'Other Direct Expenses', ...projData.map(d => d.note11OtherDirectExpenses)],
+    ['', 'Total Direct Expenses', ...projData.map(d => d.note11DirectExpensesTotal)],
     ['', 'Cost of Goods Sold', ...projData.map(d => d.costOfGoodsSold)],
     ['12.00', 'Administrative & Selling Expenses', ...projData.map(d => d.adminAndSellingExpenses)],
-    ['13.00', 'Financial Expenses — Bank Charges & Interest', ...projData.map(d => d.financialExpenses)],
+    ['13.00', 'Financial Expenses', ...projData.map(() => '')],
+    ['', 'Bank Charges & Interest', ...projData.map(d => d.financialExpenses)],
   ];
+  const noteBoldSet = new Set([
+    'Subtotal', 'Closing Trade & Other Receivables', 'Closing Advance, Deposit & Prepayments',
+    'Cash In Hand & Bank', 'Long Term Loan', 'Closing Trade & Other Payables', 'Closing Provisions For Tax',
+    'Bank Loan', 'Material Consumed', 'Total Direct Expenses', 'Cost of Goods Sold',
+    'Administrative & Selling Expenses', 'Inventories',
+  ]);
   autoTable(doc, {
     head: [
       [
         { content: 'Note No.', rowSpan: 2, styles: { valign: 'middle', halign: 'center' } },
         { content: 'Particulars', rowSpan: 2, styles: { valign: 'middle', halign: 'center' } },
-        ...projData.map(() => ({ content: amtLabel, styles: { halign: 'center' as const } })),
+        ...projData.map(() => ({ content: shortAmtLabel, styles: { halign: 'center' as const } })),
       ],
       projData.map(d => ({ content: String(d.year), styles: { halign: 'center' as const } })),
     ],
     body: notesBody.map(r => r.map((c, idx) => idx < 2 ? String(c) : (typeof c === 'number' ? fmtExactNum(c) : String(c)))),
     startY: startY4,
     theme: 'plain',
-    styles: { fontSize: 7.5, cellPadding: 1.2, textColor: [15, 23, 42] },
-    headStyles: { fillColor: [248, 250, 252], textColor: [15, 23, 42], fontStyle: 'bold', lineWidth: 0.2, lineColor: [51, 65, 85] },
+    styles: { fontSize: bodyFontSize, cellPadding: cellPad, textColor: [15, 23, 42], overflow: 'ellipsize' },
+    headStyles: { fontSize: headFontSize, fillColor: [255, 255, 255], textColor: [15, 23, 42], fontStyle: 'bold', lineWidth: 0.2, lineColor: [30, 41, 59] },
     columnStyles: {
-      0: { halign: 'center', cellWidth: 16 },
-      1: { halign: 'left', cellWidth: 74 },
-      ...Object.fromEntries(projData.map((_, i) => [i + 2, { halign: 'right' }])),
+      0: { halign: 'center', cellWidth: notesW },
+      1: { halign: 'left', cellWidth: partW },
+      ...Object.fromEntries(projData.map((_, i) => [i + 2, { halign: 'right', cellWidth: yearW }])),
     },
-    margin: { left: 12, right: 12 },
+    didParseCell: (data) => {
+      if (data.section === 'body') {
+        const raw = Array.isArray(data.row.raw) ? data.row.raw : [];
+        const noteNo = String(raw[0] ?? '');
+        const lbl = String(raw[1] ?? '');
+        if (noteNo !== '' || noteBoldSet.has(lbl) || lbl === 'Add: Direct Expenses') {
+          data.cell.styles.fontStyle = 'bold';
+        }
+        if (data.column.index >= 2 && noteBoldSet.has(lbl)) {
+          data.cell.styles.lineWidth = { top: 0.2, bottom: 0.35, left: 0, right: 0 };
+          data.cell.styles.lineColor = [15, 23, 42];
+        }
+      }
+    },
+    margin: { left: 10, right: 10 },
   });
 
-  // Page 5+: Schedule of Property Plant & Equipments
+  // Final Page+: Schedule of Property Plant & Equipments (Schedule-A)
   doc.addPage();
   let ySched = drawProjHeader('Schedule of Property Plant & Equipments', `As at 31st December, ${maxYear}(Projected)`, true);
   projAsc.forEach(d => {
@@ -2681,12 +2935,28 @@ export function exportProjectedFinancialsPdf(
       ],
       startY: ySched,
       theme: 'grid',
-      styles: { fontSize: 7.5, cellPadding: 1.5, textColor: [15, 23, 42], lineColor: [71, 85, 105], lineWidth: 0.2 },
-      headStyles: { fillColor: [248, 250, 252], textColor: [15, 23, 42], fontStyle: 'bold' },
-      margin: { left: 12, right: 12 },
+      styles: { fontSize: 7.5, cellPadding: 1.5, textColor: [15, 23, 42], lineColor: [51, 65, 85], lineWidth: 0.2 },
+      headStyles: { fillColor: [255, 255, 255], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'center', lineColor: [51, 65, 85], lineWidth: 0.25 },
+      columnStyles: {
+        0: { halign: 'center', cellWidth: 12 },
+        1: { halign: 'left', cellWidth: 48 },
+        2: { halign: 'right' },
+        3: { halign: 'right' },
+        4: { halign: 'right' },
+        5: { halign: 'right' },
+        6: { halign: 'center', cellWidth: 20 },
+        7: { halign: 'right' },
+        8: { halign: 'right' },
+      },
+      didParseCell: (data) => {
+        if (data.section === 'body' && data.row.index === 1) {
+          data.cell.styles.fontStyle = 'bold';
+        }
+      },
+      margin: { left: 10, right: 10 },
     });
     ySched = ((doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? ySched + 24) + 5;
   });
 
-  doc.save(filename);
+  doc.save(resolvedFilename);
 }

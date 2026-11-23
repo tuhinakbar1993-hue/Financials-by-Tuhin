@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   FileSpreadsheet,
   FileText,
@@ -15,6 +15,7 @@ import {
   CompanyProfile,
   FinancialNoteItem,
   PreviousFormatYearData,
+  PreviousComparativePair,
   ProjectedFormatYearData,
   YearDataInput,
 } from '../types/financial';
@@ -22,6 +23,9 @@ import {
   exportPreviousFinancialsExcel,
   exportPreviousFinancialsWord,
   exportPreviousFinancialsPdf,
+  exportAllPreviousComparativePairsExcel,
+  exportAllPreviousComparativePairsWord,
+  exportAllPreviousComparativePairsPdf,
   exportProjectedFinancialsExcel,
   exportProjectedFinancialsWord,
   exportProjectedFinancialsPdf,
@@ -48,7 +52,7 @@ const InlineDriverCell: React.FC<InlineDriverInputProps> = ({ value, isEditMode,
   const [localVal, setLocalVal] = useState(String(value));
   const [editing, setEditing] = useState(false);
 
-  React.useEffect(() => {
+  useEffect(() => {
     setLocalVal(String(value));
   }, [value]);
 
@@ -67,7 +71,7 @@ const InlineDriverCell: React.FC<InlineDriverInputProps> = ({ value, isEditMode,
         onBlur={commit}
         onKeyDown={e => e.key === 'Enter' && commit()}
         autoFocus={editing}
-        className="w-24 bg-slate-950 border border-emerald-500/80 rounded px-1.5 py-0.5 text-right font-mono text-xs text-white focus:outline-none focus:ring-1 focus:ring-emerald-400"
+        className="w-24 bg-white border border-emerald-600 rounded px-1.5 py-0.5 text-right font-mono text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-emerald-500 shadow-xs"
       />
     );
   }
@@ -76,7 +80,7 @@ const InlineDriverCell: React.FC<InlineDriverInputProps> = ({ value, isEditMode,
     <span
       onClick={() => setEditing(true)}
       title={title || 'Click to edit fixed primary user input'}
-      className="cursor-pointer hover:text-emerald-300 hover:underline font-mono tabular-nums"
+      className="cursor-pointer hover:text-emerald-700 hover:underline font-mono tabular-nums"
     >
       {fmtCell(value)}
     </span>
@@ -85,12 +89,14 @@ const InlineDriverCell: React.FC<InlineDriverInputProps> = ({ value, isEditMode,
 
 // ============================================================================
 // PREVIOUS FINANCIALS EXACT-FORMAT SUITE VIEW
-// Matches Previous_Financials_aec5c4ae.pdf line-for-line
+// Matches Previous_Financials_aec5c4ae.pdf & splits into overlapping 2-year comparative sets
 // ============================================================================
 
 interface PreviousFormatSuiteViewProps {
   companyProfile: CompanyProfile;
   prevData: PreviousFormatYearData[];
+  comparativePairs?: PreviousComparativePair[];
+  getPairScopedNotes?: (pairData: PreviousFormatYearData[]) => FinancialNoteItem[];
   notes: FinancialNoteItem[];
   isEditMode: boolean;
   onUpdatePrimaryDriver?: (year: number, driver: keyof YearDataInput, val: number) => void;
@@ -99,24 +105,53 @@ interface PreviousFormatSuiteViewProps {
 export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = ({
   companyProfile,
   prevData,
+  comparativePairs = [],
+  getPairScopedNotes,
   notes,
   isEditMode,
   onUpdatePrimaryDriver,
 }) => {
   const [subTab, setSubTab] = useState<'all' | 'bs' | 'is' | 'cf' | 'eq' | 'fa'>('all');
+  const [selectedPairId, setSelectedPairId] = useState<string>(() => comparativePairs[0]?.id || 'all');
 
-  if (prevData.length === 0) {
+  useEffect(() => {
+    if (selectedPairId !== 'all' && !comparativePairs.some(p => p.id === selectedPairId)) {
+      setSelectedPairId(comparativePairs[0]?.id || 'all');
+    }
+  }, [comparativePairs, selectedPairId]);
+
+  const activePair = useMemo(
+    () => comparativePairs.find(p => p.id === selectedPairId) || null,
+    [comparativePairs, selectedPairId]
+  );
+
+  const displayedData = useMemo(
+    () => (activePair ? activePair.data : prevData),
+    [activePair, prevData]
+  );
+
+  const displayedNotes = useMemo(() => {
+    if (activePair && getPairScopedNotes) {
+      return getPairScopedNotes(activePair.data);
+    }
+    return notes;
+  }, [activePair, getPairScopedNotes, notes]);
+
+  if (prevData.length === 0 || displayedData.length === 0) {
     return (
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center text-xs text-slate-400">
+      <div className="bg-white/92 backdrop-blur-md border border-slate-200 rounded-2xl p-8 text-center text-xs text-slate-600 shadow-sm">
         Select at least one previous financial year to render the Previous Financials statements.
       </div>
     );
   }
 
-  const maxYear = prevData[0].year;
+  const maxYear = displayedData[0].year;
+  const allAsc = [...prevData].sort((a, b) => a.year - b.year);
+  const faAsc = [...displayedData].sort((a, b) => a.year - b.year);
   const ccyLabel = companyProfile.reportingCurrency === '৳' ? 'BDT' : companyProfile.reportingCurrency;
-  const unitCaption = `(Figure in ${ccyLabel} · ${companyProfile.reportingUnit})`;
-  const faAsc = [...prevData].sort((a, b) => a.year - b.year);
+  const unitCaption = companyProfile.reportingUnit === 'Units'
+    ? `(Figure in ${ccyLabel})`
+    : `(Figure in ${ccyLabel} · ${companyProfile.reportingUnit})`;
 
   const subTabs = [
     { id: 'all', label: 'All Previous Statements', icon: BookOpen },
@@ -127,50 +162,148 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
     { id: 'fa', label: '1.00 Fixed Assets & Notes', icon: Building2 },
   ] as const;
 
+  const resolveNotes = (pairData: PreviousFormatYearData[]) =>
+    getPairScopedNotes ? getPairScopedNotes(pairData) : notes;
+
   return (
     <div className="space-y-5">
-      {/* Control & Export Strip */}
-      <div className="bg-slate-900 border border-emerald-900/50 rounded-2xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-        <div className="space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[10px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-700/60">
-              Exact Format: Previous Financials
-            </span>
-            <span className="text-xs font-bold text-white">
-              {prevData.length} Previous Years Selected ({faAsc[0].year}–{maxYear})
-            </span>
+      {/* Control & Comparative Pair Downloads Strip */}
+      <div className="bg-white/94 backdrop-blur-md border border-emerald-200 rounded-2xl p-4 sm:p-5 space-y-4 shadow-sm">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[11px] font-mono font-bold text-emerald-800 uppercase tracking-wider">
+                Exact Format: Previous Financials
+              </span>
+              <span className="text-slate-300" aria-hidden="true">·</span>
+              <span className="text-xs font-bold text-slate-900">
+                {allAsc.length} Previous Years ({allAsc[0].year}–{allAsc[allAsc.length - 1].year})
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-600">
+              Automatically splits selected previous years into overlapping 2-year comparative downloads ({comparativePairs.map(p => p.label).join(', ')}). Viewing:{' '}
+              <strong className="text-emerald-800 font-mono">
+                {activePair ? `Comparative Statement (${activePair.label})` : `All Selected (${allAsc[0].year}–${allAsc[allAsc.length - 1].year})`}
+              </strong>
+            </p>
           </div>
-          <p className="text-[11px] text-slate-400">
-            Reproduces exact headings, particulars, row sequence, descending 31.12.YYYY columns, Fixed Assets Schedule 1.00, and Statutory Notes.
-          </p>
+
+          {/* All Comparative Pairs Batch Download Buttons */}
+          {comparativePairs.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => exportAllPreviousComparativePairsExcel(companyProfile, comparativePairs, resolveNotes)}
+                className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                {comparativePairs.length > 1 ? `Download All ${comparativePairs.length} Excel (.xlsx)` : 'Previous Excel (.xlsx)'}
+              </button>
+              <button
+                type="button"
+                onClick={() => exportAllPreviousComparativePairsWord(companyProfile, comparativePairs, resolveNotes)}
+                className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                {comparativePairs.length > 1 ? `Download All ${comparativePairs.length} Word (.docx)` : 'Previous Word (.docx)'}
+              </button>
+              <button
+                type="button"
+                onClick={() => exportAllPreviousComparativePairsPdf(companyProfile, comparativePairs, resolveNotes)}
+                className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors"
+              >
+                <Download className="w-3.5 h-3.5" />
+                {comparativePairs.length > 1 ? `Download All ${comparativePairs.length} PDF (.pdf)` : 'Previous PDF (.pdf)'}
+              </button>
+            </div>
+          )}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => exportPreviousFinancialsExcel(companyProfile, prevData, notes)}
-            className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors"
-          >
-            <FileSpreadsheet className="w-3.5 h-3.5" />
-            Previous Excel (.xlsx)
-          </button>
-          <button
-            type="button"
-            onClick={() => exportPreviousFinancialsWord(companyProfile, prevData, notes)}
-            className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors"
-          >
-            <FileText className="w-3.5 h-3.5" />
-            Previous Word (.docx)
-          </button>
-          <button
-            type="button"
-            onClick={() => exportPreviousFinancialsPdf(companyProfile, prevData, notes)}
-            className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors"
-          >
-            <Download className="w-3.5 h-3.5" />
-            Previous PDF (.pdf)
-          </button>
-        </div>
+        {/* Comparative Set Selector + Individual Pair Download Cards */}
+        {comparativePairs.length > 0 && (
+          <div className="pt-3 border-t border-slate-200 flex flex-col gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] font-bold text-slate-700 mr-1">Preview Comparative Set:</span>
+                {comparativePairs.map(pair => (
+                  <button
+                    key={pair.id}
+                    type="button"
+                    onClick={() => setSelectedPairId(pair.id)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition-all border ${
+                      selectedPairId === pair.id
+                        ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    Previous Financials ({pair.label})
+                  </button>
+                ))}
+                {comparativePairs.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPairId('all')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition-all border ${
+                      selectedPairId === 'all'
+                        ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
+                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    Combined Preview ({allAsc[0].year}–{allAsc[allAsc.length - 1].year})
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5">
+              {comparativePairs.map((pair, idx) => {
+                const pairNotes = resolveNotes(pair.data);
+                return (
+                  <div
+                    key={`dl-${pair.id}`}
+                    className={`rounded-xl border p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 transition-all ${
+                      selectedPairId === pair.id
+                        ? 'bg-emerald-50/85 border-emerald-300'
+                        : 'bg-slate-50/90 border-slate-200'
+                    }`}
+                  >
+                    <div>
+                      <div className="text-xs font-bold text-slate-900 font-mono">
+                        Set {idx + 1}: ({pair.label})
+                      </div>
+                      <div className="text-[10px] text-slate-600 font-mono">
+                        Cols: 31.12.{pair.laterYear} &amp; 31.12.{pair.earlierYear}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => exportPreviousFinancialsExcel(companyProfile, pair.data, pairNotes)}
+                        className="px-2.5 py-1 rounded-md bg-white hover:bg-emerald-600 text-emerald-700 hover:text-white border border-emerald-300 font-mono text-[11px] font-bold transition-colors"
+                      >
+                        .XLSX
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void exportPreviousFinancialsWord(companyProfile, pair.data, pairNotes)}
+                        className="px-2.5 py-1 rounded-md bg-white hover:bg-blue-600 text-blue-700 hover:text-white border border-blue-300 font-mono text-[11px] font-bold transition-colors"
+                      >
+                        .DOCX
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => exportPreviousFinancialsPdf(companyProfile, pair.data, pairNotes)}
+                        className="px-2.5 py-1 rounded-md bg-white hover:bg-rose-600 text-rose-700 hover:text-white border border-rose-300 font-mono text-[11px] font-bold transition-colors"
+                      >
+                        .PDF
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Sub-Tabs */}
@@ -184,8 +317,8 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
               onClick={() => setSubTab(t.id)}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors border ${
                 subTab === t.id
-                  ? 'bg-emerald-600 text-white border-emerald-400/50'
-                  : 'bg-slate-900 text-slate-300 border-slate-800 hover:bg-slate-800'
+                  ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                  : 'bg-white/92 text-slate-700 border-slate-200 hover:bg-slate-50 hover:text-slate-900'
               }`}
             >
               <Icon className="w-3.5 h-3.5" />
@@ -197,18 +330,18 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
 
       {/* 1. STATEMENT OF FINANCIAL POSITION */}
       {(subTab === 'all' || subTab === 'bs') && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
-          <div className="p-5 border-b border-slate-800 text-center space-y-1 bg-slate-900/95">
-            <h3 className="text-base font-extrabold text-white tracking-wide uppercase">
+        <div className="bg-white/96 backdrop-blur-md border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+          <div className="p-5 border-b border-slate-200 text-center space-y-1 bg-white">
+            <h3 className="text-base font-extrabold text-slate-900 tracking-wide uppercase">
               {companyProfile.companyName}
             </h3>
-            <div className="text-sm font-bold text-emerald-400 uppercase tracking-wide">
+            <div className="text-sm font-bold text-emerald-800 uppercase tracking-wide">
               STATEMENT OF FINANCIAL POSITION
             </div>
-            <div className="text-xs font-semibold text-slate-300">
+            <div className="text-xs font-semibold text-slate-700">
               AS AT 31 DECEMBER, {maxYear}
             </div>
-            <div className="text-[11px] text-slate-400 text-right font-mono pt-1">
+            <div className="text-[11px] text-slate-500 text-right font-mono pt-1">
               {unitCaption}
             </div>
           </div>
@@ -216,52 +349,52 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
           <div className="overflow-x-auto">
             <table className="w-full text-xs border-collapse">
               <thead>
-                <tr className="bg-slate-800/90 border-b border-slate-700 text-slate-100">
-                  <th className="py-2.5 px-4 text-left font-bold border-r border-slate-700/80 min-w-[290px]">
+                <tr className="bg-slate-100 border-b border-slate-300 text-slate-900">
+                  <th className="py-2.5 px-4 text-left font-bold border-r border-slate-300 min-w-[290px]">
                     Particulars
                   </th>
-                  {prevData.map(d => (
-                    <th key={d.year} className="py-2.5 px-4 text-right font-mono font-bold border-r border-slate-700/60 last:border-r-0 min-w-[130px]">
+                  {displayedData.map(d => (
+                    <th key={d.year} className="py-2.5 px-4 text-right font-mono font-bold border-r border-slate-300 last:border-r-0 min-w-[130px]">
                       {d.dateLabel}
                     </th>
                   ))}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/70 tabular-nums">
-                <tr className="bg-slate-800/40 font-bold text-emerald-300">
-                  <td colSpan={prevData.length + 1} className="py-2 px-4">PROPERTIES &amp; ASSETS</td>
+              <tbody className="divide-y divide-slate-200 tabular-nums">
+                <tr className="bg-slate-50 font-bold text-slate-900">
+                  <td colSpan={displayedData.length + 1} className="py-2 px-4">PROPERTIES &amp; ASSETS</td>
                 </tr>
-                <tr className="hover:bg-slate-800/20">
-                  <td className="py-2 px-4 text-slate-200 border-r border-slate-800/60">Fixed Assets (at cost less depreciation)</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-200 border-r border-slate-800/40 last:border-r-0">
+                <tr className="hover:bg-slate-50/70">
+                  <td className="py-2 px-4 text-slate-800 border-r border-slate-200">Fixed Assets (at cost less depreciation)</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-800 border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.fixedAssetsWDV)}
                     </td>
                   ))}
                 </tr>
-                <tr className="bg-slate-800/25 font-semibold text-white">
-                  <td className="py-2 px-4 border-r border-slate-800/60">Current Assets</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-800/40 last:border-r-0">
+                <tr className="bg-slate-50 font-semibold text-slate-900">
+                  <td className="py-2 px-4 border-r border-slate-200">Current Assets</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.totalCurrentAssets)}
                     </td>
                   ))}
                 </tr>
-                <tr className="hover:bg-slate-800/20">
-                  <td className="py-2 px-4 pl-7 text-slate-300 border-r border-slate-800/60">Advances, Deposits &amp; Pre-payments</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-300 border-r border-slate-800/40 last:border-r-0">
+                <tr className="hover:bg-slate-50/70">
+                  <td className="py-2 px-4 pl-7 text-slate-700 border-r border-slate-200">Advances, Deposits &amp; Pre-payments</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.advancesDepositsPrepayments)}
                     </td>
                   ))}
                 </tr>
-                <tr className="hover:bg-slate-800/20 bg-emerald-950/10">
-                  <td className="py-2 px-4 pl-7 text-emerald-300 font-medium border-r border-slate-800/60 flex items-center gap-1.5">
+                <tr className="bg-emerald-50/55 hover:bg-emerald-50">
+                  <td className="py-2 px-4 pl-7 text-emerald-900 font-medium border-r border-slate-200 flex items-center gap-1.5">
                     <span>Stock &amp; Stores</span>
-                    <Lock className="w-3 h-3 text-emerald-400" />
+                    <Lock className="w-3 h-3 text-emerald-700" />
                   </td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-emerald-300 font-semibold border-r border-slate-800/40 last:border-r-0">
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono text-emerald-800 font-semibold border-r border-slate-200 last:border-r-0">
                       {onUpdatePrimaryDriver ? (
                         <InlineDriverCell
                           value={d.stockAndStores}
@@ -273,118 +406,118 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                     </td>
                   ))}
                 </tr>
-                <tr className="hover:bg-slate-800/20">
-                  <td className="py-2 px-4 pl-7 text-slate-300 border-r border-slate-800/60">Bills Receivable</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-300 border-r border-slate-800/40 last:border-r-0">
+                <tr className="hover:bg-slate-50/70">
+                  <td className="py-2 px-4 pl-7 text-slate-700 border-r border-slate-200">Bills Receivable</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.billsReceivable)}
                     </td>
                   ))}
                 </tr>
-                <tr className="hover:bg-slate-800/20">
-                  <td className="py-2 px-4 pl-7 text-slate-300 border-r border-slate-800/60">Cash &amp; Cash Equivalents</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-300 border-r border-slate-800/40 last:border-r-0">
+                <tr className="hover:bg-slate-50/70">
+                  <td className="py-2 px-4 pl-7 text-slate-700 border-r border-slate-200">Cash &amp; Cash Equivalents</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.cashAndCashEquivalents)}
                     </td>
                   ))}
                 </tr>
-                <tr className="bg-emerald-950/20 font-bold text-emerald-400 border-t border-b-2 border-emerald-700/70">
-                  <td className="py-2.5 px-4 text-right border-r border-slate-800/60">Taka</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2.5 px-4 text-right font-mono border-r border-slate-800/40 last:border-r-0">
+                <tr className="bg-emerald-50 font-bold text-emerald-950 border-t border-b-2 border-emerald-700">
+                  <td className="py-2.5 px-4 text-right border-r border-slate-200">Taka</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2.5 px-4 text-right font-mono border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.totalAssetsTaka)}
                     </td>
                   ))}
                 </tr>
 
-                <tr className="bg-slate-800/40 font-bold text-sky-300">
-                  <td colSpan={prevData.length + 1} className="py-2 px-4">CAPITAL &amp; LIABILITIES</td>
+                <tr className="bg-slate-50 font-bold text-slate-900">
+                  <td colSpan={displayedData.length + 1} className="py-2 px-4">CAPITAL &amp; LIABILITIES</td>
                 </tr>
-                <tr className="hover:bg-slate-800/20">
-                  <td className="py-2 px-4 text-slate-300 border-r border-slate-800/60">Opening Capital</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-300 border-r border-slate-800/40 last:border-r-0">
+                <tr className="hover:bg-slate-50/70">
+                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Opening Capital</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.openingCapital)}
                     </td>
                   ))}
                 </tr>
-                <tr className="hover:bg-slate-800/20">
-                  <td className="py-2 px-4 text-slate-300 border-r border-slate-800/60">Add. Net Profit for the year</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-emerald-300 border-r border-slate-800/40 last:border-r-0">
+                <tr className="hover:bg-slate-50/70">
+                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Add. Net Profit for the year</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono text-emerald-700 border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.netProfitForYear)}
                     </td>
                   ))}
                 </tr>
-                <tr className="bg-slate-800/25 font-semibold text-white">
-                  <td className="py-2 px-4 border-r border-slate-800/60">Subtotal</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-800/40 last:border-r-0">
+                <tr className="bg-slate-50 font-semibold text-slate-900">
+                  <td className="py-2 px-4 border-r border-slate-200">Subtotal</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.capitalSubtotal)}
                     </td>
                   ))}
                 </tr>
-                <tr className="hover:bg-slate-800/20">
-                  <td className="py-2 px-4 text-slate-300 border-r border-slate-800/60">Less: Drawings</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-rose-300 border-r border-slate-800/40 last:border-r-0">
+                <tr className="hover:bg-slate-50/70">
+                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Less: Drawings</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono text-rose-700 border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.drawings)}
                     </td>
                   ))}
                 </tr>
-                <tr className="bg-slate-800/35 font-bold text-white">
-                  <td className="py-2 px-4 border-r border-slate-800/60">Capital after drawings</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-800/40 last:border-r-0">
+                <tr className="bg-slate-100/80 font-bold text-slate-900">
+                  <td className="py-2 px-4 border-r border-slate-200">Capital after drawings</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.capitalAfterDrawings)}
                     </td>
                   ))}
                 </tr>
-                <tr className="bg-slate-800/25 font-semibold text-white">
-                  <td className="py-2 px-4 border-r border-slate-800/60">Current Liabilities</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-800/40 last:border-r-0">
+                <tr className="bg-slate-50 font-semibold text-slate-900">
+                  <td className="py-2 px-4 border-r border-slate-200">Current Liabilities</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.totalCurrentLiabilities)}
                     </td>
                   ))}
                 </tr>
-                <tr className="hover:bg-slate-800/20">
-                  <td className="py-2 px-4 pl-7 text-slate-300 border-r border-slate-800/60">For Expenses</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-300 border-r border-slate-800/40 last:border-r-0">
+                <tr className="hover:bg-slate-50/70">
+                  <td className="py-2 px-4 pl-7 text-slate-700 border-r border-slate-200">For Expenses</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.forExpenses)}
                     </td>
                   ))}
                 </tr>
-                <tr className="hover:bg-slate-800/20">
-                  <td className="py-2 px-4 pl-7 text-slate-300 border-r border-slate-800/60">Accounts Payable</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-300 border-r border-slate-800/40 last:border-r-0">
+                <tr className="hover:bg-slate-50/70">
+                  <td className="py-2 px-4 pl-7 text-slate-700 border-r border-slate-200">Accounts Payable</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.accountsPayable)}
                     </td>
                   ))}
                 </tr>
-                <tr className="hover:bg-slate-800/20">
-                  <td className="py-2 px-4 pl-7 text-slate-300 border-r border-slate-800/60">Short Term Loan</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-300 border-r border-slate-800/40 last:border-r-0">
+                <tr className="hover:bg-slate-50/70">
+                  <td className="py-2 px-4 pl-7 text-slate-700 border-r border-slate-200">Short Term Loan</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.shortTermLoan)}
                     </td>
                   ))}
                 </tr>
-                <tr className="hover:bg-slate-800/20">
-                  <td className="py-2 px-4 pl-7 text-slate-300 border-r border-slate-800/60">Provision for Taxation</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-300 border-r border-slate-800/40 last:border-r-0">
+                <tr className="hover:bg-slate-50/70">
+                  <td className="py-2 px-4 pl-7 text-slate-700 border-r border-slate-200">Provision for Taxation</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.provisionForTaxation)}
                     </td>
                   ))}
                 </tr>
-                <tr className="bg-emerald-950/20 font-bold text-emerald-400 border-t border-b-4 border-double border-emerald-500/80">
-                  <td className="py-2.5 px-4 text-right border-r border-slate-800/60">Total</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2.5 px-4 text-right font-mono border-r border-slate-800/40 last:border-r-0">
+                <tr className="bg-emerald-50 font-bold text-emerald-950 border-t border-b-4 border-double border-emerald-700">
+                  <td className="py-2.5 px-4 text-right border-r border-slate-200">Total</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2.5 px-4 text-right font-mono border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.totalCapitalAndLiabilities)}
                     </td>
                   ))}
@@ -397,18 +530,18 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
 
       {/* 2. STATEMENT OF COMPREHENSIVE INCOME */}
       {(subTab === 'all' || subTab === 'is') && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
-          <div className="p-5 border-b border-slate-800 text-center space-y-1 bg-slate-900/95">
-            <h3 className="text-base font-extrabold text-white tracking-wide uppercase">
+        <div className="bg-white/96 backdrop-blur-md border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+          <div className="p-5 border-b border-slate-200 text-center space-y-1 bg-white">
+            <h3 className="text-base font-extrabold text-slate-900 tracking-wide uppercase">
               {companyProfile.companyName}
             </h3>
-            <div className="text-sm font-bold text-emerald-400">
+            <div className="text-sm font-bold text-emerald-800">
               Statement of Comprehensive Income
             </div>
-            <div className="text-xs font-semibold text-slate-300">
+            <div className="text-xs font-semibold text-slate-700">
               For the year ended 31 December, {maxYear}
             </div>
-            <div className="text-[11px] text-slate-400 text-right font-mono pt-1">
+            <div className="text-[11px] text-slate-500 text-right font-mono pt-1">
               {unitCaption}
             </div>
           </div>
@@ -416,23 +549,23 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
           <div className="overflow-x-auto">
             <table className="w-full text-xs border-collapse">
               <thead>
-                <tr className="bg-slate-800/90 border-b border-slate-700 text-slate-100">
-                  <th className="py-2.5 px-4 text-left font-bold border-r border-slate-700/80 min-w-[290px]">Particulars</th>
-                  {prevData.map(d => (
-                    <th key={d.year} className="py-2.5 px-4 text-right font-mono font-bold border-r border-slate-700/60 last:border-r-0 min-w-[130px]">
+                <tr className="bg-slate-100 border-b border-slate-300 text-slate-900">
+                  <th className="py-2.5 px-4 text-left font-bold border-r border-slate-300 min-w-[290px]">Particulars</th>
+                  {displayedData.map(d => (
+                    <th key={d.year} className="py-2.5 px-4 text-right font-mono font-bold border-r border-slate-300 last:border-r-0 min-w-[130px]">
                       {d.dateLabel}
                     </th>
                   ))}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/70 tabular-nums">
-                <tr className="bg-emerald-950/10 font-semibold text-emerald-300">
-                  <td className="py-2 px-4 border-r border-slate-800/60 flex items-center gap-1.5">
+              <tbody className="divide-y divide-slate-200 tabular-nums">
+                <tr className="bg-emerald-50/55 font-semibold text-emerald-900">
+                  <td className="py-2 px-4 border-r border-slate-200 flex items-center gap-1.5">
                     <span>Sales</span>
-                    <Lock className="w-3 h-3 text-emerald-400" />
+                    <Lock className="w-3 h-3 text-emerald-700" />
                   </td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-800/40 last:border-r-0">
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-200 last:border-r-0">
                       {onUpdatePrimaryDriver ? (
                         <InlineDriverCell
                           value={d.sales}
@@ -445,25 +578,25 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                   ))}
                 </tr>
                 <tr>
-                  <td className="py-2 px-4 text-slate-300 border-r border-slate-800/60">Less- Cost of Goods Sold</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-300 border-r border-slate-800/40 last:border-r-0">
+                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Less- Cost of Goods Sold</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.costOfGoodsSold)}
                     </td>
                   ))}
                 </tr>
-                <tr className="bg-slate-800/35 font-bold text-white">
-                  <td className="py-2 px-4 border-r border-slate-800/60">Gross Profit</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-800/40 last:border-r-0">
+                <tr className="bg-slate-100/80 font-bold text-slate-900">
+                  <td className="py-2 px-4 border-r border-slate-200">Gross Profit</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.grossProfit)}
                     </td>
                   ))}
                 </tr>
-                <tr className="bg-slate-800/25 font-semibold text-slate-100">
-                  <td className="py-2 px-4 border-r border-slate-800/60">Less- Administrative &amp; Selling Expenses</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-800/40 last:border-r-0">
+                <tr className="bg-slate-50 font-semibold text-slate-900">
+                  <td className="py-2 px-4 border-r border-slate-200">Less- Administrative &amp; Selling Expenses</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.adminAndSellingTotal)}
                     </td>
                   ))}
@@ -483,46 +616,46 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                   ['Selling Exp.', 'sellingExp'],
                   ['Depreciation', 'depreciation'],
                 ] as const).map(([label, key]) => (
-                  <tr key={key} className="hover:bg-slate-800/20">
-                    <td className="py-1.5 px-4 pl-7 text-slate-400 border-r border-slate-800/60">{label}</td>
-                    {prevData.map(d => (
-                      <td key={d.year} className="py-1.5 px-4 text-right font-mono text-slate-300 border-r border-slate-800/40 last:border-r-0">
+                  <tr key={key} className="hover:bg-slate-50/70">
+                    <td className="py-1.5 px-4 pl-7 text-slate-600 border-r border-slate-200">{label}</td>
+                    {displayedData.map(d => (
+                      <td key={d.year} className="py-1.5 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
                         {fmtCell(d[key])}
                       </td>
                     ))}
                   </tr>
                 ))}
-                <tr className="bg-slate-800/35 font-bold text-white">
-                  <td className="py-2 px-4 border-r border-slate-800/60">Net Operating Profit</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-800/40 last:border-r-0">
+                <tr className="bg-slate-100/80 font-bold text-slate-900">
+                  <td className="py-2 px-4 border-r border-slate-200">Net Operating Profit</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.netOperatingProfit)}
                     </td>
                   ))}
                 </tr>
                 <tr>
-                  <td className="py-2 px-4 text-slate-300 border-r border-slate-800/60">Add: Other Income</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-300 border-r border-slate-800/40 last:border-r-0">
+                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Add: Other Income</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.otherIncome)}
                     </td>
                   ))}
                 </tr>
-                <tr className="bg-slate-800/25 font-semibold text-white">
-                  <td className="py-2 px-4 border-r border-slate-800/60">Subtotal</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-800/40 last:border-r-0">
+                <tr className="bg-slate-50 font-semibold text-slate-900">
+                  <td className="py-2 px-4 border-r border-slate-200">Subtotal</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.operatingSubtotal)}
                     </td>
                   ))}
                 </tr>
-                <tr className="bg-amber-950/10">
-                  <td className="py-2 px-4 text-amber-300 border-r border-slate-800/60 flex items-center gap-1.5">
+                <tr className="bg-amber-50/65">
+                  <td className="py-2 px-4 text-amber-900 font-medium border-r border-slate-200 flex items-center gap-1.5">
                     <span>Less: Financial Exp.</span>
-                    <Lock className="w-3 h-3 text-amber-400" />
+                    <Lock className="w-3 h-3 text-amber-700" />
                   </td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-amber-300 border-r border-slate-800/40 last:border-r-0">
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono text-amber-800 font-semibold border-r border-slate-200 last:border-r-0">
                       {onUpdatePrimaryDriver ? (
                         <InlineDriverCell
                           value={d.financialExp}
@@ -535,20 +668,20 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                   ))}
                 </tr>
                 <tr>
-                  <td className="py-2 px-4 text-slate-300 border-r border-slate-800/60">Less- Income Tax Provision</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-300 border-r border-slate-800/40 last:border-r-0">
+                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Less- Income Tax Provision</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.incomeTaxProvision)}
                     </td>
                   ))}
                 </tr>
-                <tr className="bg-emerald-950/20 font-bold text-emerald-400 border-t border-b-4 border-double border-emerald-500/80">
-                  <td className="py-2.5 px-4 border-r border-slate-800/60 flex items-center gap-1.5">
+                <tr className="bg-emerald-50 font-bold text-emerald-950 border-t border-b-4 border-double border-emerald-700">
+                  <td className="py-2.5 px-4 border-r border-slate-200 flex items-center gap-1.5">
                     <span>Net Profit After Income Tax</span>
-                    <Lock className="w-3 h-3 text-emerald-400" />
+                    <Lock className="w-3 h-3 text-emerald-700" />
                   </td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2.5 px-4 text-right font-mono border-r border-slate-800/40 last:border-r-0">
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2.5 px-4 text-right font-mono border-r border-slate-200 last:border-r-0">
                       {onUpdatePrimaryDriver ? (
                         <InlineDriverCell
                           value={d.netProfitAfterIncomeTax}
@@ -568,18 +701,18 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
 
       {/* 3. STATEMENT OF CASH FLOWS */}
       {(subTab === 'all' || subTab === 'cf') && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
-          <div className="p-5 border-b border-slate-800 text-center space-y-1 bg-slate-900/95">
-            <h3 className="text-base font-extrabold text-white tracking-wide uppercase">
+        <div className="bg-white/96 backdrop-blur-md border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+          <div className="p-5 border-b border-slate-200 text-center space-y-1 bg-white">
+            <h3 className="text-base font-extrabold text-slate-900 tracking-wide uppercase">
               {companyProfile.companyName}
             </h3>
-            <div className="text-sm font-bold text-emerald-400 uppercase tracking-wide">
+            <div className="text-sm font-bold text-emerald-800 uppercase tracking-wide">
               STATEMENT OF CASH FLOWS
             </div>
-            <div className="text-xs font-semibold text-slate-300">
+            <div className="text-xs font-semibold text-slate-700">
               For the year ended 31 December {maxYear}
             </div>
-            <div className="text-[11px] text-slate-400 text-right font-mono pt-1">
+            <div className="text-[11px] text-slate-500 text-right font-mono pt-1">
               {unitCaption}
             </div>
           </div>
@@ -587,87 +720,87 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
           <div className="overflow-x-auto">
             <table className="w-full text-xs border-collapse">
               <thead>
-                <tr className="bg-slate-800/90 border-b border-slate-700 text-slate-100">
-                  <th className="py-2.5 px-4 text-left font-bold border-r border-slate-700/80 min-w-[340px]">Particulars</th>
-                  {prevData.map(d => (
-                    <th key={d.year} className="py-2.5 px-4 text-right font-mono font-bold border-r border-slate-700/60 last:border-r-0 min-w-[130px]">
+                <tr className="bg-slate-100 border-b border-slate-300 text-slate-900">
+                  <th className="py-2.5 px-4 text-left font-bold border-r border-slate-300 min-w-[340px]">Particulars</th>
+                  {displayedData.map(d => (
+                    <th key={d.year} className="py-2.5 px-4 text-right font-mono font-bold border-r border-slate-300 last:border-r-0 min-w-[130px]">
                       {d.dateLabel}
                     </th>
                   ))}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/70 tabular-nums">
-                <tr className="bg-slate-800/40 font-bold text-emerald-300">
-                  <td colSpan={prevData.length + 1} className="py-2 px-4">a) CASH FLOWS FROM OPERATING ACTIVITIES:</td>
+              <tbody className="divide-y divide-slate-200 tabular-nums">
+                <tr className="bg-emerald-50/70 font-bold text-emerald-900">
+                  <td colSpan={displayedData.length + 1} className="py-2 px-4">a) CASH FLOWS FROM OPERATING ACTIVITIES:</td>
                 </tr>
                 <tr>
-                  <td className="py-2 px-4 text-slate-200 border-r border-slate-800/60">Net Income</td>
-                  {prevData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-200 border-r border-slate-800/40 last:border-r-0">{fmtCell(d.cfNetIncome)}</td>)}
+                  <td className="py-2 px-4 text-slate-800 border-r border-slate-200">Net Income</td>
+                  {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-800 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfNetIncome)}</td>)}
                 </tr>
                 <tr>
-                  <td className="py-2 px-4 text-slate-300 border-r border-slate-800/60">Add: Depreciation of Tangible Fixed Assets</td>
-                  {prevData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-300 border-r border-slate-800/40 last:border-r-0">{fmtCell(d.cfDepreciation)}</td>)}
+                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Add: Depreciation of Tangible Fixed Assets</td>
+                  {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfDepreciation)}</td>)}
                 </tr>
                 <tr>
-                  <td className="py-2 px-4 text-slate-300 border-r border-slate-800/60">Add: (Increase) or decrease in Current Assets</td>
-                  {prevData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-300 border-r border-slate-800/40 last:border-r-0">{fmtCell(d.cfChangeInCurrentAssets)}</td>)}
+                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Add: (Increase) or decrease in Current Assets</td>
+                  {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfChangeInCurrentAssets)}</td>)}
                 </tr>
                 <tr>
-                  <td className="py-2 px-4 text-slate-300 border-r border-slate-800/60">Add: (Increase) or decrease in Construction Working Progress</td>
-                  {prevData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-300 border-r border-slate-800/40 last:border-r-0">{fmtCell(d.cfChangeInCWIP)}</td>)}
+                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Add: (Increase) or decrease in Construction Working Progress</td>
+                  {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfChangeInCWIP)}</td>)}
                 </tr>
                 <tr>
-                  <td className="py-2 px-4 text-slate-300 border-r border-slate-800/60">Add: Increase or (decrease) in Current Liabilities</td>
-                  {prevData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-300 border-r border-slate-800/40 last:border-r-0">{fmtCell(d.cfChangeInCurrentLiabilities)}</td>)}
+                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Add: Increase or (decrease) in Current Liabilities</td>
+                  {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfChangeInCurrentLiabilities)}</td>)}
                 </tr>
-                <tr className="bg-slate-800/35 font-bold text-emerald-400">
-                  <td className="py-2 px-4 border-r border-slate-800/60">Net Cash from operating activities</td>
-                  {prevData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-800/40 last:border-r-0">{fmtCell(d.cfNetCashOperating)}</td>)}
+                <tr className="bg-emerald-50/75 font-bold text-emerald-900">
+                  <td className="py-2 px-4 border-r border-slate-200">Net Cash from operating activities</td>
+                  {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-200 last:border-r-0">{fmtCell(d.cfNetCashOperating)}</td>)}
                 </tr>
 
-                <tr className="bg-slate-800/40 font-bold text-sky-300">
-                  <td colSpan={prevData.length + 1} className="py-2 px-4">b) CASH FLOWS FROM INVESTING ACTIVITIES:</td>
+                <tr className="bg-sky-50/70 font-bold text-sky-900">
+                  <td colSpan={displayedData.length + 1} className="py-2 px-4">b) CASH FLOWS FROM INVESTING ACTIVITIES:</td>
                 </tr>
                 <tr>
-                  <td className="py-2 px-4 text-slate-300 border-r border-slate-800/60">Acquisition of Tangible Fixed Assets</td>
-                  {prevData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-300 border-r border-slate-800/40 last:border-r-0">{fmtCell(d.cfAcquisitionPPE)}</td>)}
+                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Acquisition of Tangible Fixed Assets</td>
+                  {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfAcquisitionPPE)}</td>)}
                 </tr>
                 <tr>
-                  <td className="py-2 px-4 text-slate-300 border-r border-slate-800/60">Disposal of Intangible Assets</td>
-                  {prevData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-300 border-r border-slate-800/40 last:border-r-0">{fmtCell(d.cfDisposalIntangible)}</td>)}
+                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Disposal of Intangible Assets</td>
+                  {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfDisposalIntangible)}</td>)}
                 </tr>
-                <tr className="bg-slate-800/35 font-bold text-sky-400">
-                  <td className="py-2 px-4 border-r border-slate-800/60">Net Cash used in investing Activities</td>
-                  {prevData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-800/40 last:border-r-0">{fmtCell(d.cfNetCashInvesting)}</td>)}
+                <tr className="bg-sky-50/75 font-bold text-sky-900">
+                  <td className="py-2 px-4 border-r border-slate-200">Net Cash used in investing Activities</td>
+                  {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-200 last:border-r-0">{fmtCell(d.cfNetCashInvesting)}</td>)}
                 </tr>
 
-                <tr className="bg-slate-800/40 font-bold text-amber-300">
-                  <td colSpan={prevData.length + 1} className="py-2 px-4">c) CASH FLOWS FROM FINANCING ACTIVITIES:</td>
+                <tr className="bg-amber-50/70 font-bold text-amber-900">
+                  <td colSpan={displayedData.length + 1} className="py-2 px-4">c) CASH FLOWS FROM FINANCING ACTIVITIES:</td>
                 </tr>
                 <tr>
-                  <td className="py-2 px-4 text-slate-300 border-r border-slate-800/60">Drawings</td>
-                  {prevData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-300 border-r border-slate-800/40 last:border-r-0">{fmtCell(d.cfDrawings)}</td>)}
+                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Drawings</td>
+                  {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfDrawings)}</td>)}
                 </tr>
                 <tr>
-                  <td className="py-2 px-4 text-slate-300 border-r border-slate-800/60">Opening Balance</td>
-                  {prevData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-300 border-r border-slate-800/40 last:border-r-0">{fmtCell(d.cfOpeningBalance)}</td>)}
+                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Opening Balance</td>
+                  {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfOpeningBalance)}</td>)}
                 </tr>
-                <tr className="bg-slate-800/35 font-bold text-amber-400">
-                  <td className="py-2 px-4 border-r border-slate-800/60">Net Cash used in Financing Activities</td>
-                  {prevData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-800/40 last:border-r-0">{fmtCell(d.cfNetCashFinancing)}</td>)}
+                <tr className="bg-amber-50/75 font-bold text-amber-900">
+                  <td className="py-2 px-4 border-r border-slate-200">Net Cash used in Financing Activities</td>
+                  {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-200 last:border-r-0">{fmtCell(d.cfNetCashFinancing)}</td>)}
                 </tr>
 
-                <tr className="font-semibold text-white">
-                  <td className="py-2 px-4 border-r border-slate-800/60">d) Net Increase decrease in cash &amp; cash equivalents (A+B+C)</td>
-                  {prevData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-800/40 last:border-r-0">{fmtCell(d.cfNetIncreaseCash)}</td>)}
+                <tr className="font-semibold text-slate-900">
+                  <td className="py-2 px-4 border-r border-slate-200">d) Net Increase decrease in cash &amp; cash equivalents (A+B+C)</td>
+                  {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-200 last:border-r-0">{fmtCell(d.cfNetIncreaseCash)}</td>)}
                 </tr>
                 <tr>
-                  <td className="py-2 px-4 text-slate-300 border-r border-slate-800/60">e) Cash &amp; Cash Equivalents at beginning of period</td>
-                  {prevData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-300 border-r border-slate-800/40 last:border-r-0">{fmtCell(d.cfCashBeginning)}</td>)}
+                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">e) Cash &amp; Cash Equivalents at beginning of period</td>
+                  {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfCashBeginning)}</td>)}
                 </tr>
-                <tr className="bg-emerald-950/20 font-bold text-emerald-400 border-t border-b-4 border-double border-emerald-500/80">
-                  <td className="py-2.5 px-4 border-r border-slate-800/60">f) Cash &amp; Cash Equivalents at end of period (D+E)</td>
-                  {prevData.map(d => <td key={d.year} className="py-2.5 px-4 text-right font-mono border-r border-slate-800/40 last:border-r-0">{fmtCell(d.cfCashEnding)}</td>)}
+                <tr className="bg-emerald-50 font-bold text-emerald-950 border-t border-b-4 border-double border-emerald-700">
+                  <td className="py-2.5 px-4 border-r border-slate-200">f) Cash &amp; Cash Equivalents at end of period (D+E)</td>
+                  {displayedData.map(d => <td key={d.year} className="py-2.5 px-4 text-right font-mono border-r border-slate-200 last:border-r-0">{fmtCell(d.cfCashEnding)}</td>)}
                 </tr>
               </tbody>
             </table>
@@ -677,18 +810,18 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
 
       {/* 4. STATEMENT OF CHANGES IN EQUITY */}
       {(subTab === 'all' || subTab === 'eq') && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
-          <div className="p-5 border-b border-slate-800 text-center space-y-1 bg-slate-900/95">
-            <h3 className="text-base font-extrabold text-white tracking-wide uppercase">
+        <div className="bg-white/96 backdrop-blur-md border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+          <div className="p-5 border-b border-slate-200 text-center space-y-1 bg-white">
+            <h3 className="text-base font-extrabold text-slate-900 tracking-wide uppercase">
               {companyProfile.companyName}
             </h3>
-            <div className="text-sm font-bold text-emerald-400 uppercase tracking-wide">
+            <div className="text-sm font-bold text-emerald-800 uppercase tracking-wide">
               STATEMENT OF CHANGES IN EQUITY
             </div>
-            <div className="text-xs font-semibold text-slate-300">
+            <div className="text-xs font-semibold text-slate-700">
               For the year ended 31 December {maxYear}
             </div>
-            <div className="text-[11px] text-slate-400 text-right font-mono pt-1">
+            <div className="text-[11px] text-slate-500 text-right font-mono pt-1">
               {unitCaption}
             </div>
           </div>
@@ -696,16 +829,16 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
           <div className="overflow-x-auto">
             <table className="w-full text-xs border-collapse">
               <thead>
-                <tr className="bg-slate-800/90 border-b border-slate-700 text-slate-100">
-                  <th className="py-2.5 px-4 text-left font-bold border-r border-slate-700/80 min-w-[290px]">Particulars</th>
-                  {prevData.map(d => (
-                    <th key={d.year} className="py-2.5 px-4 text-right font-mono font-bold border-r border-slate-700/60 last:border-r-0 min-w-[130px]">
+                <tr className="bg-slate-100 border-b border-slate-300 text-slate-900">
+                  <th className="py-2.5 px-4 text-left font-bold border-r border-slate-300 min-w-[290px]">Particulars</th>
+                  {displayedData.map(d => (
+                    <th key={d.year} className="py-2.5 px-4 text-right font-mono font-bold border-r border-slate-300 last:border-r-0 min-w-[130px]">
                       {d.dateLabel}
                     </th>
                   ))}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/70 tabular-nums">
+              <tbody className="divide-y divide-slate-200 tabular-nums">
                 {([
                   ['Opening Share Capital', 'eqOpeningShareCapital'],
                   ['Share Capital Issued', 'eqShareCapitalIssued'],
@@ -716,19 +849,19 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                   ['Closing Retained Earnings', 'eqClosingRetainedEarnings'],
                   ['Closing Reserves', 'eqClosingReserves'],
                 ] as const).map(([label, key]) => (
-                  <tr key={key} className="hover:bg-slate-800/20">
-                    <td className="py-2 px-4 text-slate-200 border-r border-slate-800/60">{label}</td>
-                    {prevData.map(d => (
-                      <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-200 border-r border-slate-800/40 last:border-r-0">
+                  <tr key={key} className="hover:bg-slate-50/70">
+                    <td className="py-2 px-4 text-slate-800 border-r border-slate-200">{label}</td>
+                    {displayedData.map(d => (
+                      <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-800 border-r border-slate-200 last:border-r-0">
                         {key === 'eqDividendsPaid' ? fmtCell(-d[key]) : fmtCell(d[key])}
                       </td>
                     ))}
                   </tr>
                 ))}
-                <tr className="bg-emerald-950/20 font-bold text-emerald-400 border-t border-b-4 border-double border-emerald-500/80">
-                  <td className="py-2.5 px-4 border-r border-slate-800/60">TOTAL CLOSING EQUITY</td>
-                  {prevData.map(d => (
-                    <td key={d.year} className="py-2.5 px-4 text-right font-mono border-r border-slate-800/40 last:border-r-0">
+                <tr className="bg-emerald-50 font-bold text-emerald-950 border-t border-b-4 border-double border-emerald-700">
+                  <td className="py-2.5 px-4 border-r border-slate-200">TOTAL CLOSING EQUITY</td>
+                  {displayedData.map(d => (
+                    <td key={d.year} className="py-2.5 px-4 text-right font-mono border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.eqTotalClosingEquity)}
                     </td>
                   ))}
@@ -742,39 +875,39 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
       {/* 5. 1.00 FIXED ASSETS SCHEDULE & NOTES TO THE FINANCIAL STATEMENTS */}
       {(subTab === 'all' || subTab === 'fa') && (
         <div className="space-y-5">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
-            <div className="p-5 border-b border-slate-800 text-center space-y-1 bg-slate-900/95">
-              <h3 className="text-base font-extrabold text-white tracking-wide uppercase">
+          <div className="bg-white/96 backdrop-blur-md border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+            <div className="p-5 border-b border-slate-200 text-center space-y-1 bg-white">
+              <h3 className="text-base font-extrabold text-slate-900 tracking-wide uppercase">
                 {companyProfile.companyName}
               </h3>
-              <div className="text-xs font-semibold text-slate-300">
+              <div className="text-xs font-semibold text-slate-700">
                 For the Year ended 31 December {maxYear}
               </div>
-              <div className="text-left text-xs font-bold text-emerald-400 pt-2">
+              <div className="text-left text-xs font-bold text-emerald-800 pt-2">
                 1.00 FIXED ASSETS SCHEDULE
               </div>
             </div>
 
             <div className="p-4 space-y-4 overflow-x-auto">
               {faAsc.map(d => (
-                <table key={d.year} className="w-full text-xs border border-slate-700 border-collapse tabular-nums">
+                <table key={d.year} className="w-full text-xs border border-slate-300 border-collapse tabular-nums">
                   <thead>
-                    <tr className="bg-slate-800/90 text-slate-100 border-b border-slate-700">
-                      <th className="py-2 px-3 text-left border-r border-slate-700">Particulars</th>
-                      <th className="py-2 px-3 text-right border-r border-slate-700">Opening at 01.01.{d.year}</th>
-                      <th className="py-2 px-3 text-right border-r border-slate-700">Addition during the year</th>
-                      <th className="py-2 px-3 text-right border-r border-slate-700">Total at 31.12.{d.year}</th>
-                      <th className="py-2 px-3 text-center border-r border-slate-700">Rate %</th>
-                      <th className="py-2 px-3 text-right border-r border-slate-700">Depreciation charged for the year</th>
+                    <tr className="bg-slate-100 text-slate-900 border-b border-slate-300">
+                      <th className="py-2 px-3 text-left border-r border-slate-300">Particulars</th>
+                      <th className="py-2 px-3 text-right border-r border-slate-300">Opening at 01.01.{d.year}</th>
+                      <th className="py-2 px-3 text-right border-r border-slate-300">Addition during the year</th>
+                      <th className="py-2 px-3 text-right border-r border-slate-300">Total at 31.12.{d.year}</th>
+                      <th className="py-2 px-3 text-center border-r border-slate-300">Rate %</th>
+                      <th className="py-2 px-3 text-right border-r border-slate-300">Depreciation charged for the year</th>
                       <th className="py-2 px-3 text-right">W.D.V. at 31.12.{d.year}</th>
                     </tr>
                   </thead>
                   <tbody>
-                    <tr className="border-b border-slate-800">
-                      <td className="py-2 px-3 text-slate-200 border-r border-slate-800">Fixed Assets</td>
-                      <td className="py-2 px-3 text-right font-mono text-slate-200 border-r border-slate-800">{fmtCell(d.faOpening)}</td>
-                      <td className="py-2 px-3 text-right font-mono text-slate-200 border-r border-slate-800">{fmtCell(d.faAddition - d.faDisposal)}</td>
-                      <td className="py-2 px-3 text-right font-mono text-emerald-300 font-semibold border-r border-slate-800">
+                    <tr className="border-b border-slate-200">
+                      <td className="py-2 px-3 text-slate-800 border-r border-slate-200">Fixed Assets</td>
+                      <td className="py-2 px-3 text-right font-mono text-slate-800 border-r border-slate-200">{fmtCell(d.faOpening)}</td>
+                      <td className="py-2 px-3 text-right font-mono text-slate-800 border-r border-slate-200">{fmtCell(d.faAddition - d.faDisposal)}</td>
+                      <td className="py-2 px-3 text-right font-mono text-emerald-800 font-semibold border-r border-slate-200">
                         {onUpdatePrimaryDriver ? (
                           <InlineDriverCell
                             value={d.faGrossAssetBase}
@@ -784,17 +917,17 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                           />
                         ) : fmtCell(d.faTotal)}
                       </td>
-                      <td className="py-2 px-3 text-center font-mono text-slate-300 border-r border-slate-800">{d.faRatePct}</td>
-                      <td className="py-2 px-3 text-right font-mono text-slate-200 border-r border-slate-800">{fmtCell(d.faDepreciationCharged)}</td>
-                      <td className="py-2 px-3 text-right font-mono text-white font-semibold">{fmtCell(d.faWDV)}</td>
+                      <td className="py-2 px-3 text-center font-mono text-slate-700 border-r border-slate-200">{d.faRatePct}</td>
+                      <td className="py-2 px-3 text-right font-mono text-slate-800 border-r border-slate-200">{fmtCell(d.faDepreciationCharged)}</td>
+                      <td className="py-2 px-3 text-right font-mono text-slate-900 font-semibold">{fmtCell(d.faWDV)}</td>
                     </tr>
-                    <tr className="bg-slate-800/40 font-bold text-emerald-400">
-                      <td className="py-2 px-3 border-r border-slate-800">Taka</td>
-                      <td className="py-2 px-3 text-right font-mono border-r border-slate-800">{fmtCell(d.faOpening)}</td>
-                      <td className="py-2 px-3 text-right font-mono border-r border-slate-800">{fmtCell(d.faAddition - d.faDisposal)}</td>
-                      <td className="py-2 px-3 text-right font-mono border-r border-slate-800">{fmtCell(d.faTotal)}</td>
-                      <td className="py-2 px-3 border-r border-slate-800"></td>
-                      <td className="py-2 px-3 text-right font-mono border-r border-slate-800">{fmtCell(d.faDepreciationCharged)}</td>
+                    <tr className="bg-emerald-50 font-bold text-emerald-950">
+                      <td className="py-2 px-3 border-r border-slate-200">Taka</td>
+                      <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.faOpening)}</td>
+                      <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.faAddition - d.faDisposal)}</td>
+                      <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.faTotal)}</td>
+                      <td className="py-2 px-3 border-r border-slate-200"></td>
+                      <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.faDepreciationCharged)}</td>
                       <td className="py-2 px-3 text-right font-mono">{fmtCell(d.faWDV)}</td>
                     </tr>
                   </tbody>
@@ -803,17 +936,48 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
             </div>
           </div>
 
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
-            <h4 className="text-sm font-bold text-white border-b border-slate-800 pb-2">
+          <div className="bg-white/96 backdrop-blur-md border border-slate-200 rounded-2xl p-5 space-y-4 shadow-sm">
+            <h4 className="text-sm font-bold text-slate-900 border-b border-slate-200 pb-2">
               NOTES TO THE FINANCIAL STATEMENTS:
             </h4>
-            <div className="space-y-3 text-xs">
-              {notes.map(note => (
-                <div key={note.noteNumber} className="space-y-1">
-                  <div className="font-bold text-emerald-400">
+            <div className="space-y-4 text-xs">
+              {displayedNotes.map(note => (
+                <div key={note.noteNumber} className="space-y-2">
+                  <div className="font-bold text-emerald-800">
                     Note {note.noteNumber}: {note.title}
                   </div>
-                  <p className="text-slate-300 leading-relaxed">{note.textDescription}</p>
+                  <p className="text-slate-700 leading-relaxed">{note.textDescription}</p>
+                  {note.tableData && (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-[11px] border border-slate-200 border-collapse tabular-nums">
+                        <thead>
+                          <tr className="bg-slate-100 text-slate-800 border-b border-slate-200">
+                            {note.tableData.headers.map((h, i) => (
+                              <th key={i} className={`py-1.5 px-3 font-semibold ${i === 0 ? 'text-left' : 'text-right'}`}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-200">
+                          {note.tableData.rows.map((r, rIdx) => (
+                            <tr key={rIdx}>
+                              <td className="py-1 px-3 text-slate-700">{r.label}</td>
+                              {r.values.map((v, vIdx) => (
+                                <td key={vIdx} className="py-1 px-3 text-right font-mono text-slate-800">{String(v)}</td>
+                              ))}
+                            </tr>
+                          ))}
+                          {note.tableData.totalRow && (
+                            <tr className="bg-slate-50 font-bold text-slate-900">
+                              <td className="py-1.5 px-3">{note.tableData.totalRow.label}</td>
+                              {note.tableData.totalRow.values.map((v, vIdx) => (
+                                <td key={vIdx} className="py-1.5 px-3 text-right font-mono">{String(v)}</td>
+                              ))}
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -846,7 +1010,7 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
 
   if (projData.length === 0) {
     return (
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center text-xs text-slate-400">
+      <div className="bg-white/92 backdrop-blur-md border border-slate-200 rounded-2xl p-8 text-center text-xs text-slate-600 shadow-sm">
         Select at least one projected financial year to render the Projected Financials statements.
       </div>
     );
@@ -854,7 +1018,9 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
 
   const maxYear = projData[0].year; // Descending order
   const minYear = projData[projData.length - 1].year;
+  const rangeStr = minYear === maxYear ? `${maxYear}` : `${minYear}–${maxYear}`;
   const amtLabel = companyProfile.reportingCurrency === '৳' ? 'Amount In Taka' : `Amount In ${companyProfile.reportingCurrency}`;
+  const unitNote = companyProfile.reportingUnit !== 'Units' ? ` · ${companyProfile.reportingUnit}` : '';
   const projAsc = [...projData].sort((a, b) => a.year - b.year);
 
   const subTabs = [
@@ -869,18 +1035,19 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
   return (
     <div className="space-y-5">
       {/* Control & Export Strip */}
-      <div className="bg-slate-900 border border-sky-900/50 rounded-2xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+      <div className="bg-white/92 backdrop-blur-md border border-sky-200 rounded-2xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4 shadow-sm">
         <div className="space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[10px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-sky-950 text-sky-300 border border-sky-700/60">
-              Exact Format: Projected Financials
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="font-mono font-bold uppercase tracking-wider text-sky-700">
+              Projected Financials Format
             </span>
-            <span className="text-xs font-bold text-white">
-              {projData.length} Projected Years Selected ({minYear}–{maxYear})
+            <span className="text-slate-300" aria-hidden="true">·</span>
+            <span className="font-bold text-slate-900">
+              {projData.length} Projected {projData.length === 1 ? 'Year' : 'Years'} Selected ({rangeStr})
             </span>
           </div>
-          <p className="text-[11px] text-slate-400">
-            Reproduces exact layout, Notes column, two-row Amount In Taka / Year headers, Proprietor signoff, Notes 1–13.00, and Schedule-A PPE.
+          <p className="text-[11px] text-slate-600">
+            Reproduces exact landscape layout, Notes column, two-row {amtLabel} / Year headers, Proprietor signoff, Notes 1–13.00, and Schedule-A PPE{unitNote}.
           </p>
         </div>
 
@@ -888,7 +1055,7 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
           <button
             type="button"
             onClick={() => exportProjectedFinancialsExcel(companyProfile, projData)}
-            className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors"
+            className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors whitespace-nowrap shrink-0"
           >
             <FileSpreadsheet className="w-3.5 h-3.5" />
             Projected Excel (.xlsx)
@@ -896,7 +1063,7 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
           <button
             type="button"
             onClick={() => exportProjectedFinancialsWord(companyProfile, projData)}
-            className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors"
+            className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors whitespace-nowrap shrink-0"
           >
             <FileText className="w-3.5 h-3.5" />
             Projected Word (.docx)
@@ -904,7 +1071,7 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
           <button
             type="button"
             onClick={() => exportProjectedFinancialsPdf(companyProfile, projData)}
-            className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors"
+            className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors whitespace-nowrap shrink-0"
           >
             <Download className="w-3.5 h-3.5" />
             Projected PDF (.pdf)
@@ -921,10 +1088,10 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
               key={t.id}
               type="button"
               onClick={() => setSubTab(t.id)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors border ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors border whitespace-nowrap shrink-0 ${
                 subTab === t.id
-                  ? 'bg-sky-600 text-white border-sky-400/50'
-                  : 'bg-slate-900 text-slate-300 border-slate-800 hover:bg-slate-800'
+                  ? 'bg-sky-600 text-white border-sky-600 shadow-sm'
+                  : 'bg-white/90 text-slate-700 border-slate-200 hover:bg-slate-50 hover:text-slate-900'
               }`}
             >
               <Icon className="w-3.5 h-3.5" />
@@ -936,66 +1103,66 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
 
       {/* 1. STATEMENT OF FINANCIAL POSITION */}
       {(subTab === 'all' || subTab === 'bs') && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
-          <div className="p-5 border-b border-slate-800 text-center space-y-1 bg-slate-900/95">
-            <h3 className="text-base font-extrabold text-white tracking-wide">{companyProfile.companyName}</h3>
-            <div className="text-sm font-bold text-sky-400">Statement of Financial Position</div>
-            <div className="text-xs text-slate-300">As at 31st December, {maxYear}(Projected)</div>
+        <div className="bg-white/96 backdrop-blur-md border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+          <div className="p-5 border-b border-slate-200 text-center space-y-1 bg-slate-50/75">
+            <h3 className="text-base font-extrabold text-slate-900 tracking-wide">{companyProfile.companyName}</h3>
+            <div className="text-sm font-bold text-sky-800">Statement of Financial Position</div>
+            <div className="text-xs text-slate-600">As at 31st December, {maxYear}(Projected)</div>
           </div>
 
           <div className="overflow-x-auto">
             <table className="w-full text-xs border-collapse tabular-nums">
               <thead>
-                <tr className="bg-slate-800/90 border-b border-slate-700 text-slate-100">
-                  <th rowSpan={2} className="py-2 px-4 text-center font-bold border-r border-slate-700 min-w-[270px]">Particulars</th>
-                  <th rowSpan={2} className="py-2 px-3 text-center font-bold border-r border-slate-700 w-24">Notes</th>
+                <tr className="bg-slate-100/95 border-b border-slate-200 text-slate-900">
+                  <th rowSpan={2} className="py-2 px-4 text-center font-bold border-r border-slate-200 min-w-[270px]">Particulars</th>
+                  <th rowSpan={2} className="py-2 px-3 text-center font-bold border-r border-slate-200 w-24">Notes</th>
                   {projData.map(d => (
-                    <th key={`amt-${d.year}`} className="py-1.5 px-3 text-center font-semibold border-r border-b border-slate-700/80 last:border-r-0 min-w-[125px] text-[11px]">
+                    <th key={`amt-${d.year}`} className="py-1.5 px-3 text-center font-semibold border-r border-b border-slate-200 last:border-r-0 min-w-[125px] text-[11px]">
                       {amtLabel}
                     </th>
                   ))}
                 </tr>
-                <tr className="bg-slate-800/80 border-b border-slate-700 text-sky-300 font-mono">
+                <tr className="bg-slate-50/90 border-b border-slate-200 text-sky-800 font-mono">
                   {projData.map(d => (
-                    <th key={`yr-${d.year}`} className="py-1.5 px-3 text-center font-bold border-r border-slate-700/80 last:border-r-0">
+                    <th key={`yr-${d.year}`} className="py-1.5 px-3 text-center font-bold border-r border-slate-200 last:border-r-0">
                       {d.year}
                     </th>
                   ))}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/60">
-                <tr className="bg-slate-800/40 font-bold text-white underline">
+              <tbody className="divide-y divide-slate-200/80 text-slate-800">
+                <tr className="bg-slate-50 font-bold text-slate-900 underline">
                   <td colSpan={projData.length + 2} className="py-2 px-4">Assets</td>
                 </tr>
-                <tr className="font-semibold text-slate-200">
+                <tr className="font-semibold text-slate-900">
                   <td colSpan={projData.length + 2} className="py-1.5 px-4">Non Current Assets</td>
                 </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-300">Property Plant &amp; Equiptments</td>
-                  <td className="py-2 px-3 text-center font-mono text-sky-300">Schedule-A</td>
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-2 px-4 text-slate-700">Property Plant &amp; Equiptments</td>
+                  <td className="py-2 px-3 text-center font-mono text-sky-700 font-semibold">Schedule-A</td>
                   {projData.map(d => (
-                    <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-200">{fmtCell(d.propertyPlantEquipments)}</td>
+                    <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.propertyPlantEquipments)}</td>
                   ))}
                 </tr>
-                <tr className="bg-slate-800/25 font-bold text-white border-t border-b-2 border-slate-600">
-                  <td className="py-1.5 px-4"></td>
+                <tr className="bg-slate-100/70 font-bold text-slate-900 border-t border-b-2 border-slate-300">
+                  <td className="py-1.5 px-4">Total Non-Current Assets</td>
                   <td></td>
                   {projData.map(d => (
                     <td key={d.year} className="py-1.5 px-3 text-right font-mono">{fmtCell(d.propertyPlantEquipments)}</td>
                   ))}
                 </tr>
 
-                <tr className="font-semibold text-slate-200">
+                <tr className="font-semibold text-slate-900">
                   <td colSpan={projData.length + 2} className="py-2 px-4">Current Assets</td>
                 </tr>
-                <tr className="bg-emerald-950/10">
-                  <td className="py-2 px-4 text-emerald-300 flex items-center gap-1.5">
+                <tr className="bg-emerald-50/60">
+                  <td className="py-2 px-4 text-emerald-900 font-medium flex items-center gap-1.5">
                     <span>Inventories</span>
-                    <Lock className="w-3 h-3 text-emerald-400" />
+                    <Lock className="w-3 h-3 text-emerald-600" />
                   </td>
-                  <td className="py-2 px-3 text-center font-mono text-slate-400">3.00</td>
+                  <td className="py-2 px-3 text-center font-mono text-slate-600">3.00</td>
                   {projData.map(d => (
-                    <td key={d.year} className="py-2 px-3 text-right font-mono text-emerald-300 font-semibold">
+                    <td key={d.year} className="py-2 px-3 text-right font-mono text-emerald-800 font-semibold">
                       {onUpdatePrimaryDriver ? (
                         <InlineDriverCell
                           value={d.inventories}
@@ -1007,104 +1174,104 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                     </td>
                   ))}
                 </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-300">Trade &amp; Other Receivables</td>
-                  <td className="py-2 px-3 text-center font-mono text-slate-400">4.00</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-200">{fmtCell(d.tradeAndOtherReceivables)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-2 px-4 text-slate-700">Trade &amp; Other Receivables</td>
+                  <td className="py-2 px-3 text-center font-mono text-slate-600">4.00</td>
+                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.tradeAndOtherReceivables)}</td>)}
                 </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-300">Advance, Deposit &amp; Prepayments</td>
-                  <td className="py-2 px-3 text-center font-mono text-slate-400">5.00</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-200">{fmtCell(d.advanceDepositPrepayments)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-2 px-4 text-slate-700">Advance, Deposit &amp; Prepayments</td>
+                  <td className="py-2 px-3 text-center font-mono text-slate-600">5.00</td>
+                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.advanceDepositPrepayments)}</td>)}
                 </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-300">Cash &amp; Cash Equivalents</td>
-                  <td className="py-2 px-3 text-center font-mono text-slate-400">6.00</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-200">{fmtCell(d.cashAndCashEquivalents)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-2 px-4 text-slate-700">Cash &amp; Cash Equivalents</td>
+                  <td className="py-2 px-3 text-center font-mono text-slate-600">6.00</td>
+                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.cashAndCashEquivalents)}</td>)}
                 </tr>
-                <tr className="bg-slate-800/25 font-bold text-white border-t border-slate-600">
-                  <td className="py-1.5 px-4"></td>
+                <tr className="bg-slate-100/70 font-bold text-slate-900 border-t border-slate-300">
+                  <td className="py-1.5 px-4">Total Current Assets</td>
                   <td></td>
                   {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono">{fmtCell(d.totalCurrentAssets)}</td>)}
                 </tr>
-                <tr className="bg-sky-950/25 font-bold text-sky-300 border-t border-b-4 border-double border-sky-500/70">
+                <tr className="bg-sky-50/80 font-bold text-sky-900 border-t border-b-4 border-double border-sky-600">
                   <td className="py-2.5 px-4 text-right">Total Assets</td>
                   <td></td>
                   {projData.map(d => <td key={d.year} className="py-2.5 px-3 text-right font-mono">{fmtCell(d.totalAssets)}</td>)}
                 </tr>
 
-                <tr className="bg-slate-800/40 font-bold text-white underline">
+                <tr className="bg-slate-50 font-bold text-slate-900 underline">
                   <td colSpan={projData.length + 2} className="py-2 px-4">Equity &amp; Liabilities</td>
                 </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-300">Capital</td>
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-2 px-4 text-slate-700">Capital</td>
                   <td></td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-200">{fmtCell(d.capital)}</td>)}
+                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.capital)}</td>)}
                 </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-300">Additional Capital</td>
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-2 px-4 text-slate-700">Additional Capital</td>
                   <td></td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-200">{fmtCell(d.additionalCapital)}</td>)}
+                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.additionalCapital)}</td>)}
                 </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-300">Profit during the year</td>
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-2 px-4 text-slate-700">Profit during the year</td>
                   <td></td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-emerald-300">{fmtCell(d.profitDuringYear)}</td>)}
+                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-emerald-700 font-semibold">{fmtCell(d.profitDuringYear)}</td>)}
                 </tr>
-                <tr className="bg-slate-800/25 font-bold text-white border-t border-slate-600">
-                  <td className="py-1.5 px-4"></td>
+                <tr className="bg-slate-100/70 font-bold text-slate-900 border-t border-slate-300">
+                  <td className="py-1.5 px-4">Subtotal</td>
                   <td></td>
                   {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono">{fmtCell(d.equitySubtotal)}</td>)}
                 </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-300">Drawings</td>
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-2 px-4 text-slate-700">Drawings</td>
                   <td></td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-rose-300">{fmtCell(d.drawings)}</td>)}
+                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-rose-700">{fmtCell(d.drawings)}</td>)}
                 </tr>
-                <tr className="bg-slate-800/35 font-bold text-white border-t border-b-2 border-slate-600">
-                  <td className="py-1.5 px-4"></td>
+                <tr className="bg-slate-100/80 font-bold text-slate-900 border-t border-b-2 border-slate-300">
+                  <td className="py-1.5 px-4">Closing Capital / Equity</td>
                   <td></td>
                   {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono">{fmtCell(d.closingCapital)}</td>)}
                 </tr>
 
-                <tr className="font-semibold text-slate-200">
+                <tr className="font-semibold text-slate-900">
                   <td colSpan={projData.length + 2} className="py-2 px-4">Non-Current Liabilities</td>
                 </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-300">Long Term Loan</td>
-                  <td className="py-2 px-3 text-center font-mono text-slate-400">7.00</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-200">{fmtCell(d.longTermLoan)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-2 px-4 text-slate-700">Long Term Loan</td>
+                  <td className="py-2 px-3 text-center font-mono text-slate-600">7.00</td>
+                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.longTermLoan)}</td>)}
                 </tr>
 
-                <tr className="font-semibold text-slate-200">
+                <tr className="font-semibold text-slate-900">
                   <td colSpan={projData.length + 2} className="py-2 px-4">Current Liabilities</td>
                 </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-300">Trade &amp; Other Payables</td>
-                  <td className="py-2 px-3 text-center font-mono text-slate-400">8.00</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-200">{fmtCell(d.tradeAndOtherPayables)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-2 px-4 text-slate-700">Trade &amp; Other Payables</td>
+                  <td className="py-2 px-3 text-center font-mono text-slate-600">8.00</td>
+                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.tradeAndOtherPayables)}</td>)}
                 </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-300">Provisions For Tax</td>
-                  <td className="py-2 px-3 text-center font-mono text-slate-400">9.00</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-200">{fmtCell(d.provisionsForTax)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-2 px-4 text-slate-700">Provisions For Tax</td>
+                  <td className="py-2 px-3 text-center font-mono text-slate-600">9.00</td>
+                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.provisionsForTax)}</td>)}
                 </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-300">Short Term Loan</td>
-                  <td className="py-2 px-3 text-center font-mono text-slate-400">10.00</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-200">{fmtCell(d.shortTermLoan)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-2 px-4 text-slate-700">Short Term Loan</td>
+                  <td className="py-2 px-3 text-center font-mono text-slate-600">10.00</td>
+                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.shortTermLoan)}</td>)}
                 </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-300">Liabilities for exp.</td>
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-2 px-4 text-slate-700">Liabilities for exp.</td>
                   <td></td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-200">{fmtCell(d.liabilitiesForExp)}</td>)}
+                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.liabilitiesForExp)}</td>)}
                 </tr>
-                <tr className="bg-slate-800/25 font-bold text-white border-t border-slate-600">
-                  <td className="py-1.5 px-4"></td>
+                <tr className="bg-slate-100/70 font-bold text-slate-900 border-t border-slate-300">
+                  <td className="py-1.5 px-4">Total Current Liabilities</td>
                   <td></td>
                   {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono">{fmtCell(d.totalCurrentLiabilities)}</td>)}
                 </tr>
-                <tr className="bg-sky-950/25 font-bold text-sky-300 border-t border-b-4 border-double border-sky-500/70">
+                <tr className="bg-sky-50/80 font-bold text-sky-900 border-t border-b-4 border-double border-sky-600">
                   <td className="py-2.5 px-4 text-right">Total Equity &amp; Liabilities</td>
                   <td></td>
                   {projData.map(d => <td key={d.year} className="py-2.5 px-3 text-right font-mono">{fmtCell(d.totalEquityAndLiabilities)}</td>)}
@@ -1113,12 +1280,12 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
             </table>
           </div>
 
-          <div className="px-6 py-4 bg-slate-950/60 border-t border-slate-800 flex flex-col sm:flex-row items-start sm:items-end justify-between gap-4 text-xs text-slate-300">
+          <div className="px-6 py-4 bg-slate-50/85 border-t border-slate-200 flex flex-col sm:flex-row items-start sm:items-end justify-between gap-4 text-xs text-slate-700">
             <div>
-              <div className="text-slate-500">...............................</div>
-              <div className="font-bold text-white">Proprietor</div>
+              <div className="text-slate-400">...............................</div>
+              <div className="font-bold text-slate-900">Proprietor</div>
             </div>
-            <div className="italic text-slate-400">
+            <div className="italic text-slate-600">
               Signed in terms of our separate report of even date.
             </div>
           </div>
@@ -1127,42 +1294,42 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
 
       {/* 2. STATEMENT OF PROFIT OR LOSS & OTHER COMPREHENSIVE INCOME */}
       {(subTab === 'all' || subTab === 'pl') && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
-          <div className="p-5 border-b border-slate-800 text-center space-y-1 bg-slate-900/95">
-            <h3 className="text-base font-extrabold text-white tracking-wide">{companyProfile.companyName}</h3>
-            <div className="text-sm font-bold text-sky-400">Statement of Profit or Loss &amp; Other Comprehensive Income</div>
-            <div className="text-xs text-slate-300">For the year ended 31st December, {maxYear}(Projected)</div>
+        <div className="bg-white/96 backdrop-blur-md border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+          <div className="p-5 border-b border-slate-200 text-center space-y-1 bg-slate-50/75">
+            <h3 className="text-base font-extrabold text-slate-900 tracking-wide">{companyProfile.companyName}</h3>
+            <div className="text-sm font-bold text-sky-800">Statement of Profit or Loss &amp; Other Comprehensive Income</div>
+            <div className="text-xs text-slate-600">For the year ended 31st December, {maxYear}(Projected)</div>
           </div>
 
           <div className="overflow-x-auto">
             <table className="w-full text-xs border-collapse tabular-nums">
               <thead>
-                <tr className="bg-slate-800/90 border-b border-slate-700 text-slate-100">
-                  <th rowSpan={2} className="py-2 px-4 text-center font-bold border-r border-slate-700 min-w-[270px]">Particulars</th>
-                  <th rowSpan={2} className="py-2 px-3 text-center font-bold border-r border-slate-700 w-24">Notes</th>
+                <tr className="bg-slate-100/95 border-b border-slate-200 text-slate-900">
+                  <th rowSpan={2} className="py-2 px-4 text-center font-bold border-r border-slate-200 min-w-[270px]">Particulars</th>
+                  <th rowSpan={2} className="py-2 px-3 text-center font-bold border-r border-slate-200 w-24">Notes</th>
                   {projData.map(d => (
-                    <th key={`pl-amt-${d.year}`} className="py-1.5 px-3 text-center font-semibold border-r border-b border-slate-700/80 last:border-r-0 min-w-[125px] text-[11px]">
+                    <th key={`pl-amt-${d.year}`} className="py-1.5 px-3 text-center font-semibold border-r border-b border-slate-200 last:border-r-0 min-w-[125px] text-[11px]">
                       {amtLabel}
                     </th>
                   ))}
                 </tr>
-                <tr className="bg-slate-800/80 border-b border-slate-700 text-sky-300 font-mono">
+                <tr className="bg-slate-50/90 border-b border-slate-200 text-sky-800 font-mono">
                   {projData.map(d => (
-                    <th key={`pl-yr-${d.year}`} className="py-1.5 px-3 text-center font-bold border-r border-slate-700/80 last:border-r-0">
+                    <th key={`pl-yr-${d.year}`} className="py-1.5 px-3 text-center font-bold border-r border-slate-200 last:border-r-0">
                       {d.year}
                     </th>
                   ))}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/60">
-                <tr className="bg-emerald-950/10 font-semibold text-emerald-300">
+              <tbody className="divide-y divide-slate-200/80 text-slate-800">
+                <tr className="bg-emerald-50/60 font-semibold text-emerald-900">
                   <td className="py-2 px-4 flex items-center gap-1.5">
                     <span>Sales</span>
-                    <Lock className="w-3 h-3 text-emerald-400" />
+                    <Lock className="w-3 h-3 text-emerald-600" />
                   </td>
                   <td></td>
                   {projData.map(d => (
-                    <td key={d.year} className="py-2 px-3 text-right font-mono">
+                    <td key={d.year} className="py-2 px-3 text-right font-mono text-emerald-800">
                       {onUpdatePrimaryDriver ? (
                         <InlineDriverCell
                           value={d.sales}
@@ -1174,47 +1341,47 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                     </td>
                   ))}
                 </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-300">Less: Cost of Goods Sold</td>
-                  <td className="py-2 px-3 text-center font-mono text-slate-400">11.00</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-200">{fmtCell(d.costOfGoodsSold)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-2 px-4 text-slate-700">Less: Cost of Goods Sold</td>
+                  <td className="py-2 px-3 text-center font-mono text-slate-600">11.00</td>
+                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.costOfGoodsSold)}</td>)}
                 </tr>
-                <tr className="bg-slate-800/35 font-bold text-white border-t border-slate-600">
+                <tr className="bg-slate-100/80 font-bold text-slate-900 border-t border-slate-300">
                   <td className="py-2 px-4">Gross Profit</td>
                   <td></td>
                   {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono">{fmtCell(d.grossProfit)}</td>)}
                 </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-300">Add; Others Income</td>
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-2 px-4 text-slate-700">Add; Others Income</td>
                   <td></td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-200">{fmtCell(d.othersIncome)}</td>)}
+                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.othersIncome)}</td>)}
                 </tr>
-                <tr className="bg-slate-800/25 font-bold text-white border-t border-slate-600">
-                  <td className="py-1.5 px-4"></td>
+                <tr className="bg-slate-100/60 font-bold text-slate-900 border-t border-slate-300">
+                  <td className="py-1.5 px-4">Total Gross Profit &amp; Other Income</td>
                   <td></td>
                   {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono">{fmtCell(d.grossProfitWithOtherIncome)}</td>)}
                 </tr>
-                <tr className="font-semibold text-slate-200">
+                <tr className="font-semibold text-slate-900">
                   <td colSpan={projData.length + 2} className="py-2 px-4">Less: Operating Expenses:</td>
                 </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-300">Administrative &amp; Selling Expenses</td>
-                  <td className="py-2 px-3 text-center font-mono text-slate-400">12.00</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-200">{fmtCell(d.adminAndSellingExpenses)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-2 px-4 text-slate-700">Administrative &amp; Selling Expenses</td>
+                  <td className="py-2 px-3 text-center font-mono text-slate-600">12.00</td>
+                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.adminAndSellingExpenses)}</td>)}
                 </tr>
-                <tr className="bg-slate-800/35 font-bold text-white border-t border-slate-600">
+                <tr className="bg-slate-100/80 font-bold text-slate-900 border-t border-slate-300">
                   <td className="py-2 px-4">Total Operating Profit/(Loss)</td>
                   <td></td>
                   {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono">{fmtCell(d.totalOperatingProfit)}</td>)}
                 </tr>
-                <tr className="bg-amber-950/10">
-                  <td className="py-2 px-4 text-amber-300 flex items-center gap-1.5">
+                <tr className="bg-amber-50/75">
+                  <td className="py-2 px-4 text-amber-900 font-medium flex items-center gap-1.5">
                     <span>Less: Financial Expenses</span>
-                    <Lock className="w-3 h-3 text-amber-400" />
+                    <Lock className="w-3 h-3 text-amber-600" />
                   </td>
-                  <td className="py-2 px-3 text-center font-mono text-slate-400">13.00</td>
+                  <td className="py-2 px-3 text-center font-mono text-slate-600">13.00</td>
                   {projData.map(d => (
-                    <td key={d.year} className="py-2 px-3 text-right font-mono text-amber-300">
+                    <td key={d.year} className="py-2 px-3 text-right font-mono text-amber-800 font-semibold">
                       {onUpdatePrimaryDriver ? (
                         <InlineDriverCell
                           value={d.financialExpenses}
@@ -1226,20 +1393,20 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                     </td>
                   ))}
                 </tr>
-                <tr className="bg-slate-800/25 font-bold text-white border-t border-slate-600">
+                <tr className="bg-slate-100/70 font-bold text-slate-900 border-t border-slate-300">
                   <td className="py-2 px-4">Net Profit/(Loss) Before Income Tax</td>
                   <td></td>
                   {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono">{fmtCell(d.netProfitBeforeTax)}</td>)}
                 </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-300">Less: Provision For Income Tax</td>
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-2 px-4 text-slate-700">Less: Provision For Income Tax</td>
                   <td></td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-200">{fmtCell(d.provisionForIncomeTax)}</td>)}
+                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.provisionForIncomeTax)}</td>)}
                 </tr>
-                <tr className="bg-sky-950/25 font-bold text-sky-300 border-t border-b-4 border-double border-sky-500/70">
+                <tr className="bg-sky-50/85 font-bold text-sky-900 border-t border-b-4 border-double border-sky-600">
                   <td className="py-2.5 px-4 flex items-center gap-1.5">
                     <span>Net Profit/(Loss) After Income Tax</span>
-                    <Lock className="w-3 h-3 text-emerald-400" />
+                    <Lock className="w-3 h-3 text-emerald-600" />
                   </td>
                   <td></td>
                   {projData.map(d => (
@@ -1259,12 +1426,12 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
             </table>
           </div>
 
-          <div className="px-6 py-4 bg-slate-950/60 border-t border-slate-800 flex flex-col sm:flex-row items-start sm:items-end justify-between gap-4 text-xs text-slate-300">
+          <div className="px-6 py-4 bg-slate-50/85 border-t border-slate-200 flex flex-col sm:flex-row items-start sm:items-end justify-between gap-4 text-xs text-slate-700">
             <div>
-              <div className="text-slate-500">...............................</div>
-              <div className="font-bold text-white">Proprietor</div>
+              <div className="text-slate-400">...............................</div>
+              <div className="font-bold text-slate-900">Proprietor</div>
             </div>
-            <div className="italic text-slate-400">
+            <div className="italic text-slate-600">
               Signed in terms of our separate report of even date.
             </div>
           </div>
@@ -1273,27 +1440,27 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
 
       {/* 3. STATEMENT OF CASH FLOWS */}
       {(subTab === 'all' || subTab === 'cf') && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
-          <div className="p-5 border-b border-slate-800 text-center space-y-1 bg-slate-900/95">
-            <h3 className="text-base font-extrabold text-white tracking-wide">{companyProfile.companyName}</h3>
-            <div className="text-[11px] text-slate-400">{companyProfile.registeredAddress}</div>
-            <div className="text-sm font-bold text-sky-400">Statement Of Cash Flows</div>
-            <div className="text-xs text-slate-300">For the year ended 31st December, {maxYear}(Projected)</div>
+        <div className="bg-white/96 backdrop-blur-md border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+          <div className="p-5 border-b border-slate-200 text-center space-y-1 bg-slate-50/75">
+            <h3 className="text-base font-extrabold text-slate-900 tracking-wide">{companyProfile.companyName}</h3>
+            <div className="text-[11px] text-slate-600">{companyProfile.registeredAddress}</div>
+            <div className="text-sm font-bold text-sky-800">Statement Of Cash Flows</div>
+            <div className="text-xs text-slate-600">For the year ended 31st December, {maxYear}(Projected)</div>
           </div>
 
           <div className="overflow-x-auto">
             <table className="w-full text-xs border-collapse tabular-nums">
               <thead>
-                <tr className="bg-slate-800/90 border-b border-slate-700 text-slate-100">
+                <tr className="bg-slate-100/95 border-b border-slate-200 text-slate-900">
                   <th className="py-2.5 px-4 text-left font-bold min-w-[330px]">1. CASH FLOW FROM OPERATING ACTIVITIES:</th>
                   {projData.map(d => (
-                    <th key={d.year} className="py-2.5 px-3 text-center font-mono font-bold border-l border-slate-700/70 min-w-[120px]">
+                    <th key={d.year} className="py-2.5 px-3 text-center font-mono font-bold border-l border-slate-200 min-w-[120px]">
                       {d.year}
                     </th>
                   ))}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/60">
+              <tbody className="divide-y divide-slate-200/80 text-slate-800">
                 {([
                   ['Net Income', 'cfNetIncome'],
                   ['(Increase)/Decrease In Inventory', 'cfChangeInventory'],
@@ -1306,103 +1473,103 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                   ['Increase/(Decrease) Liabilities For Expense', 'cfChangeLiabilitiesExp'],
                   ['Depreciation', 'cfDepreciation'],
                 ] as const).map(([label, key]) => (
-                  <tr key={key}>
-                    <td className="py-1.5 px-4 text-slate-300">{label}</td>
-                    {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-200 border-l border-slate-800/50">{fmtCell(d[key])}</td>)}
+                  <tr key={key} className="hover:bg-slate-50/80">
+                    <td className="py-1.5 px-4 text-slate-700">{label}</td>
+                    {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d[key])}</td>)}
                   </tr>
                 ))}
-                <tr className="bg-slate-800/35 font-bold text-emerald-400">
+                <tr className="bg-emerald-50/75 font-bold text-emerald-900">
                   <td className="py-2 px-4">Net Cash Used by Operating Activities</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono border-l border-slate-800/50">{fmtCell(d.cfNetCashOperating)}</td>)}
+                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono border-l border-slate-200/80">{fmtCell(d.cfNetCashOperating)}</td>)}
                 </tr>
 
-                <tr className="bg-slate-800/40 font-bold text-sky-300">
+                <tr className="bg-slate-50 font-bold text-sky-900">
                   <td colSpan={projData.length + 1} className="py-2 px-4 underline">2. CASH FLOW FROM INVESTING ACTIVITIES:</td>
                 </tr>
-                <tr className="font-semibold text-slate-300">
+                <tr className="font-semibold text-slate-800">
                   <td colSpan={projData.length + 1} className="py-1 px-4 underline">Inflows:</td>
                 </tr>
-                <tr>
-                  <td className="py-1.5 px-4 text-slate-300">Sale Of Property, Plant &amp; Equipment</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-200 border-l border-slate-800/50">{fmtCell(d.cfSalePPE)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-1.5 px-4 text-slate-700">Sale Of Property, Plant &amp; Equipment</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfSalePPE)}</td>)}
                 </tr>
-                <tr>
-                  <td className="py-1.5 px-4 text-slate-300">Capital</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-200 border-l border-slate-800/50">{fmtCell(d.cfInvestingCapitalInflow)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-1.5 px-4 text-slate-700">Capital</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfInvestingCapitalInflow)}</td>)}
                 </tr>
-                <tr className="font-semibold text-slate-300">
+                <tr className="font-semibold text-slate-800">
                   <td colSpan={projData.length + 1} className="py-1 px-4 underline">Outflows:</td>
                 </tr>
-                <tr>
-                  <td className="py-1.5 px-4 text-slate-300">Preliminary Expenses</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-200 border-l border-slate-800/50">{fmtCell(d.cfPreliminaryExpenses)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-1.5 px-4 text-slate-700">Preliminary Expenses</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfPreliminaryExpenses)}</td>)}
                 </tr>
-                <tr>
-                  <td className="py-1.5 px-4 text-slate-300">Purchase Property, Plant &amp; Equipment</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-200 border-l border-slate-800/50">{fmtCell(d.cfPurchasePPE)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-1.5 px-4 text-slate-700">Purchase Property, Plant &amp; Equipment</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfPurchasePPE)}</td>)}
                 </tr>
-                <tr>
-                  <td className="py-1.5 px-4 text-slate-300">Purchase Investment In Debt Or Securities</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-200 border-l border-slate-800/50">{fmtCell(d.cfPurchaseInvestment)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-1.5 px-4 text-slate-700">Purchase Investment In Debt Or Securities</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfPurchaseInvestment)}</td>)}
                 </tr>
-                <tr className="bg-slate-800/35 font-bold text-sky-400">
+                <tr className="bg-sky-50/75 font-bold text-sky-900">
                   <td className="py-2 px-4">Net Cash Used by Investing Activities</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono border-l border-slate-800/50">{fmtCell(d.cfNetCashInvesting)}</td>)}
+                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono border-l border-slate-200/80">{fmtCell(d.cfNetCashInvesting)}</td>)}
                 </tr>
 
-                <tr className="bg-slate-800/40 font-bold text-amber-300">
+                <tr className="bg-slate-50 font-bold text-amber-900">
                   <td colSpan={projData.length + 1} className="py-2 px-4 underline">3. CASH FLOW FROM FINANCIAL ACTIVITIES:</td>
                 </tr>
-                <tr className="font-semibold text-slate-300">
+                <tr className="font-semibold text-slate-800">
                   <td colSpan={projData.length + 1} className="py-1 px-4 underline">Inflows:</td>
                 </tr>
-                <tr>
-                  <td className="py-1.5 px-4 text-slate-300">Loan Received</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-200 border-l border-slate-800/50">{fmtCell(d.cfLoanReceived)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-1.5 px-4 text-slate-700">Loan Received</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfLoanReceived)}</td>)}
                 </tr>
-                <tr>
-                  <td className="py-1.5 px-4 text-slate-300">Additional Capital</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-200 border-l border-slate-800/50">{fmtCell(d.cfAdditionalCapital)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-1.5 px-4 text-slate-700">Additional Capital</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfAdditionalCapital)}</td>)}
                 </tr>
-                <tr>
-                  <td className="py-1.5 px-4 text-slate-300">Issuance Of Debt (Bond &amp; Notes)</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-200 border-l border-slate-800/50">{fmtCell(d.cfIssuanceOfDebt)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-1.5 px-4 text-slate-700">Issuance Of Debt (Bond &amp; Notes)</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfIssuanceOfDebt)}</td>)}
                 </tr>
-                <tr className="font-semibold text-slate-300">
+                <tr className="font-semibold text-slate-800">
                   <td colSpan={projData.length + 1} className="py-1 px-4 underline">Outflows:</td>
                 </tr>
-                <tr>
-                  <td className="py-1.5 px-4 text-slate-300">To Stockholders as Dividend</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-200 border-l border-slate-800/50">{fmtCell(d.cfDividendsToStockholders)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-1.5 px-4 text-slate-700">To Stockholders as Dividend</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfDividendsToStockholders)}</td>)}
                 </tr>
-                <tr>
-                  <td className="py-1.5 px-4 text-slate-300">Drawings / Dividend</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-200 border-l border-slate-800/50">{fmtCell(d.cfDrawingsOutflow)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-1.5 px-4 text-slate-700">Drawings / Dividend</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfDrawingsOutflow)}</td>)}
                 </tr>
-                <tr>
-                  <td className="py-1.5 px-4 text-slate-300">To Redeem Long Term Debt (Treasury Stock)</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-200 border-l border-slate-800/50">{fmtCell(d.cfRedeemLongTermDebt)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-1.5 px-4 text-slate-700">To Redeem Long Term Debt (Treasury Stock)</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfRedeemLongTermDebt)}</td>)}
                 </tr>
-                <tr>
-                  <td className="py-1.5 px-4 text-slate-300">Issuance Of Bonds Payable</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-200 border-l border-slate-800/50">{fmtCell(d.cfIssuanceBondsPayable)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-1.5 px-4 text-slate-700">Issuance Of Bonds Payable</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfIssuanceBondsPayable)}</td>)}
                 </tr>
-                <tr className="bg-slate-800/35 font-bold text-amber-400">
+                <tr className="bg-amber-50/75 font-bold text-amber-900">
                   <td className="py-2 px-4">Net Cash Provided by Financial Activities</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono border-l border-slate-800/50">{fmtCell(d.cfNetCashFinancing)}</td>)}
+                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono border-l border-slate-200/80">{fmtCell(d.cfNetCashFinancing)}</td>)}
                 </tr>
 
-                <tr className="font-bold text-white">
+                <tr className="font-bold text-slate-900 bg-slate-50/80">
                   <td className="py-2 px-4">Net Cash Increase</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono border-l border-slate-800/50">{fmtCell(d.cfNetCashIncrease)}</td>)}
+                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono border-l border-slate-200/80">{fmtCell(d.cfNetCashIncrease)}</td>)}
                 </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-300">Opening Cash &amp; Bank Balance</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-200 border-l border-slate-800/50">{fmtCell(d.cfOpeningCash)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td className="py-2 px-4 text-slate-700">Opening Cash &amp; Bank Balance</td>
+                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfOpeningCash)}</td>)}
                 </tr>
-                <tr className="bg-sky-950/25 font-bold text-sky-300 border-t border-b-4 border-double border-sky-500/70">
+                <tr className="bg-sky-50/85 font-bold text-sky-900 border-t border-b-4 border-double border-sky-600">
                   <td className="py-2.5 px-4">Closing Cash &amp; Bank Balance</td>
-                  {projData.map(d => <td key={d.year} className="py-2.5 px-3 text-right font-mono border-l border-slate-800/50">{fmtCell(d.cfClosingCash)}</td>)}
+                  {projData.map(d => <td key={d.year} className="py-2.5 px-3 text-right font-mono border-l border-slate-200/80">{fmtCell(d.cfClosingCash)}</td>)}
                 </tr>
               </tbody>
             </table>
@@ -1410,202 +1577,202 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
         </div>
       )}
 
-      {/* 4. NOTES TO THE FINANCIAL STATEMENTS (1, 2.1-2.5, 3.00-13.00) */}
+      {/* 4. NOTES TO THE FINANCIAL STATEMENTS (1, 2.1-2.6, 3.00-13.00) */}
       {(subTab === 'all' || subTab === 'notes') && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
-          <div className="p-5 border-b border-slate-800 text-center space-y-1 bg-slate-900/95">
-            <h3 className="text-base font-extrabold text-white tracking-wide">{companyProfile.companyName}</h3>
-            <div className="text-[11px] text-slate-400">{companyProfile.registeredAddress}</div>
-            <div className="text-sm font-bold text-sky-400">Notes to the Financial Statements</div>
-            <div className="text-xs text-slate-300">For the year ended 31st December, {maxYear}(Projected)</div>
+        <div className="bg-white/96 backdrop-blur-md border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+          <div className="p-5 border-b border-slate-200 text-center space-y-1 bg-slate-50/75">
+            <h3 className="text-base font-extrabold text-slate-900 tracking-wide">{companyProfile.companyName}</h3>
+            <div className="text-[11px] text-slate-600">{companyProfile.registeredAddress}</div>
+            <div className="text-sm font-bold text-sky-800">Notes to the Financial Statements</div>
+            <div className="text-xs text-slate-600">For the year ended 31st December, {maxYear}(Projected)</div>
           </div>
 
-          <div className="p-5 space-y-4 text-xs border-b border-slate-800">
+          <div className="p-5 space-y-4 text-xs border-b border-slate-200 text-slate-700">
             <div>
-              <div className="font-bold text-white">1 Reporting Entity:</div>
-              <p className="text-slate-300 mt-1">
+              <div className="font-bold text-slate-900">1 Reporting Entity:</div>
+              <p className="text-slate-600 mt-1">
                 {companyProfile.companyName} is a {companyProfile.entityType.replace(/_/g, ' ')} entity and its office is situated at {companyProfile.registeredAddress}.
               </p>
             </div>
             <div className="space-y-2">
-              <div className="font-bold text-white">2 SIGNIFICANT ACCOUNTING POLICIES:</div>
-              <p className="text-slate-300"><strong>2.1 Basis of Accounting:</strong> The Financial Statements have been prepared on a going concern basis using accrual method of accounting in accordance with {companyProfile.accountingFramework}.</p>
-              <p className="text-slate-300"><strong>2.2 Accounting Policies:</strong> Selected and applied consistently for significant transactions and events to all periods presented.</p>
-              <p className="text-slate-300"><strong>2.3 Property, Plant and Equipment:</strong> Stated at cost less accumulated depreciation. Depreciation is computed over estimated useful lives consistently.</p>
-              <p className="text-slate-300"><strong>2.4 Reporting Period:</strong> Financial Statements cover the annual reporting cycle ending {companyProfile.financialYearEnd}.</p>
-              <p className="text-slate-300"><strong>2.5 Reporting currency and level of precision:</strong> Figures represent {companyProfile.reportingCurrency} ({companyProfile.reportingUnit}) rounded cleanly.</p>
-              <p className="text-slate-300"><strong>2.6 Comparative Information:</strong> Disclosed for all selected years for numerical information and descriptive narratives.</p>
+              <div className="font-bold text-slate-900">2 SIGNIFICANT ACCOUNTING POLICIES:</div>
+              <p><strong className="text-slate-900">2.1 Basis of Accounting:</strong> The Financial Statements have been prepared on a going concern basis using accrual method of accounting in accordance with {companyProfile.accountingFramework}.</p>
+              <p><strong className="text-slate-900">2.2 Accounting Policies:</strong> Selected and applied consistently for significant transactions and events to all periods presented.</p>
+              <p><strong className="text-slate-900">2.3 Property, Plant and Equipment:</strong> Stated at cost less accumulated depreciation. Depreciation is computed over estimated useful lives consistently.</p>
+              <p><strong className="text-slate-900">2.4 Reporting Period:</strong> Financial Statements cover the annual reporting cycle ending {companyProfile.financialYearEnd}.</p>
+              <p><strong className="text-slate-900">2.5 Reporting currency and level of precision:</strong> Figures represent {companyProfile.reportingCurrency} ({companyProfile.reportingUnit}) rounded cleanly.</p>
+              <p><strong className="text-slate-900">2.6 Comparative Information:</strong> Disclosed for all selected years for numerical information and descriptive narratives.</p>
             </div>
           </div>
 
           <div className="overflow-x-auto">
             <table className="w-full text-xs border-collapse tabular-nums">
               <thead>
-                <tr className="bg-slate-800/90 border-b border-slate-700 text-slate-100">
-                  <th rowSpan={2} className="py-2 px-3 text-center font-bold border-r border-slate-700 w-20">Note No.</th>
-                  <th rowSpan={2} className="py-2 px-4 text-left font-bold border-r border-slate-700 min-w-[260px]">Particulars</th>
+                <tr className="bg-slate-100/95 border-b border-slate-200 text-slate-900">
+                  <th rowSpan={2} className="py-2 px-3 text-center font-bold border-r border-slate-200 w-20">Note No.</th>
+                  <th rowSpan={2} className="py-2 px-4 text-left font-bold border-r border-slate-200 min-w-[260px]">Particulars</th>
                   {projData.map(d => (
-                    <th key={`nt-amt-${d.year}`} className="py-1.5 px-3 text-center font-semibold border-r border-b border-slate-700/80 last:border-r-0 min-w-[120px] text-[11px]">
+                    <th key={`nt-amt-${d.year}`} className="py-1.5 px-3 text-center font-semibold border-r border-b border-slate-200 last:border-r-0 min-w-[120px] text-[11px]">
                       {amtLabel}
                     </th>
                   ))}
                 </tr>
-                <tr className="bg-slate-800/80 border-b border-slate-700 text-sky-300 font-mono">
+                <tr className="bg-slate-50/90 border-b border-slate-200 text-sky-800 font-mono">
                   {projData.map(d => (
-                    <th key={`nt-yr-${d.year}`} className="py-1.5 px-3 text-center font-bold border-r border-slate-700/80 last:border-r-0">{d.year}</th>
+                    <th key={`nt-yr-${d.year}`} className="py-1.5 px-3 text-center font-bold border-r border-slate-200 last:border-r-0">{d.year}</th>
                   ))}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/60">
-                <tr className="font-bold text-white bg-slate-800/30">
+              <tbody className="divide-y divide-slate-200/80 text-slate-800">
+                <tr className="font-bold text-slate-900 bg-slate-50">
                   <td className="py-2 px-3 text-center font-mono">3.00</td>
                   <td className="py-2 px-4">Inventories</td>
                   {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono">{fmtCell(d.inventories)}</td>)}
                 </tr>
-                <tr className="font-bold text-sky-300 bg-slate-800/20">
+                <tr className="font-bold text-sky-900 bg-sky-50/50">
                   <td className="py-2 px-3 text-center font-mono">4.00</td>
                   <td colSpan={projData.length + 1} className="py-2 px-4">Trade &amp; Other Receivables</td>
                 </tr>
-                <tr>
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-400">As Per Last Year</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-300">{fmtCell(d.note4ReceivablesOpening)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">As Per Last Year</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note4ReceivablesOpening)}</td>)}
                 </tr>
-                <tr>
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-400">Add: Credit Sales During the Year</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-300">{fmtCell(d.note4ReceivablesAdded)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Add: Credit Sales During the Year</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note4ReceivablesAdded)}</td>)}
                 </tr>
-                <tr>
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-400">Less: Received During the Year</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-300">{fmtCell(d.note4ReceivablesReceived)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Less: Received During the Year</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note4ReceivablesReceived)}</td>)}
                 </tr>
-                <tr className="font-bold text-white bg-slate-800/30">
+                <tr className="font-bold text-slate-900 bg-slate-100/75">
                   <td></td><td className="py-1.5 px-4 pl-6">Closing Trade &amp; Other Receivables</td>
                   {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono">{fmtCell(d.tradeAndOtherReceivables)}</td>)}
                 </tr>
 
-                <tr className="font-bold text-sky-300 bg-slate-800/20">
+                <tr className="font-bold text-sky-900 bg-sky-50/50">
                   <td className="py-2 px-3 text-center font-mono">5.00</td>
                   <td colSpan={projData.length + 1} className="py-2 px-4">Advance, Deposit &amp; Prepayments</td>
                 </tr>
-                <tr>
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-400">As Per Last Year</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-300">{fmtCell(d.note5AdvanceOpening)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">As Per Last Year</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note5AdvanceOpening)}</td>)}
                 </tr>
-                <tr>
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-400">Add: During the Year</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-300">{fmtCell(d.note5AdvanceAdded)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Add: During the Year</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note5AdvanceAdded)}</td>)}
                 </tr>
-                <tr>
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-400">Less: Adjustment</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-300">{fmtCell(d.note5AdvanceAdjusted)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Less: Adjustment</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note5AdvanceAdjusted)}</td>)}
                 </tr>
-                <tr className="font-bold text-white bg-slate-800/30">
+                <tr className="font-bold text-slate-900 bg-slate-100/75">
                   <td></td><td className="py-1.5 px-4 pl-6">Closing Advance, Deposit &amp; Prepayments</td>
                   {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono">{fmtCell(d.advanceDepositPrepayments)}</td>)}
                 </tr>
 
-                <tr className="font-bold text-sky-300 bg-slate-800/20">
+                <tr className="font-bold text-sky-900 bg-sky-50/50">
                   <td className="py-2 px-3 text-center font-mono">6.00</td>
                   <td className="py-2 px-4">Cash &amp; Equivalent — Cash In Hand &amp; Bank</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-white">{fmtCell(d.cashAndCashEquivalents)}</td>)}
+                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.cashAndCashEquivalents)}</td>)}
                 </tr>
-                <tr className="font-bold text-sky-300 bg-slate-800/20">
+                <tr className="font-bold text-sky-900 bg-sky-50/50">
                   <td className="py-2 px-3 text-center font-mono">7.00</td>
                   <td className="py-2 px-4">Long Term Loan</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-white">{fmtCell(d.longTermLoan)}</td>)}
+                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.longTermLoan)}</td>)}
                 </tr>
 
-                <tr className="font-bold text-sky-300 bg-slate-800/20">
+                <tr className="font-bold text-sky-900 bg-sky-50/50">
                   <td className="py-2 px-3 text-center font-mono">8.00</td>
                   <td colSpan={projData.length + 1} className="py-2 px-4">Trade &amp; Other Payables</td>
                 </tr>
-                <tr>
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-400">As Per Last Year</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-300">{fmtCell(d.note8PayablesOpening)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">As Per Last Year</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note8PayablesOpening)}</td>)}
                 </tr>
-                <tr>
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-400">Add: During the Year</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-300">{fmtCell(d.note8PayablesAdded)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Add: During the Year</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note8PayablesAdded)}</td>)}
                 </tr>
-                <tr>
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-400">Less: Payment During the Year</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-300">{fmtCell(d.note8PayablesPaid)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Less: Payment During the Year</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note8PayablesPaid)}</td>)}
                 </tr>
-                <tr className="font-bold text-white bg-slate-800/30">
+                <tr className="font-bold text-slate-900 bg-slate-100/75">
                   <td></td><td className="py-1.5 px-4 pl-6">Closing Trade &amp; Other Payables</td>
                   {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono">{fmtCell(d.tradeAndOtherPayables)}</td>)}
                 </tr>
 
-                <tr className="font-bold text-sky-300 bg-slate-800/20">
+                <tr className="font-bold text-sky-900 bg-sky-50/50">
                   <td className="py-2 px-3 text-center font-mono">9.00</td>
                   <td colSpan={projData.length + 1} className="py-2 px-4">Provisions For Tax</td>
                 </tr>
-                <tr>
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-400">As Per Last Year</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-300">{fmtCell(d.note9TaxOpening)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">As Per Last Year</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note9TaxOpening)}</td>)}
                 </tr>
-                <tr>
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-400">Add: During the Year</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-300">{fmtCell(d.note9TaxAdded)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Add: During the Year</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note9TaxAdded)}</td>)}
                 </tr>
-                <tr>
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-400">Less: Adjustment</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-300">{fmtCell(d.note9TaxAdjusted)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Less: Adjustment</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note9TaxAdjusted)}</td>)}
                 </tr>
-                <tr className="font-bold text-white bg-slate-800/30">
+                <tr className="font-bold text-slate-900 bg-slate-100/75">
                   <td></td><td className="py-1.5 px-4 pl-6">Closing Provisions For Tax</td>
                   {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono">{fmtCell(d.provisionsForTax)}</td>)}
                 </tr>
 
-                <tr className="font-bold text-sky-300 bg-slate-800/20">
+                <tr className="font-bold text-sky-900 bg-sky-50/50">
                   <td className="py-2 px-3 text-center font-mono">10.00</td>
                   <td className="py-2 px-4">Short Term Loan — Bank Loan</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-white">{fmtCell(d.shortTermLoan)}</td>)}
+                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.shortTermLoan)}</td>)}
                 </tr>
 
-                <tr className="font-bold text-sky-300 bg-slate-800/20">
+                <tr className="font-bold text-sky-900 bg-sky-50/50">
                   <td className="py-2 px-3 text-center font-mono">11.00</td>
                   <td colSpan={projData.length + 1} className="py-2 px-4">Cost of Goods Sold</td>
                 </tr>
-                <tr>
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-400">Opening Stock</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-300">{fmtCell(d.note11OpeningStock)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Opening Stock</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note11OpeningStock)}</td>)}
                 </tr>
-                <tr>
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-400">Add: Purchase</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-300">{fmtCell(d.note11Purchase)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Add: Purchase</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note11Purchase)}</td>)}
                 </tr>
-                <tr>
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-400">Less: Closing Stock</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-300">{fmtCell(d.note11ClosingStock)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Less: Closing Stock</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note11ClosingStock)}</td>)}
                 </tr>
-                <tr>
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-400">Labour &amp; Wages</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-300">{fmtCell(d.note11LabourWages)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Labour &amp; Wages</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note11LabourWages)}</td>)}
                 </tr>
-                <tr>
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-400">Electricity Bill</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-300">{fmtCell(d.note11ElectricityBill)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Electricity Bill</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note11ElectricityBill)}</td>)}
                 </tr>
-                <tr>
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-400">Carriage Inward</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-300">{fmtCell(d.note11CarriageInward)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Carriage Inward</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note11CarriageInward)}</td>)}
                 </tr>
-                <tr>
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-400">Other Direct Expenses</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-300">{fmtCell(d.note11OtherDirectExpenses)}</td>)}
+                <tr className="hover:bg-slate-50/80">
+                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Other Direct Expenses</td>
+                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note11OtherDirectExpenses)}</td>)}
                 </tr>
-                <tr className="font-bold text-white bg-slate-800/30">
+                <tr className="font-bold text-slate-900 bg-slate-100/75">
                   <td></td><td className="py-1.5 px-4 pl-6">Cost of Goods Sold</td>
                   {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono">{fmtCell(d.costOfGoodsSold)}</td>)}
                 </tr>
 
-                <tr className="font-bold text-white bg-slate-800/20">
+                <tr className="font-bold text-slate-900 bg-slate-50">
                   <td className="py-2 px-3 text-center font-mono">12.00</td>
                   <td className="py-2 px-4">Administrative &amp; Selling Expenses</td>
                   {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono">{fmtCell(d.adminAndSellingExpenses)}</td>)}
                 </tr>
-                <tr className="font-bold text-white bg-slate-800/20">
+                <tr className="font-bold text-slate-900 bg-slate-50">
                   <td className="py-2 px-3 text-center font-mono">13.00</td>
                   <td className="py-2 px-4">Financial Expenses — Bank Charges &amp; Interest</td>
                   {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono">{fmtCell(d.financialExpenses)}</td>)}
@@ -1618,41 +1785,41 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
 
       {/* 5. SCHEDULE OF PROPERTY PLANT & EQUIPMENTS (Schedule-A) */}
       {(subTab === 'all' || subTab === 'sched') && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
-          <div className="p-5 border-b border-slate-800 text-center space-y-1 bg-slate-900/95">
-            <h3 className="text-base font-extrabold text-white tracking-wide">{companyProfile.companyName}</h3>
-            <div className="text-[11px] text-slate-400">{companyProfile.registeredAddress}</div>
-            <div className="text-sm font-bold text-sky-400">Schedule of Property Plant &amp; Equipments</div>
-            <div className="text-xs text-slate-300">As at 31st December, {maxYear}(Projected)</div>
+        <div className="bg-white/96 backdrop-blur-md border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+          <div className="p-5 border-b border-slate-200 text-center space-y-1 bg-slate-50/75">
+            <h3 className="text-base font-extrabold text-slate-900 tracking-wide">{companyProfile.companyName}</h3>
+            <div className="text-[11px] text-slate-600">{companyProfile.registeredAddress}</div>
+            <div className="text-sm font-bold text-sky-800">Schedule of Property Plant &amp; Equipments</div>
+            <div className="text-xs text-slate-600">As at 31st December, {maxYear}(Projected)</div>
           </div>
 
           <div className="p-4 space-y-4 overflow-x-auto">
             {projAsc.map(d => (
-              <table key={d.year} className="w-full text-xs border border-slate-700 border-collapse tabular-nums">
+              <table key={d.year} className="w-full text-xs border border-slate-200 border-collapse tabular-nums">
                 <thead>
-                  <tr className="bg-slate-800/90 text-slate-100 border-b border-slate-700">
-                    <th rowSpan={2} className="py-2 px-2 text-center border-r border-slate-700 w-14">SL No.</th>
-                    <th rowSpan={2} className="py-2 px-3 text-left border-r border-slate-700 min-w-[200px]">Particulars</th>
-                    <th colSpan={4} className="py-1.5 px-3 text-center border-r border-b border-slate-700">Cost</th>
-                    <th rowSpan={2} className="py-2 px-2 text-center border-r border-slate-700 w-24">Rate of Dep. (%)</th>
-                    <th rowSpan={2} className="py-2 px-3 text-right border-r border-slate-700">Depreciation Charged During the Year</th>
+                  <tr className="bg-slate-100/95 text-slate-900 border-b border-slate-200">
+                    <th rowSpan={2} className="py-2 px-2 text-center border-r border-slate-200 w-14">SL No.</th>
+                    <th rowSpan={2} className="py-2 px-3 text-left border-r border-slate-200 min-w-[200px]">Particulars</th>
+                    <th colSpan={4} className="py-1.5 px-3 text-center border-r border-b border-slate-200">Cost</th>
+                    <th rowSpan={2} className="py-2 px-2 text-center border-r border-slate-200 w-24">Rate of Dep. (%)</th>
+                    <th rowSpan={2} className="py-2 px-3 text-right border-r border-slate-200">Depreciation Charged During the Year</th>
                     <th rowSpan={2} className="py-2 px-3 text-right">W.D.V as on 31.12.{d.year}</th>
                   </tr>
-                  <tr className="bg-slate-800/75 text-slate-300 border-b border-slate-700 text-[11px]">
-                    <th className="py-1.5 px-3 text-right border-r border-slate-700">Opening Balance</th>
-                    <th className="py-1.5 px-3 text-right border-r border-slate-700">Addition During the Year</th>
-                    <th className="py-1.5 px-3 text-right border-r border-slate-700">Disposals During the Year</th>
-                    <th className="py-1.5 px-3 text-right border-r border-slate-700">Balance as on 31.12.{d.year}</th>
+                  <tr className="bg-slate-50 text-slate-700 border-b border-slate-200 text-[11px]">
+                    <th className="py-1.5 px-3 text-right border-r border-slate-200">Opening Balance</th>
+                    <th className="py-1.5 px-3 text-right border-r border-slate-200">Addition During the Year</th>
+                    <th className="py-1.5 px-3 text-right border-r border-slate-200">Disposals During the Year</th>
+                    <th className="py-1.5 px-3 text-right border-r border-slate-200">Balance as on 31.12.{d.year}</th>
                   </tr>
                 </thead>
-                <tbody>
-                  <tr className="border-b border-slate-800">
-                    <td className="py-2 px-2 text-center font-mono text-slate-300 border-r border-slate-800">1</td>
-                    <td className="py-2 px-3 text-slate-200 border-r border-slate-800">Property Plant &amp; Equipment</td>
-                    <td className="py-2 px-3 text-right font-mono text-slate-200 border-r border-slate-800">{fmtCell(d.schedOpeningBalance)}</td>
-                    <td className="py-2 px-3 text-right font-mono text-slate-200 border-r border-slate-800">{fmtCell(d.schedAddition)}</td>
-                    <td className="py-2 px-3 text-right font-mono text-slate-200 border-r border-slate-800">{fmtCell(d.schedDisposals)}</td>
-                    <td className="py-2 px-3 text-right font-mono text-emerald-300 font-semibold border-r border-slate-800">
+                <tbody className="text-slate-800">
+                  <tr className="border-b border-slate-200 hover:bg-slate-50/70">
+                    <td className="py-2 px-2 text-center font-mono text-slate-600 border-r border-slate-200">1</td>
+                    <td className="py-2 px-3 text-slate-900 border-r border-slate-200">Property Plant &amp; Equipment</td>
+                    <td className="py-2 px-3 text-right font-mono text-slate-900 border-r border-slate-200">{fmtCell(d.schedOpeningBalance)}</td>
+                    <td className="py-2 px-3 text-right font-mono text-slate-900 border-r border-slate-200">{fmtCell(d.schedAddition)}</td>
+                    <td className="py-2 px-3 text-right font-mono text-slate-900 border-r border-slate-200">{fmtCell(d.schedDisposals)}</td>
+                    <td className="py-2 px-3 text-right font-mono text-emerald-800 font-semibold border-r border-slate-200">
                       {onUpdatePrimaryDriver ? (
                         <InlineDriverCell
                           value={d.schedGrossAssetBase}
@@ -1662,19 +1829,19 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                         />
                       ) : fmtCell(d.schedBalanceClosing)}
                     </td>
-                    <td className="py-2 px-2 text-center font-mono text-slate-300 border-r border-slate-800">{d.schedRatePct}%</td>
-                    <td className="py-2 px-3 text-right font-mono text-slate-200 border-r border-slate-800">{fmtCell(d.schedDepreciation)}</td>
-                    <td className="py-2 px-3 text-right font-mono text-white font-semibold">{fmtCell(d.schedWDV)}</td>
+                    <td className="py-2 px-2 text-center font-mono text-slate-700 border-r border-slate-200">{d.schedRatePct}%</td>
+                    <td className="py-2 px-3 text-right font-mono text-slate-900 border-r border-slate-200">{fmtCell(d.schedDepreciation)}</td>
+                    <td className="py-2 px-3 text-right font-mono text-slate-900 font-semibold">{fmtCell(d.schedWDV)}</td>
                   </tr>
-                  <tr className="bg-slate-800/40 font-bold text-sky-300">
-                    <td className="py-2 px-2 border-r border-slate-800"></td>
-                    <td className="py-2 px-3 text-center border-r border-slate-800">Total</td>
-                    <td className="py-2 px-3 text-right font-mono border-r border-slate-800">{fmtCell(d.schedOpeningBalance)}</td>
-                    <td className="py-2 px-3 text-right font-mono border-r border-slate-800">{fmtCell(d.schedAddition)}</td>
-                    <td className="py-2 px-3 text-right font-mono border-r border-slate-800">{fmtCell(d.schedDisposals)}</td>
-                    <td className="py-2 px-3 text-right font-mono border-r border-slate-800">{fmtCell(d.schedBalanceClosing)}</td>
-                    <td className="py-2 px-2 border-r border-slate-800"></td>
-                    <td className="py-2 px-3 text-right font-mono border-r border-slate-800">{fmtCell(d.schedDepreciation)}</td>
+                  <tr className="bg-sky-50/75 font-bold text-sky-900">
+                    <td className="py-2 px-2 border-r border-slate-200"></td>
+                    <td className="py-2 px-3 text-center border-r border-slate-200">Total</td>
+                    <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.schedOpeningBalance)}</td>
+                    <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.schedAddition)}</td>
+                    <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.schedDisposals)}</td>
+                    <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.schedBalanceClosing)}</td>
+                    <td className="py-2 px-2 border-r border-slate-200"></td>
+                    <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.schedDepreciation)}</td>
                     <td className="py-2 px-3 text-right font-mono">{fmtCell(d.schedWDV)}</td>
                   </tr>
                 </tbody>
@@ -1686,3 +1853,4 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
     </div>
   );
 };
+

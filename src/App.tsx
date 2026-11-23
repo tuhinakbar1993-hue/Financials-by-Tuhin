@@ -6,7 +6,7 @@
  * BBA, Heriot Watt University, UK · MBA, University of Chittagong
  */
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { HeaderNav } from './components/HeaderNav';
 import { DeveloperFirstLookCard } from './components/DeveloperFirstLookCard';
 import { StatementsViewer } from './components/StatementsViewer';
@@ -33,6 +33,8 @@ import {
   calculateDriverAutoFillSeries,
   recalculateAllYearsWithUpdatedDriver,
   buildPreviousFormatData,
+  buildPreviousComparativePairs,
+  buildPreviousPairScopedNotes,
   buildProjectedFormatData,
   validateFinancialModel,
   calculateDebtServiceCoverage,
@@ -47,6 +49,9 @@ import {
   exportPreviousFinancialsExcel,
   exportPreviousFinancialsWord,
   exportPreviousFinancialsPdf,
+  exportAllPreviousComparativePairsExcel,
+  exportAllPreviousComparativePairsWord,
+  exportAllPreviousComparativePairsPdf,
   exportProjectedFinancialsExcel,
   exportProjectedFinancialsWord,
   exportProjectedFinancialsPdf,
@@ -65,6 +70,7 @@ import {
   StatementFormatMode,
   ParsedRepaymentSchedule,
   RepaymentScheduleSnapshot,
+  PreviousFormatYearData,
 } from './types/financial';
 
 export default function App() {
@@ -180,6 +186,33 @@ export default function App() {
       fixedAssetsSchedule
     );
   }, [allYearsInputs, incomeStatements, balanceSheets, cashFlowStatements, equityStatements, fixedAssetsSchedule]);
+
+  const previousComparativePairs = useMemo(() => {
+    return buildPreviousComparativePairs(previousFormatData);
+  }, [previousFormatData]);
+
+  const getPairScopedNotes = useCallback((pairData: PreviousFormatYearData[]) => {
+    return buildPreviousPairScopedNotes(
+      companyProfile,
+      pairData.map(d => d.year),
+      allYearsInputs,
+      incomeStatements,
+      balanceSheets,
+      cashFlowStatements,
+      fixedAssetsSchedule,
+      effectiveNotes,
+      defaultNotes
+    );
+  }, [
+    companyProfile,
+    allYearsInputs,
+    incomeStatements,
+    balanceSheets,
+    cashFlowStatements,
+    fixedAssetsSchedule,
+    effectiveNotes,
+    defaultNotes,
+  ]);
 
   const projectedFormatData = useMemo(() => {
     return buildProjectedFormatData(
@@ -740,142 +773,81 @@ export default function App() {
     );
   };
 
-  // Handlers: Export Previous & Projected Exact Format Suites
-  const handleExportPreviousExcel = () => exportPreviousFinancialsExcel(companyProfile, previousFormatData, effectiveNotes);
-  const handleExportPreviousWord = () => exportPreviousFinancialsWord(companyProfile, previousFormatData, effectiveNotes);
-  const handleExportPreviousPdf = () => exportPreviousFinancialsPdf(companyProfile, previousFormatData, effectiveNotes);
+  // Handlers: Export Previous Comparative Pairs & Projected Exact Format Suites
+  const handleExportPreviousExcel = () =>
+    exportAllPreviousComparativePairsExcel(companyProfile, previousComparativePairs, getPairScopedNotes);
+  const handleExportPreviousWord = () =>
+    exportAllPreviousComparativePairsWord(companyProfile, previousComparativePairs, getPairScopedNotes);
+  const handleExportPreviousPdf = () =>
+    exportAllPreviousComparativePairsPdf(companyProfile, previousComparativePairs, getPairScopedNotes);
+
+  const handleExportPreviousPair = (pairId: string, format: 'xlsx' | 'docx' | 'pdf') => {
+    const pair = previousComparativePairs.find(p => p.id === pairId);
+    if (!pair) return;
+    const scopedNotes = getPairScopedNotes(pair.data);
+    if (format === 'xlsx') exportPreviousFinancialsExcel(companyProfile, pair.data, scopedNotes);
+    else if (format === 'docx') void exportPreviousFinancialsWord(companyProfile, pair.data, scopedNotes);
+    else exportPreviousFinancialsPdf(companyProfile, pair.data, scopedNotes);
+  };
+
   const handleExportProjectedExcel = () => exportProjectedFinancialsExcel(companyProfile, projectedFormatData);
   const handleExportProjectedWord = () => exportProjectedFinancialsWord(companyProfile, projectedFormatData);
   const handleExportProjectedPdf = () => exportProjectedFinancialsPdf(companyProfile, projectedFormatData);
 
   const selectedHistYears = activeHistoricalInputs.map(y => y.year);
   const selectedProjYears = generatedProjected.map(y => y.year);
+  const projectedRangeLabel = selectedProjYears.length > 0
+    ? (selectedProjYears.length === 1
+        ? `${selectedProjYears[0]}`
+        : `${Math.min(...selectedProjYears)}–${Math.max(...selectedProjYears)}`)
+    : '';
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
-      {/* 3-Zone Header Contract */}
-      <HeaderNav
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        companyProfile={companyProfile}
-        onOpenProfileModal={() => setIsProfileModalOpen(true)}
-        onOpenDeveloperModal={() => setIsDeveloperModalOpen(true)}
-        onExportPackageExcel={handleExportPackageExcel}
-        onExportPackageWord={handleExportPackageWord}
-        onExportPackagePdf={handleExportPackagePdf}
-        onExportPreviousExcel={handleExportPreviousExcel}
-        onExportPreviousWord={handleExportPreviousWord}
-        onExportPreviousPdf={handleExportPreviousPdf}
-        onExportProjectedExcel={handleExportProjectedExcel}
-        onExportProjectedWord={handleExportProjectedWord}
-        onExportProjectedPdf={handleExportProjectedPdf}
-      />
+    <div className="min-h-screen relative text-slate-900 flex flex-col font-sans bg-[#f4f6f8]">
+      {/* Fixed Global Architectural Sunlit Backdrop ("Background.png") */}
+      <div className="fixed inset-0 z-0 pointer-events-none overflow-hidden" aria-hidden="true">
+        <img
+          src="/assets/aistudio/Background_be955592.png"
+          alt=""
+          className="w-full h-full object-cover object-center select-none"
+          onError={(e) => {
+            (e.target as HTMLImageElement).style.display = 'none';
+          }}
+        />
+        <div className="absolute inset-0 bg-gradient-to-br from-white/35 via-white/15 to-emerald-50/15" />
+      </div>
 
-      {/* Main Workspace Body */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        {/* First Look Developer Showcase Card with Interactive Horizon & Year Selector */}
-        <DeveloperFirstLookCard
-          assumptions={assumptions}
-          onUpdateAssumptions={handleUpdateAssumptions}
-          onOpenDeveloperModal={() => setIsDeveloperModalOpen(true)}
+      <div className="relative z-10 min-h-screen flex flex-col">
+        {/* 3-Zone Header Contract */}
+        <HeaderNav
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
           companyProfile={companyProfile}
-          baseYear={baseYearInput.year}
-          selectedHistoricalYears={selectedHistYears}
-          selectedProjectedYears={selectedProjYears}
-          onToggleHistoricalYear={handleToggleHistoricalYear}
-          onToggleProjectedYear={handleToggleProjectedYear}
-          onSetHistoricalYears={handleSetHistoricalYears}
-          onSetProjectedYears={handleSetProjectedYears}
+          onOpenProfileModal={() => setIsProfileModalOpen(true)}
+          onOpenDeveloperModal={() => setIsDeveloperModalOpen(true)}
+          onExportPackageExcel={handleExportPackageExcel}
+          onExportPackageWord={handleExportPackageWord}
+          onExportPackagePdf={handleExportPackagePdf}
+          previousComparativePairs={previousComparativePairs}
+          onExportPreviousPair={handleExportPreviousPair}
+          onExportPreviousExcel={handleExportPreviousExcel}
+          onExportPreviousWord={handleExportPreviousWord}
+          onExportPreviousPdf={handleExportPreviousPdf}
+          projectedYearsRangeLabel={projectedRangeLabel}
+          onExportProjectedExcel={handleExportProjectedExcel}
+          onExportProjectedWord={handleExportProjectedWord}
+          onExportProjectedPdf={handleExportProjectedPdf}
         />
 
-        {activeTab === 'statements' && (
-          <StatementsViewer
+        {/* Main Workspace Body */}
+        <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+          {/* First Look Developer Showcase Card with Interactive Horizon & Year Selector */}
+          <DeveloperFirstLookCard
+            assumptions={assumptions}
+            onUpdateAssumptions={handleUpdateAssumptions}
+            onOpenDeveloperModal={() => setIsDeveloperModalOpen(true)}
             companyProfile={companyProfile}
-            incomeData={incomeStatements}
-            balanceData={balanceSheets}
-            cashFlowData={cashFlowStatements}
-            equityData={equityStatements}
-            fixedAssetsData={fixedAssetsSchedule}
-            notes={effectiveNotes}
-            statementConfig={statementConfig}
-            assumptions={assumptions}
-            onUpdateAssumptions={handleUpdateAssumptions}
-            cellOverrides={cellOverrides}
-            labelOverrides={labelOverrides}
-            onUpdateStatementValue={handleUpdateStatementValue}
-            onUpdateStatementLabel={handleUpdateStatementLabel}
-            onResetOverrides={handleResetOverrides}
-            onUpdateNotes={setCustomNotes}
-            previousFormatData={previousFormatData}
-            projectedFormatData={projectedFormatData}
-            formatMode={formatMode}
-            onChangeFormatMode={setFormatMode}
-            validationIssues={validationIssues}
-            selectedHistoricalYears={selectedHistYears}
-            selectedProjectedYears={selectedProjYears}
-            onToggleHistoricalYear={handleToggleHistoricalYear}
-            onToggleProjectedYear={handleToggleProjectedYear}
-            onSetHistoricalYears={handleSetHistoricalYears}
-            onSetProjectedYears={handleSetProjectedYears}
-            onUpdatePrimaryDriver={handleUpdatePrimaryDriver}
-            debtServiceCoverage={debtServiceCoverage}
-            isScheduleImplemented={isScheduleImplemented}
-            parsedSchedule={parsedSchedule}
-            onJumpToRepaymentSchedule={handleJumpToRepaymentSchedule}
-          />
-        )}
-
-        {activeTab === 'data-entry' && (
-          <FinancialDataEntry
-            yearsData={allYearsInputs}
-            onUpdatePrimaryDriver={handleUpdatePrimaryDriver}
-            onUpdateYearData={handleUpdateYearData}
-            companyProfile={companyProfile}
-            assumptions={assumptions}
-            onUpdateAssumptions={handleUpdateAssumptions}
-            inputMode={inputMode}
-            onToggleInputMode={setInputMode}
-            onGenerateAutomaticProjections={handleGenerateAutomaticProjections}
-            incomeStatements={incomeStatements}
-            balanceSheets={balanceSheets}
-            cashFlowStatements={cashFlowStatements}
-            autoFillConfigs={autoFillConfigs}
-            onApplyAutoFill={handleApplyAutoFill}
-            onClearAutoFill={handleClearAutoFill}
-            validationIssues={validationIssues}
-            selectedHistoricalYears={selectedHistYears}
-            selectedProjectedYears={selectedProjYears}
-            onToggleHistoricalYear={handleToggleHistoricalYear}
-            onToggleProjectedYear={handleToggleProjectedYear}
-            onSetHistoricalYears={handleSetHistoricalYears}
-            onSetProjectedYears={handleSetProjectedYears}
-            parsedSchedule={parsedSchedule}
-            onSetParsedSchedule={setParsedSchedule}
-            scheduleSnapshot={scheduleSnapshot}
-            isScheduleImplemented={isScheduleImplemented}
-            lastImplementationResult={lastImplementationResult}
-            debtServiceCoverage={debtServiceCoverage}
-            onImplementRepaymentSchedule={handleImplementRepaymentSchedule}
-            onRevertScheduleSnapshot={handleRevertScheduleSnapshot}
-            onUnlockScheduleYear={handleUnlockScheduleYear}
-            initialShowScheduleStudio={openScheduleStudio || isScheduleImplemented || parsedSchedule !== null}
-          />
-        )}
-
-        {activeTab === 'configuration' && (
-          <StatementConfigView
-            configItems={statementConfig}
-            onUpdateConfig={setStatementConfig}
-            onResetDefaults={() => setStatementConfig(DEFAULT_STATEMENT_CONFIG_ITEMS)}
-          />
-        )}
-
-        {activeTab === 'projections' && (
-          <ProjectionEngineView
-            assumptions={assumptions}
-            onUpdateAssumptions={handleUpdateAssumptions}
-            onApplyAndRecalculate={() => setActiveTab('statements')}
-            onResetDefaults={() => setAssumptions(DEFAULT_PROJECTION_ASSUMPTIONS)}
+            baseYear={baseYearInput.year}
             selectedHistoricalYears={selectedHistYears}
             selectedProjectedYears={selectedProjYears}
             onToggleHistoricalYear={handleToggleHistoricalYear}
@@ -883,58 +855,157 @@ export default function App() {
             onSetHistoricalYears={handleSetHistoricalYears}
             onSetProjectedYears={handleSetProjectedYears}
           />
-        )}
 
-        {activeTab === 'reconciliation' && (
-          <CashFlowReconciliationAudit
-            cashFlowYears={cashFlowStatements}
-            balanceSheetYears={balanceSheets}
-            companyProfile={companyProfile}
-            validationIssues={validationIssues}
-            debtServiceCoverage={debtServiceCoverage}
-            isScheduleImplemented={isScheduleImplemented}
-            parsedSchedule={parsedSchedule}
-            onJumpToRepaymentSchedule={handleJumpToRepaymentSchedule}
-          />
-        )}
-      </main>
+          {activeTab === 'statements' && (
+            <StatementsViewer
+              companyProfile={companyProfile}
+              incomeData={incomeStatements}
+              balanceData={balanceSheets}
+              cashFlowData={cashFlowStatements}
+              equityData={equityStatements}
+              fixedAssetsData={fixedAssetsSchedule}
+              notes={effectiveNotes}
+              statementConfig={statementConfig}
+              assumptions={assumptions}
+              onUpdateAssumptions={handleUpdateAssumptions}
+              cellOverrides={cellOverrides}
+              labelOverrides={labelOverrides}
+              onUpdateStatementValue={handleUpdateStatementValue}
+              onUpdateStatementLabel={handleUpdateStatementLabel}
+              onResetOverrides={handleResetOverrides}
+              onUpdateNotes={setCustomNotes}
+              previousFormatData={previousFormatData}
+              previousComparativePairs={previousComparativePairs}
+              getPairScopedNotes={getPairScopedNotes}
+              projectedFormatData={projectedFormatData}
+              formatMode={formatMode}
+              onChangeFormatMode={setFormatMode}
+              validationIssues={validationIssues}
+              selectedHistoricalYears={selectedHistYears}
+              selectedProjectedYears={selectedProjYears}
+              onToggleHistoricalYear={handleToggleHistoricalYear}
+              onToggleProjectedYear={handleToggleProjectedYear}
+              onSetHistoricalYears={handleSetHistoricalYears}
+              onSetProjectedYears={handleSetProjectedYears}
+              onUpdatePrimaryDriver={handleUpdatePrimaryDriver}
+              debtServiceCoverage={debtServiceCoverage}
+              isScheduleImplemented={isScheduleImplemented}
+              parsedSchedule={parsedSchedule}
+              onJumpToRepaymentSchedule={handleJumpToRepaymentSchedule}
+            />
+          )}
 
-      {/* Modals */}
-      <CompanyProfileModal
-        isOpen={isProfileModalOpen}
-        onClose={() => setIsProfileModalOpen(false)}
-        profile={companyProfile}
-        onSave={setCompanyProfile}
-      />
+          {activeTab === 'data-entry' && (
+            <FinancialDataEntry
+              yearsData={allYearsInputs}
+              onUpdatePrimaryDriver={handleUpdatePrimaryDriver}
+              onUpdateYearData={handleUpdateYearData}
+              companyProfile={companyProfile}
+              assumptions={assumptions}
+              onUpdateAssumptions={handleUpdateAssumptions}
+              inputMode={inputMode}
+              onToggleInputMode={setInputMode}
+              onGenerateAutomaticProjections={handleGenerateAutomaticProjections}
+              incomeStatements={incomeStatements}
+              balanceSheets={balanceSheets}
+              cashFlowStatements={cashFlowStatements}
+              autoFillConfigs={autoFillConfigs}
+              onApplyAutoFill={handleApplyAutoFill}
+              onClearAutoFill={handleClearAutoFill}
+              validationIssues={validationIssues}
+              selectedHistoricalYears={selectedHistYears}
+              selectedProjectedYears={selectedProjYears}
+              onToggleHistoricalYear={handleToggleHistoricalYear}
+              onToggleProjectedYear={handleToggleProjectedYear}
+              onSetHistoricalYears={handleSetHistoricalYears}
+              onSetProjectedYears={handleSetProjectedYears}
+              parsedSchedule={parsedSchedule}
+              onSetParsedSchedule={setParsedSchedule}
+              scheduleSnapshot={scheduleSnapshot}
+              isScheduleImplemented={isScheduleImplemented}
+              lastImplementationResult={lastImplementationResult}
+              debtServiceCoverage={debtServiceCoverage}
+              onImplementRepaymentSchedule={handleImplementRepaymentSchedule}
+              onRevertScheduleSnapshot={handleRevertScheduleSnapshot}
+              onUnlockScheduleYear={handleUnlockScheduleYear}
+              initialShowScheduleStudio={openScheduleStudio || isScheduleImplemented || parsedSchedule !== null}
+            />
+          )}
 
-      <DeveloperProfileModal
-        isOpen={isDeveloperModalOpen}
-        onClose={() => setIsDeveloperModalOpen(false)}
-      />
+          {activeTab === 'configuration' && (
+            <StatementConfigView
+              configItems={statementConfig}
+              onUpdateConfig={setStatementConfig}
+              onResetDefaults={() => setStatementConfig(DEFAULT_STATEMENT_CONFIG_ITEMS)}
+            />
+          )}
 
-      {/* Quiet Professional Footer */}
-      <footer className="border-t border-slate-900 bg-slate-950 py-6 text-xs text-slate-400">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="flex items-center gap-2">
-            <span className="font-semibold text-slate-300">Financials with Tuhin</span>
-            <span aria-hidden="true">·</span>
-            <span>Section 76 Compliance Architecture</span>
-            <span aria-hidden="true">·</span>
-            <span>Five Standard Statements & Notes</span>
+          {activeTab === 'projections' && (
+            <ProjectionEngineView
+              assumptions={assumptions}
+              onUpdateAssumptions={handleUpdateAssumptions}
+              onApplyAndRecalculate={() => setActiveTab('statements')}
+              onResetDefaults={() => setAssumptions(DEFAULT_PROJECTION_ASSUMPTIONS)}
+              selectedHistoricalYears={selectedHistYears}
+              selectedProjectedYears={selectedProjYears}
+              onToggleHistoricalYear={handleToggleHistoricalYear}
+              onToggleProjectedYear={handleToggleProjectedYear}
+              onSetHistoricalYears={handleSetHistoricalYears}
+              onSetProjectedYears={handleSetProjectedYears}
+            />
+          )}
+
+          {activeTab === 'reconciliation' && (
+            <CashFlowReconciliationAudit
+              cashFlowYears={cashFlowStatements}
+              balanceSheetYears={balanceSheets}
+              companyProfile={companyProfile}
+              validationIssues={validationIssues}
+              debtServiceCoverage={debtServiceCoverage}
+              isScheduleImplemented={isScheduleImplemented}
+              parsedSchedule={parsedSchedule}
+              onJumpToRepaymentSchedule={handleJumpToRepaymentSchedule}
+            />
+          )}
+        </main>
+
+        {/* Modals */}
+        <CompanyProfileModal
+          isOpen={isProfileModalOpen}
+          onClose={() => setIsProfileModalOpen(false)}
+          profile={companyProfile}
+          onSave={setCompanyProfile}
+        />
+
+        <DeveloperProfileModal
+          isOpen={isDeveloperModalOpen}
+          onClose={() => setIsDeveloperModalOpen(false)}
+        />
+
+        {/* Quiet Professional Footer */}
+        <footer className="border-t border-slate-200/90 bg-white/80 backdrop-blur-md py-5 text-xs text-slate-600 mt-8">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-bold text-slate-900">Financials with Tuhin</span>
+              <span aria-hidden="true">·</span>
+              <span>Section 76 Compliance Architecture</span>
+              <span aria-hidden="true">·</span>
+              <span>Five Standard Statements & Notes</span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-4 text-[11px]">
+              <button
+                onClick={() => setIsDeveloperModalOpen(true)}
+                className="font-semibold text-emerald-700 hover:text-emerald-600 transition-colors"
+              >
+                Developer: Mohammad Towhidul Akbar Tuhin (Officer, Sammilito Islami Bank PLC)
+              </button>
+              <span aria-hidden="true">·</span>
+              <span className="text-slate-500">BBA (Heriot-Watt, UK) · MBA (CU)</span>
+            </div>
           </div>
-
-          <div className="flex items-center gap-4 text-[11px]">
-            <button
-              onClick={() => setIsDeveloperModalOpen(true)}
-              className="text-emerald-400 hover:text-emerald-300 transition-colors"
-            >
-              Developer: Mohammad Towhidul Akbar Tuhin (Officer, Sammilito Islami Bank PLC)
-            </button>
-            <span aria-hidden="true">·</span>
-            <span>BBA (Heriot-Watt, UK) · MBA (CU)</span>
-          </div>
-        </div>
-      </footer>
+        </footer>
+      </div>
     </div>
   );
 }

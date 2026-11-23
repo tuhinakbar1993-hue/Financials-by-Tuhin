@@ -416,6 +416,14 @@ export interface PreviousFormatYearData {
   faGrossAssetBase: number; // exact fixedAssetsGross
 }
 
+export interface PreviousComparativePair {
+  id: string;           // e.g. "2023_2024"
+  label: string;        // e.g. "2023 & 2024"
+  earlierYear: number;  // e.g. 2023
+  laterYear: number;    // e.g. 2024
+  data: PreviousFormatYearData[]; // [laterYearData, earlierYearData] descending
+}
+
 // ---------------- PROJECTED FINANCIALS FORMAT (Exact PDF Compliance) ---------------- //
 export interface ProjectedFormatYearData {
   year: number;

@@ -3,7 +3,7 @@
 
 @layer base {
   * {
-    border-color: var(--border-color, rgba(226, 232, 240, 0.12));
+    border-color: var(--border-color, rgba(148, 163, 184, 0.28));
   }
 
   body {
@@ -12,23 +12,23 @@
   }
 }
 
-/* Financial Terminal Scrollbars */
+/* Light Architectural Studio Scrollbars */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(15, 23, 42, 0.6);
+  background: rgba(241, 245, 249, 0.85);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(51, 65, 85, 0.8);
+  background: rgba(148, 163, 184, 0.65);
   border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(16, 185, 129, 0.5);
+  background: rgba(5, 150, 105, 0.65);
 }
 
 /* Numeric alignment utility for financial statements */
@@ -38,6 +38,6 @@
 
 /* Statutory Double Underline for Audit & Financial Statements */
 .accounting-double-underline {
-  border-bottom: 3px double rgba(16, 185, 129, 0.85);
+  border-bottom: 3px double rgba(5, 150, 105, 0.85);
 }
 

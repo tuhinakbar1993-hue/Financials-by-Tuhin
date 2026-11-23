@@ -44,18 +44,18 @@ export const ProjectionEngineView: React.FC<ProjectionEngineViewProps> = ({
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-5 bg-slate-900 border border-slate-800 rounded-2xl">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-5 bg-white/92 backdrop-blur-md border border-slate-200/90 rounded-2xl shadow-sm">
         <div>
           <div className="flex items-center gap-2">
-            <Sliders className="w-5 h-5 text-amber-400" />
-            <h2 className="text-lg font-bold text-white tracking-tight">
+            <Sliders className="w-5 h-5 text-amber-600" />
+            <h2 className="text-lg font-bold text-slate-900 tracking-tight">
               Financial Projection, Horizon & Year Selection Engine
             </h2>
-            <span className="text-[11px] font-semibold text-amber-300 bg-amber-950/60 border border-amber-800/50 px-2 py-0.5 rounded-md">
+            <span className="text-[11px] font-semibold text-amber-900 bg-amber-50 border border-amber-300 px-2 py-0.5 rounded-md">
               Section 76.8
             </span>
           </div>
-          <p className="text-xs text-slate-400 mt-1">
+          <p className="text-xs text-slate-600 mt-1">
             Configure previous ({sortedHist.length}Y) and projected ({projYears.length}Y) financial years individually, plus revenue escalation, cost structures, and working capital cycles across all five financial statements.
           </p>
         </div>
@@ -63,7 +63,7 @@ export const ProjectionEngineView: React.FC<ProjectionEngineViewProps> = ({
         <div className="flex items-center gap-2">
           <button
             onClick={onResetDefaults}
-            className="px-3 py-1.5 text-xs font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors flex items-center gap-1.5"
+            className="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-slate-50 rounded-lg border border-slate-300 transition-colors flex items-center gap-1.5"
           >
             <RotateCcw className="w-3.5 h-3.5" />
             Reset Baseline
@@ -92,16 +92,16 @@ export const ProjectionEngineView: React.FC<ProjectionEngineViewProps> = ({
       {/* Assumptions Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
         {/* Card 1: Time Horizon */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
-          <div className="flex items-center gap-2 text-slate-200 text-xs font-bold border-b border-slate-800 pb-2">
-            <Calendar className="w-4 h-4 text-emerald-400" />
+        <div className="bg-white/92 backdrop-blur-md border border-slate-200/90 rounded-2xl p-5 space-y-4 shadow-sm">
+          <div className="flex items-center gap-2 text-slate-900 text-xs font-bold border-b border-slate-200 pb-2">
+            <Calendar className="w-4 h-4 text-emerald-600" />
             Projection Horizon Configuration
           </div>
           <div className="space-y-3 text-xs">
             <div className="space-y-1">
-              <label className="text-slate-300 font-medium flex justify-between">
+              <label className="text-slate-700 font-medium flex justify-between">
                 <span>Select Projected Years Horizon (1 to 20 Years)</span>
-                <span className="font-mono text-emerald-400 font-bold">{projYears.length} Years</span>
+                <span className="font-mono text-emerald-700 font-bold">{projYears.length} Years</span>
               </label>
               <input
                 type="range"
@@ -109,7 +109,7 @@ export const ProjectionEngineView: React.FC<ProjectionEngineViewProps> = ({
                 max={20}
                 value={Math.min(20, Math.max(1, projYears.length))}
                 onChange={(e) => handleChange('projectedYearsCount', Number(e.target.value))}
-                className="w-full accent-emerald-500"
+                className="w-full accent-emerald-600"
               />
               <div className="flex justify-between text-[10px] text-slate-500 font-mono">
                 <span>1 Year</span>
@@ -127,10 +127,10 @@ export const ProjectionEngineView: React.FC<ProjectionEngineViewProps> = ({
                   key={yr}
                   type="button"
                   onClick={() => handleChange('projectedYearsCount', yr)}
-                  className={`px-2 py-0.5 rounded text-[11px] font-semibold transition-colors ${
+                  className={`px-2 py-0.5 rounded text-[11px] font-semibold transition-colors border ${
                     projYears.length === yr
-                      ? 'bg-emerald-600 text-white'
-                      : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                      ? 'bg-emerald-600 text-white border-emerald-600'
+                      : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
                   }`}
                 >
                   {yr}Y
@@ -138,14 +138,14 @@ export const ProjectionEngineView: React.FC<ProjectionEngineViewProps> = ({
               ))}
             </div>
 
-            <div className="space-y-1 bg-slate-950/60 border border-slate-800 rounded-lg p-3">
-              <div className="flex justify-between text-slate-300 font-medium">
+            <div className="space-y-1 bg-slate-50/90 border border-slate-200 rounded-lg p-3">
+              <div className="flex justify-between text-slate-700 font-medium">
                 <span>Selected Previous Years ({sortedHist.length})</span>
-                <span className="font-mono text-emerald-400 font-bold">{sortedHist.join(', ')}</span>
+                <span className="font-mono text-emerald-700 font-bold">{sortedHist.join(', ')}</span>
               </div>
-              <div className="flex justify-between text-slate-300 font-medium pt-1">
+              <div className="flex justify-between text-slate-700 font-medium pt-1">
                 <span>Selected Projected Years ({projYears.length})</span>
-                <span className="font-mono text-sky-400 font-bold truncate max-w-[170px]" title={projYears.join(', ')}>
+                <span className="font-mono text-sky-700 font-bold truncate max-w-[170px]" title={projYears.join(', ')}>
                   {projYears[0]}–{projYears[projYears.length - 1]}
                 </span>
               </div>
@@ -154,117 +154,117 @@ export const ProjectionEngineView: React.FC<ProjectionEngineViewProps> = ({
         </div>
 
         {/* Card 2: Revenue & Margin Projections */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
-          <div className="flex items-center gap-2 text-slate-200 text-xs font-bold border-b border-slate-800 pb-2">
-            <TrendingUp className="w-4 h-4 text-sky-400" />
+        <div className="bg-white/92 backdrop-blur-md border border-slate-200/90 rounded-2xl p-5 space-y-4 shadow-sm">
+          <div className="flex items-center gap-2 text-slate-900 text-xs font-bold border-b border-slate-200 pb-2">
+            <TrendingUp className="w-4 h-4 text-sky-600" />
             Revenue & Profit Margins
           </div>
           <div className="space-y-3 text-xs">
             <div className="space-y-1">
-              <label className="text-slate-300 font-medium flex justify-between">
+              <label className="text-slate-700 font-medium flex justify-between">
                 <span>Annual Revenue Growth Rate</span>
-                <span className="font-mono text-sky-400 font-bold">{assumptions.revenueGrowthRate}%</span>
+                <span className="font-mono text-sky-700 font-bold">{assumptions.revenueGrowthRate}%</span>
               </label>
               <input
                 type="number"
                 step="0.1"
                 value={assumptions.revenueGrowthRate}
                 onChange={(e) => handleChange('revenueGrowthRate', Number(e.target.value))}
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-white font-mono tabular-nums"
+                className="w-full bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-slate-900 font-mono tabular-nums focus:outline-none focus:ring-1 focus:ring-emerald-500"
               />
             </div>
 
             <div className="space-y-1">
-              <label className="text-slate-300 font-medium flex justify-between">
+              <label className="text-slate-700 font-medium flex justify-between">
                 <span>Target Gross Profit Margin (%)</span>
-                <span className="font-mono text-slate-200">{assumptions.grossMarginPct}%</span>
+                <span className="font-mono text-slate-800 font-semibold">{assumptions.grossMarginPct}%</span>
               </label>
               <input
                 type="number"
                 step="0.1"
                 value={assumptions.grossMarginPct}
                 onChange={(e) => handleChange('grossMarginPct', Number(e.target.value))}
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-white font-mono tabular-nums"
+                className="w-full bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-slate-900 font-mono tabular-nums focus:outline-none focus:ring-1 focus:ring-emerald-500"
               />
             </div>
 
             <div className="space-y-1">
-              <label className="text-slate-300 font-medium flex justify-between">
+              <label className="text-slate-700 font-medium flex justify-between">
                 <span>Operating Expenses (% of Revenue)</span>
-                <span className="font-mono text-slate-200">{assumptions.opexPctOfRevenue}%</span>
+                <span className="font-mono text-slate-800 font-semibold">{assumptions.opexPctOfRevenue}%</span>
               </label>
               <input
                 type="number"
                 step="0.1"
                 value={assumptions.opexPctOfRevenue}
                 onChange={(e) => handleChange('opexPctOfRevenue', Number(e.target.value))}
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-white font-mono tabular-nums"
+                className="w-full bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-slate-900 font-mono tabular-nums focus:outline-none focus:ring-1 focus:ring-emerald-500"
               />
             </div>
           </div>
         </div>
 
         {/* Card 3: Working Capital & Capex Cycles */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
-          <div className="flex items-center gap-2 text-slate-200 text-xs font-bold border-b border-slate-800 pb-2">
-            <Shield className="w-4 h-4 text-teal-400" />
+        <div className="bg-white/92 backdrop-blur-md border border-slate-200/90 rounded-2xl p-5 space-y-4 shadow-sm">
+          <div className="flex items-center gap-2 text-slate-900 text-xs font-bold border-b border-slate-200 pb-2">
+            <Shield className="w-4 h-4 text-teal-600" />
             Working Capital & Capex Metrics
           </div>
           <div className="space-y-3 text-xs">
             <div className="grid grid-cols-3 gap-2">
               <div className="space-y-1">
-                <label className="text-[11px] text-slate-400">DSO (Receivables)</label>
+                <label className="text-[11px] text-slate-600 font-medium">DSO (Receivables)</label>
                 <input
                   type="number"
                   value={assumptions.receivableDays}
                   onChange={(e) => handleChange('receivableDays', Number(e.target.value))}
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-white font-mono tabular-nums text-center"
+                  className="w-full bg-white border border-slate-300 rounded-lg px-2 py-1 text-slate-900 font-mono tabular-nums text-center focus:outline-none focus:ring-1 focus:ring-emerald-500"
                 />
               </div>
               <div className="space-y-1">
-                <label className="text-[11px] text-slate-400">DIO (Inventory)</label>
+                <label className="text-[11px] text-slate-600 font-medium">DIO (Inventory)</label>
                 <input
                   type="number"
                   value={assumptions.inventoryDays}
                   onChange={(e) => handleChange('inventoryDays', Number(e.target.value))}
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-white font-mono tabular-nums text-center"
+                  className="w-full bg-white border border-slate-300 rounded-lg px-2 py-1 text-slate-900 font-mono tabular-nums text-center focus:outline-none focus:ring-1 focus:ring-emerald-500"
                 />
               </div>
               <div className="space-y-1">
-                <label className="text-[11px] text-slate-400">DPO (Payables)</label>
+                <label className="text-[11px] text-slate-600 font-medium">DPO (Payables)</label>
                 <input
                   type="number"
                   value={assumptions.payableDays}
                   onChange={(e) => handleChange('payableDays', Number(e.target.value))}
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-white font-mono tabular-nums text-center"
+                  className="w-full bg-white border border-slate-300 rounded-lg px-2 py-1 text-slate-900 font-mono tabular-nums text-center focus:outline-none focus:ring-1 focus:ring-emerald-500"
                 />
               </div>
             </div>
 
             <div className="space-y-1">
-              <label className="text-slate-300 font-medium flex justify-between">
+              <label className="text-slate-700 font-medium flex justify-between">
                 <span>Capex Additions (% of Revenue)</span>
-                <span className="font-mono text-slate-200">{assumptions.capexPctOfRevenue}%</span>
+                <span className="font-mono text-slate-800 font-semibold">{assumptions.capexPctOfRevenue}%</span>
               </label>
               <input
                 type="number"
                 step="0.1"
                 value={assumptions.capexPctOfRevenue}
                 onChange={(e) => handleChange('capexPctOfRevenue', Number(e.target.value))}
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-white font-mono tabular-nums"
+                className="w-full bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-slate-900 font-mono tabular-nums focus:outline-none focus:ring-1 focus:ring-emerald-500"
               />
             </div>
 
             <div className="space-y-1">
-              <label className="text-slate-300 font-medium flex justify-between">
+              <label className="text-slate-700 font-medium flex justify-between">
                 <span>Dividend Payout Ratio (%)</span>
-                <span className="font-mono text-slate-200">{assumptions.dividendPayoutRatio}%</span>
+                <span className="font-mono text-slate-800 font-semibold">{assumptions.dividendPayoutRatio}%</span>
               </label>
               <input
                 type="number"
                 value={assumptions.dividendPayoutRatio}
                 onChange={(e) => handleChange('dividendPayoutRatio', Number(e.target.value))}
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-white font-mono tabular-nums"
+                className="w-full bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-slate-900 font-mono tabular-nums focus:outline-none focus:ring-1 focus:ring-emerald-500"
               />
             </div>
           </div>
@@ -272,20 +272,20 @@ export const ProjectionEngineView: React.FC<ProjectionEngineViewProps> = ({
       </div>
 
       {/* Auto-Fill Feature Highlight Card */}
-      <div className="bg-gradient-to-r from-emerald-950/40 via-slate-900 to-slate-900 border border-emerald-800/40 rounded-2xl p-5 space-y-3">
+      <div className="bg-gradient-to-r from-emerald-50/90 via-white/95 to-white/95 backdrop-blur-md border border-emerald-200 rounded-2xl p-5 space-y-3 shadow-sm">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+            <div className="w-8 h-8 rounded-lg bg-emerald-100 border border-emerald-200 flex items-center justify-center text-emerald-700">
               <Zap className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
                 Automatic Year-Wise Auto-Fill Facility
-                <span className="text-[10px] font-semibold text-emerald-400 bg-emerald-950/80 border border-emerald-700/50 px-2 py-0.5 rounded-md">
+                <span className="text-[10px] font-semibold text-emerald-800 bg-emerald-100 border border-emerald-300 px-2 py-0.5 rounded-md">
                   Active in Data Entry
                 </span>
               </h3>
-              <p className="text-xs text-slate-400 mt-0.5">
+              <p className="text-xs text-slate-600 mt-0.5">
                 Each of the six primary drivers (Sales Revenue, Closing Inventory, Finance Cost, Net Profit After Tax, Repayment of Borrowings, Fixed Assets) supports independent single-year base entry with automatic calculation of all previous and subsequent years.
               </p>
             </div>
@@ -293,34 +293,34 @@ export const ProjectionEngineView: React.FC<ProjectionEngineViewProps> = ({
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 pt-2 text-[11px] font-mono">
-          <div className="bg-slate-950/70 p-2.5 rounded-xl border border-slate-800 space-y-0.5">
-            <span className="text-slate-400 text-[10px]">Driver 1</span>
-            <div className="font-bold text-emerald-300 truncate">Sales Revenue</div>
+          <div className="bg-white/90 p-2.5 rounded-xl border border-slate-200 space-y-0.5">
+            <span className="text-slate-500 text-[10px]">Driver 1</span>
+            <div className="font-bold text-emerald-700 truncate">Sales Revenue</div>
             <div className="text-[10px] text-slate-500 font-sans">Compound growth</div>
           </div>
-          <div className="bg-slate-950/70 p-2.5 rounded-xl border border-slate-800 space-y-0.5">
-            <span className="text-slate-400 text-[10px]">Driver 2</span>
-            <div className="font-bold text-teal-300 truncate">Closing Inventory</div>
+          <div className="bg-white/90 p-2.5 rounded-xl border border-slate-200 space-y-0.5">
+            <span className="text-slate-500 text-[10px]">Driver 2</span>
+            <div className="font-bold text-teal-700 truncate">Closing Inventory</div>
             <div className="text-[10px] text-slate-500 font-sans">DIO turnover scaling</div>
           </div>
-          <div className="bg-slate-950/70 p-2.5 rounded-xl border border-slate-800 space-y-0.5">
-            <span className="text-slate-400 text-[10px]">Driver 3</span>
-            <div className="font-bold text-amber-300 truncate">Finance Cost</div>
+          <div className="bg-white/90 p-2.5 rounded-xl border border-slate-200 space-y-0.5">
+            <span className="text-slate-500 text-[10px]">Driver 3</span>
+            <div className="font-bold text-amber-800 truncate">Finance Cost</div>
             <div className="text-[10px] text-slate-500 font-sans">Debt deleveraging</div>
           </div>
-          <div className="bg-slate-950/70 p-2.5 rounded-xl border border-slate-800 space-y-0.5">
-            <span className="text-slate-400 text-[10px]">Driver 4</span>
-            <div className="font-bold text-sky-300 truncate">Net Profit</div>
+          <div className="bg-white/90 p-2.5 rounded-xl border border-slate-200 space-y-0.5">
+            <span className="text-slate-500 text-[10px]">Driver 4</span>
+            <div className="font-bold text-sky-700 truncate">Net Profit</div>
             <div className="text-[10px] text-slate-500 font-sans">Operating leverage</div>
           </div>
-          <div className="bg-slate-950/70 p-2.5 rounded-xl border border-slate-800 space-y-0.5">
-            <span className="text-slate-400 text-[10px]">Driver 5</span>
-            <div className="font-bold text-rose-300 truncate">Repay Borrowings</div>
+          <div className="bg-white/90 p-2.5 rounded-xl border border-slate-200 space-y-0.5">
+            <span className="text-slate-500 text-[10px]">Driver 5</span>
+            <div className="font-bold text-rose-700 truncate">Repay Borrowings</div>
             <div className="text-[10px] text-slate-500 font-sans">Facility amortization</div>
           </div>
-          <div className="bg-slate-950/70 p-2.5 rounded-xl border border-slate-800 space-y-0.5">
-            <span className="text-slate-400 text-[10px]">Driver 6</span>
-            <div className="font-bold text-indigo-300 truncate">Fixed Assets</div>
+          <div className="bg-white/90 p-2.5 rounded-xl border border-slate-200 space-y-0.5">
+            <span className="text-slate-500 text-[10px]">Driver 6</span>
+            <div className="font-bold text-indigo-700 truncate">Fixed Assets</div>
             <div className="text-[10px] text-slate-500 font-sans">Capex reinvestment</div>
           </div>
         </div>

@@ -1,6 +1,6 @@
 import React from 'react';
-import { Download, FileSpreadsheet, FileText, Settings, Database, Sliders, Scale, Layers, ChevronDown, Sparkles } from 'lucide-react';
-import { CompanyProfile } from '../types/financial';
+import { Download, FileSpreadsheet, FileText, Settings, Database, Sliders, Scale, Layers, ChevronDown } from 'lucide-react';
+import { CompanyProfile, PreviousComparativePair } from '../types/financial';
 
 interface HeaderNavProps {
   activeTab: string;
@@ -11,9 +11,12 @@ interface HeaderNavProps {
   onExportPackageExcel: () => void;
   onExportPackageWord: () => void;
   onExportPackagePdf: () => void;
+  previousComparativePairs?: PreviousComparativePair[];
+  onExportPreviousPair?: (pairId: string, format: 'xlsx' | 'docx' | 'pdf') => void;
   onExportPreviousExcel?: () => void;
   onExportPreviousWord?: () => void;
   onExportPreviousPdf?: () => void;
+  projectedYearsRangeLabel?: string;
   onExportProjectedExcel?: () => void;
   onExportProjectedWord?: () => void;
   onExportProjectedPdf?: () => void;
@@ -28,9 +31,12 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
   onExportPackageExcel,
   onExportPackageWord,
   onExportPackagePdf,
+  previousComparativePairs = [],
+  onExportPreviousPair,
   onExportPreviousExcel,
   onExportPreviousWord,
   onExportPreviousPdf,
+  projectedYearsRangeLabel,
   onExportProjectedExcel,
   onExportProjectedWord,
   onExportProjectedPdf,
@@ -38,15 +44,15 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
   const [showExportMenu, setShowExportMenu] = React.useState(false);
 
   const navItems = [
-    { id: 'statements', label: 'Statements & Reports', icon: Layers, accent: 'text-emerald-400' },
-    { id: 'data-entry', label: 'Financial Data Entry', icon: Database, accent: 'text-sky-400' },
-    { id: 'configuration', label: 'Cash Flow Config', icon: Settings, accent: 'text-indigo-400' },
-    { id: 'projections', label: 'Projections Engine', icon: Sliders, accent: 'text-amber-400' },
-    { id: 'reconciliation', label: 'Audit Matrix', icon: Scale, accent: 'text-teal-400' },
+    { id: 'statements', label: 'Statements & Reports', icon: Layers, accent: 'text-emerald-700' },
+    { id: 'data-entry', label: 'Financial Data Entry', icon: Database, accent: 'text-sky-700' },
+    { id: 'configuration', label: 'Cash Flow Config', icon: Settings, accent: 'text-indigo-700' },
+    { id: 'projections', label: 'Projections Engine', icon: Sliders, accent: 'text-amber-700' },
+    { id: 'reconciliation', label: 'Audit Matrix', icon: Scale, accent: 'text-teal-700' },
   ];
 
   return (
-    <header className="sticky top-0 z-40 bg-slate-950/85 backdrop-blur-xl border-b border-slate-800/80 shadow-lg shadow-black/20 text-slate-100 transition-all">
+    <header className="sticky top-0 z-40 bg-white/82 backdrop-blur-xl border-b border-slate-200/90 shadow-sm text-slate-900 transition-all">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between gap-4 h-16">
           
@@ -56,30 +62,27 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
               onClick={() => setActiveTab('statements')}
               className="text-left group flex items-center gap-3 focus:outline-none"
             >
-              <div className="relative">
-                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-700 flex items-center justify-center text-white font-extrabold text-base shadow-md shadow-emerald-950/60 ring-1 ring-emerald-400/30 group-hover:ring-emerald-400/60 transition-all">
-                  T
-                </div>
-                <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-2 ring-slate-950" />
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-600 to-teal-700 flex items-center justify-center text-white font-extrabold text-base shadow-sm ring-1 ring-emerald-500/30 transition-all">
+                T
               </div>
               <div>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-base font-bold tracking-tight text-white whitespace-nowrap group-hover:text-emerald-300 transition-colors">
+                <div className="flex items-center gap-2">
+                  <span className="text-base font-bold tracking-tight text-slate-900 whitespace-nowrap group-hover:text-emerald-700 transition-colors">
                     Financials with Tuhin
                   </span>
-                  <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-emerald-400/90 bg-emerald-950/80 border border-emerald-800/60 px-1.5 py-0.2 rounded">
+                  <span className="text-[10px] font-mono font-semibold text-emerald-700">
                     Sec 76
                   </span>
                 </div>
-                <span className="text-[11px] text-slate-400 tracking-normal block -mt-0.5 truncate max-w-[210px] font-sans">
+                <span className="text-[11px] text-slate-500 tracking-normal block -mt-0.5 truncate max-w-[210px] font-sans">
                   {companyProfile.companyName} · {companyProfile.reportingCurrency}
                 </span>
               </div>
             </button>
           </div>
 
-          {/* Navigation Links: Segmented Terminal Navigation */}
-          <nav className="hidden lg:flex items-center gap-1 bg-slate-900/90 p-1 rounded-xl border border-slate-800/80 shadow-inner">
+          {/* Navigation Links: Clean Frosted Studio Navigation */}
+          <nav className="hidden lg:flex items-center gap-1 bg-slate-100/90 p-1 rounded-xl border border-slate-200/90">
             {navItems.map((item) => {
               const Icon = item.icon;
               const isActive = activeTab === item.id;
@@ -89,15 +92,12 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
                   onClick={() => setActiveTab(item.id)}
                   className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all flex items-center gap-2 ${
                     isActive
-                      ? 'bg-slate-800 text-white shadow-sm ring-1 ring-slate-700/80 font-bold'
-                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-850/60'
+                      ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200 font-bold'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
                   }`}
                 >
-                  <Icon className={`w-3.5 h-3.5 ${isActive ? item.accent : 'text-slate-500'}`} />
+                  <Icon className={`w-3.5 h-3.5 ${isActive ? item.accent : 'text-slate-400'}`} />
                   <span>{item.label}</span>
-                  {isActive && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                  )}
                 </button>
               );
             })}
@@ -113,7 +113,7 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
                   key={item.id}
                   onClick={() => setActiveTab(item.id)}
                   className={`p-2 rounded-lg transition-colors ${
-                    isActive ? 'bg-slate-800 text-emerald-400' : 'text-slate-400 hover:text-white'
+                    isActive ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'
                   }`}
                   title={item.label}
                 >
@@ -129,9 +129,9 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
             <button
               onClick={onOpenProfileModal}
               title="Configure Company Entity & Accounting Framework"
-              className="px-3 py-1.5 text-xs font-medium text-slate-300 bg-slate-900 hover:bg-slate-850 rounded-lg border border-slate-800/90 hover:border-slate-700 transition-all whitespace-nowrap hidden sm:inline-flex items-center gap-1.5 shadow-sm"
+              className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 rounded-lg border border-slate-200 hover:border-slate-300 transition-all whitespace-nowrap hidden sm:inline-flex items-center gap-1.5 shadow-sm"
             >
-              <Settings className="w-3.5 h-3.5 text-slate-400" />
+              <Settings className="w-3.5 h-3.5 text-slate-500" />
               <span>Entity Setup</span>
             </button>
 
@@ -139,146 +139,210 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
             <div className="relative">
               <button
                 onClick={() => setShowExportMenu(!showExportMenu)}
-                className="px-3.5 py-1.5 text-xs font-semibold text-white bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 rounded-lg shadow-md shadow-emerald-950/50 transition-all whitespace-nowrap shrink-0 flex items-center gap-2 ring-1 ring-emerald-400/30 hover:ring-emerald-400/50"
+                className="px-3.5 py-1.5 text-xs font-semibold text-white bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 rounded-lg shadow-sm transition-all whitespace-nowrap shrink-0 flex items-center gap-2"
               >
                 <Download className="w-3.5 h-3.5" />
                 <span>Export Package</span>
-                <ChevronDown className="w-3 h-3 opacity-80" />
+                <ChevronDown className="w-3 h-3 opacity-90" />
               </button>
 
               {showExportMenu && (
                 <div 
-                  className="absolute right-0 mt-2 w-80 bg-slate-900/95 backdrop-blur-xl border border-slate-700/80 rounded-xl shadow-2xl p-2 z-50 text-xs animate-in fade-in slide-in-from-top-2 duration-150 ring-1 ring-black/40"
+                  className="absolute right-0 mt-2 w-96 max-h-[82vh] overflow-y-auto bg-white/98 backdrop-blur-xl border border-slate-200 rounded-xl shadow-2xl p-2.5 z-50 text-xs text-slate-800 space-y-2.5"
                   onMouseLeave={() => setShowExportMenu(false)}
                 >
-                  <div className="px-3 py-2 border-b border-slate-800/80 mb-1">
-                    <div className="flex items-center justify-between">
-                      <p className="font-bold text-white tracking-tight">Complete Financial Package</p>
-                      <span className="text-[10px] font-mono text-emerald-400 bg-emerald-950 px-1.5 py-0.5 rounded border border-emerald-800/50">
-                        Section 76
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-slate-400 mt-0.5">All 5 Statements + Fixed Assets Schedule + Notes</p>
-                  </div>
-
-                  <button
-                    onClick={() => {
-                      setShowExportMenu(false);
-                      onExportPackageExcel();
-                    }}
-                    className="w-full text-left px-3 py-2 hover:bg-slate-800/90 rounded-lg text-slate-200 flex items-center gap-3 transition-colors group"
-                  >
-                    <div className="w-8 h-8 rounded-lg bg-emerald-950/80 border border-emerald-800/60 flex items-center justify-center shrink-0 group-hover:border-emerald-600 transition-colors">
-                      <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-                    </div>
-                    <div className="flex-1">
-                      <div className="font-semibold text-white flex items-center justify-between">
-                        <span>Excel Workbook</span>
-                        <span className="text-[10px] font-mono text-emerald-400 bg-emerald-950/60 px-1 rounded">.XLSX</span>
+                  {/* 1. Separate Previous Financials — Comparative Pairwise Downloads */}
+                  {(onExportPreviousExcel || previousComparativePairs.length > 0) && (
+                    <div className="bg-emerald-50/75 border border-emerald-200/90 rounded-lg p-2.5 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <span className="text-[11px] font-bold text-emerald-900 block">
+                            1. Previous Financials (Comparative Sets)
+                          </span>
+                          <span className="text-[10px] text-emerald-700">
+                            Exact 2-year comparative downloads (31.12.YYYY)
+                          </span>
+                        </div>
                       </div>
-                      <div className="text-[11px] text-slate-400">6 coordinated formatted worksheets</div>
-                    </div>
-                  </button>
 
-                  <button
-                    onClick={() => {
-                      setShowExportMenu(false);
-                      onExportPackageWord();
-                    }}
-                    className="w-full text-left px-3 py-2 hover:bg-slate-800/90 rounded-lg text-slate-200 flex items-center gap-3 transition-colors group"
-                  >
-                    <div className="w-8 h-8 rounded-lg bg-sky-950/80 border border-sky-800/60 flex items-center justify-center shrink-0 group-hover:border-sky-600 transition-colors">
-                      <FileText className="w-4 h-4 text-sky-400" />
-                    </div>
-                    <div className="flex-1">
-                      <div className="font-semibold text-white flex items-center justify-between">
-                        <span>Word Document</span>
-                        <span className="text-[10px] font-mono text-sky-400 bg-sky-950/60 px-1 rounded">.DOCX</span>
-                      </div>
-                      <div className="text-[11px] text-slate-400">Formatted executive statutory report</div>
-                    </div>
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      setShowExportMenu(false);
-                      onExportPackagePdf();
-                    }}
-                    className="w-full text-left px-3 py-2 hover:bg-slate-800/90 rounded-lg text-slate-200 flex items-center gap-3 transition-colors group"
-                  >
-                    <div className="w-8 h-8 rounded-lg bg-rose-950/80 border border-rose-800/60 flex items-center justify-center shrink-0 group-hover:border-rose-600 transition-colors">
-                      <Download className="w-4 h-4 text-rose-400" />
-                    </div>
-                    <div className="flex-1">
-                      <div className="font-semibold text-white flex items-center justify-between">
-                        <span>PDF Document</span>
-                        <span className="text-[10px] font-mono text-rose-400 bg-rose-950/60 px-1 rounded">.PDF</span>
-                      </div>
-                      <div className="text-[11px] text-slate-400">Auditor-ready publication format with cover</div>
-                    </div>
-                  </button>
-
-                  {(onExportPreviousExcel || onExportProjectedExcel) && (
-                    <div className="mt-2 pt-2 border-t border-slate-800/80 space-y-2 px-1">
-                      {onExportPreviousExcel && (
-                        <div className="bg-slate-950/70 border border-slate-800/80 rounded-lg p-2 space-y-1.5">
-                          <div className="flex items-center justify-between">
-                            <span className="text-[11px] font-bold text-emerald-300">Previous Financials Format</span>
-                            <span className="text-[9px] font-mono text-slate-400">31.12.YYYY</span>
-                          </div>
-                          <div className="grid grid-cols-3 gap-1.5">
-                            <button
-                              onClick={() => { setShowExportMenu(false); onExportPreviousExcel?.(); }}
-                              className="py-1 rounded bg-emerald-950/80 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-800/60 font-mono text-[10px] font-bold transition-colors"
+                      {previousComparativePairs.length > 0 && onExportPreviousPair && (
+                        <div className="space-y-1.5">
+                          {previousComparativePairs.map((pair) => (
+                            <div
+                              key={pair.id}
+                              className="flex items-center justify-between gap-2 bg-white/95 border border-emerald-200/80 rounded-md px-2 py-1.5"
                             >
-                              .XLSX
-                            </button>
-                            <button
-                              onClick={() => { setShowExportMenu(false); onExportPreviousWord?.(); }}
-                              className="py-1 rounded bg-sky-950/80 hover:bg-sky-600 text-sky-300 hover:text-white border border-sky-800/60 font-mono text-[10px] font-bold transition-colors"
-                            >
-                              .DOCX
-                            </button>
-                            <button
-                              onClick={() => { setShowExportMenu(false); onExportPreviousPdf?.(); }}
-                              className="py-1 rounded bg-rose-950/80 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-800/60 font-mono text-[10px] font-bold transition-colors"
-                            >
-                              .PDF
-                            </button>
-                          </div>
+                              <span className="font-semibold text-slate-800 font-mono text-[11px] whitespace-nowrap">
+                                ({pair.label})
+                              </span>
+                              <div className="grid grid-cols-3 gap-1 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => { setShowExportMenu(false); onExportPreviousPair(pair.id, 'xlsx'); }}
+                                  className="px-2 py-1 rounded bg-emerald-50 hover:bg-emerald-600 text-emerald-700 hover:text-white border border-emerald-200 font-mono text-[10px] font-bold transition-colors"
+                                >
+                                  .XLSX
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => { setShowExportMenu(false); onExportPreviousPair(pair.id, 'docx'); }}
+                                  className="px-2 py-1 rounded bg-sky-50 hover:bg-sky-600 text-sky-700 hover:text-white border border-sky-200 font-mono text-[10px] font-bold transition-colors"
+                                >
+                                  .DOCX
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => { setShowExportMenu(false); onExportPreviousPair(pair.id, 'pdf'); }}
+                                  className="px-2 py-1 rounded bg-rose-50 hover:bg-rose-600 text-rose-700 hover:text-white border border-rose-200 font-mono text-[10px] font-bold transition-colors"
+                                >
+                                  .PDF
+                                </button>
+                              </div>
+                            </div>
+                          ))}
                         </div>
                       )}
 
-                      {onExportProjectedExcel && (
-                        <div className="bg-slate-950/70 border border-slate-800/80 rounded-lg p-2 space-y-1.5">
-                          <div className="flex items-center justify-between">
-                            <span className="text-[11px] font-bold text-sky-300">Projected Financials Format</span>
-                            <span className="text-[9px] font-mono text-slate-400">Notes 1–13</span>
+                      {onExportPreviousExcel && (
+                        <div className="pt-1 border-t border-emerald-200/70">
+                          <div className="text-[10px] font-semibold text-emerald-800 mb-1">
+                            Download All Comparative Pairs ({previousComparativePairs.length} {previousComparativePairs.length === 1 ? 'file' : 'separate files'}):
                           </div>
                           <div className="grid grid-cols-3 gap-1.5">
                             <button
-                              onClick={() => { setShowExportMenu(false); onExportProjectedExcel?.(); }}
-                              className="py-1 rounded bg-emerald-950/80 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-800/60 font-mono text-[10px] font-bold transition-colors"
+                              type="button"
+                              onClick={() => { setShowExportMenu(false); onExportPreviousExcel?.(); }}
+                              className="py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-mono text-[10px] font-bold transition-colors"
                             >
-                              .XLSX
+                              All .XLSX
                             </button>
                             <button
-                              onClick={() => { setShowExportMenu(false); onExportProjectedWord?.(); }}
-                              className="py-1 rounded bg-sky-950/80 hover:bg-sky-600 text-sky-300 hover:text-white border border-sky-800/60 font-mono text-[10px] font-bold transition-colors"
+                              type="button"
+                              onClick={() => { setShowExportMenu(false); onExportPreviousWord?.(); }}
+                              className="py-1 rounded bg-sky-600 hover:bg-sky-700 text-white font-mono text-[10px] font-bold transition-colors"
                             >
-                              .DOCX
+                              All .DOCX
                             </button>
                             <button
-                              onClick={() => { setShowExportMenu(false); onExportProjectedPdf?.(); }}
-                              className="py-1 rounded bg-rose-950/80 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-800/60 font-mono text-[10px] font-bold transition-colors"
+                              type="button"
+                              onClick={() => { setShowExportMenu(false); onExportPreviousPdf?.(); }}
+                              className="py-1 rounded bg-rose-600 hover:bg-rose-700 text-white font-mono text-[10px] font-bold transition-colors"
                             >
-                              .PDF
+                              All .PDF
                             </button>
                           </div>
                         </div>
                       )}
                     </div>
                   )}
+
+                  {/* 2. Separate Projected Financials — All Selected Years Together */}
+                  {onExportProjectedExcel && (
+                    <div className="bg-sky-50/75 border border-sky-200/90 rounded-lg p-2.5 space-y-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-bold text-sky-900">
+                          2. Projected Financials {projectedYearsRangeLabel ? `(${projectedYearsRangeLabel})` : ''}
+                        </span>
+                        <span className="text-[10px] font-mono text-sky-700">Notes 1–13</span>
+                      </div>
+                      <p className="text-[10px] text-sky-700">
+                        All selected projected years combined in exact format
+                      </p>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => { setShowExportMenu(false); onExportProjectedExcel?.(); }}
+                          className="py-1 rounded bg-emerald-50 hover:bg-emerald-600 text-emerald-700 hover:text-white border border-emerald-200 font-mono text-[10px] font-bold transition-colors"
+                        >
+                          .XLSX
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setShowExportMenu(false); onExportProjectedWord?.(); }}
+                          className="py-1 rounded bg-sky-50 hover:bg-sky-600 text-sky-700 hover:text-white border border-sky-200 font-mono text-[10px] font-bold transition-colors"
+                        >
+                          .DOCX
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setShowExportMenu(false); onExportProjectedPdf?.(); }}
+                          className="py-1 rounded bg-rose-50 hover:bg-rose-600 text-rose-700 hover:text-white border border-rose-200 font-mono text-[10px] font-bold transition-colors"
+                        >
+                          .PDF
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 3. Complete Section 76 Package (Preserved) */}
+                  <div className="pt-1 border-t border-slate-200 space-y-1">
+                    <div className="px-1 py-1">
+                      <div className="flex items-center justify-between">
+                        <p className="font-bold text-slate-900 tracking-tight">3. Complete Financial Package (Sec 76)</p>
+                      </div>
+                      <p className="text-[11px] text-slate-500">All 5 Statements + Fixed Assets Schedule + Notes</p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowExportMenu(false);
+                        onExportPackageExcel();
+                      }}
+                      className="w-full text-left px-2.5 py-2 hover:bg-slate-100 rounded-lg text-slate-800 flex items-center gap-3 transition-colors group"
+                    >
+                      <div className="w-8 h-8 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-center shrink-0">
+                        <FileSpreadsheet className="w-4 h-4 text-emerald-700" />
+                      </div>
+                      <div className="flex-1">
+                        <div className="font-semibold text-slate-900 flex items-center justify-between">
+                          <span>Excel Workbook</span>
+                          <span className="text-[10px] font-mono text-emerald-700 font-bold">.XLSX</span>
+                        </div>
+                        <div className="text-[11px] text-slate-500">Coordinated multi-sheet workbook</div>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowExportMenu(false);
+                        onExportPackageWord();
+                      }}
+                      className="w-full text-left px-2.5 py-2 hover:bg-slate-100 rounded-lg text-slate-800 flex items-center gap-3 transition-colors group"
+                    >
+                      <div className="w-8 h-8 rounded-lg bg-sky-50 border border-sky-200 flex items-center justify-center shrink-0">
+                        <FileText className="w-4 h-4 text-sky-700" />
+                      </div>
+                      <div className="flex-1">
+                        <div className="font-semibold text-slate-900 flex items-center justify-between">
+                          <span>Word Document</span>
+                          <span className="text-[10px] font-mono text-sky-700 font-bold">.DOCX</span>
+                        </div>
+                        <div className="text-[11px] text-slate-500">Formatted executive statutory report</div>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowExportMenu(false);
+                        onExportPackagePdf();
+                      }}
+                      className="w-full text-left px-2.5 py-2 hover:bg-slate-100 rounded-lg text-slate-800 flex items-center gap-3 transition-colors group"
+                    >
+                      <div className="w-8 h-8 rounded-lg bg-rose-50 border border-rose-200 flex items-center justify-center shrink-0">
+                        <Download className="w-4 h-4 text-rose-700" />
+                      </div>
+                      <div className="flex-1">
+                        <div className="font-semibold text-slate-900 flex items-center justify-between">
+                          <span>PDF Document</span>
+                          <span className="text-[10px] font-mono text-rose-700 font-bold">.PDF</span>
+                        </div>
+                        <div className="text-[11px] text-slate-500">Auditor-ready publication format</div>
+                      </div>
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -289,22 +353,19 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
               title="Software Author & Architect: Mohammad Towhidul Akbar Tuhin"
               className="flex items-center gap-2 pl-1.5 group cursor-pointer text-left"
             >
-              <div className="relative">
-                <img
-                  src="/assets/aistudio/Tuhin_Pic_6c5894de.jpeg"
-                  alt="Mohammad Towhidul Akbar Tuhin"
-                  className="w-8 h-8 rounded-lg object-cover ring-1 ring-emerald-500/50 shadow-sm group-hover:ring-emerald-400 transition-all"
-                  onError={(e) => {
-                    (e.target as HTMLImageElement).src = '/public/assets/aistudio/Tuhin_Pic_6c5894de.jpeg';
-                  }}
-                />
-                <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-400 ring-2 ring-slate-950" />
-              </div>
+              <img
+                src="/assets/aistudio/Tuhin_Pic_6c5894de.jpeg"
+                alt="Mohammad Towhidul Akbar Tuhin"
+                className="w-8 h-8 rounded-lg object-cover ring-1 ring-emerald-600/40 shadow-sm group-hover:ring-emerald-600 transition-all"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).src = '/public/assets/aistudio/Tuhin_Pic_6c5894de.jpeg';
+                }}
+              />
               <div className="hidden xl:block text-left text-xs leading-tight">
-                <span className="font-semibold text-slate-200 group-hover:text-emerald-300 transition-colors block truncate max-w-[160px]">
+                <span className="font-semibold text-slate-900 group-hover:text-emerald-700 transition-colors block truncate max-w-[160px]">
                   Mohammad T. A. Tuhin
                 </span>
-                <span className="text-[10px] text-emerald-400/90 font-mono block truncate max-w-[160px]">
+                <span className="text-[10px] text-emerald-700 font-mono block truncate max-w-[160px]">
                   Officer, Sammilito Islami Bank
                 </span>
               </div>

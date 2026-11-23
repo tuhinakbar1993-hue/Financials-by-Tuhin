@@ -3,7 +3,6 @@ import {
   FileSpreadsheet,
   FileText,
   Download,
-  CheckCircle2,
   AlertTriangle,
   TrendingUp,
   Filter,
@@ -33,6 +32,7 @@ import {
   StatementFormatMode,
   FinancialValidationIssue,
   PreviousFormatYearData,
+  PreviousComparativePair,
   ProjectedFormatYearData,
   YearDataInput,
   DebtServiceCoverageYear,
@@ -50,6 +50,15 @@ import {
   exportCompletePackageExcel,
   exportCompletePackageWord,
   exportCompletePackagePdf,
+  exportAllPreviousComparativePairsExcel,
+  exportAllPreviousComparativePairsWord,
+  exportAllPreviousComparativePairsPdf,
+  exportPreviousFinancialsExcel,
+  exportPreviousFinancialsWord,
+  exportPreviousFinancialsPdf,
+  exportProjectedFinancialsExcel,
+  exportProjectedFinancialsWord,
+  exportProjectedFinancialsPdf,
 } from '../services/exportService';
 import { PreviousFormatSuiteView, ProjectedFormatSuiteView } from './FormatStatementsViews';
 import { YearSelectorControl } from './YearSelectorControl';
@@ -73,6 +82,8 @@ interface StatementsViewerProps {
   onUpdateNotes?: (updatedNotes: FinancialNoteItem[]) => void;
   onUpdateFixedAssetsCategory?: (catIndex: number, field: string, val: number | string) => void;
   previousFormatData?: PreviousFormatYearData[];
+  previousComparativePairs?: PreviousComparativePair[];
+  getPairScopedNotes?: (pairData: PreviousFormatYearData[]) => FinancialNoteItem[];
   projectedFormatData?: ProjectedFormatYearData[];
   formatMode?: StatementFormatMode;
   onChangeFormatMode?: (mode: StatementFormatMode) => void;
@@ -108,6 +119,8 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
   onUpdateNotes = () => {},
   onUpdateFixedAssetsCategory = () => {},
   previousFormatData = [],
+  previousComparativePairs = [],
+  getPairScopedNotes,
   projectedFormatData = [],
   formatMode: controlledFormatMode,
   onChangeFormatMode,
@@ -328,33 +341,40 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
     { id: 'complete', label: 'Full Package', fullLabel: 'Complete Financial Package', icon: FileSpreadsheet },
   ];
 
+  const handleDownloadPair = (pair: PreviousComparativePair, fmt: 'xlsx' | 'docx' | 'pdf') => {
+    const scoped = getPairScopedNotes ? getPairScopedNotes(pair.data) : notes;
+    if (fmt === 'xlsx') exportPreviousFinancialsExcel(companyProfile, pair.data, scoped);
+    else if (fmt === 'docx') void exportPreviousFinancialsWord(companyProfile, pair.data, scoped);
+    else exportPreviousFinancialsPdf(companyProfile, pair.data, scoped);
+  };
+
   return (
     <div className="space-y-6">
-      {/* Top Banner, Format Switcher, Edit Toggle & Export Actions */}
-      <div className="flex flex-col gap-4 p-5 bg-slate-900 border border-slate-800 rounded-2xl shadow-sm">
+      {/* Top Banner, Format Switcher, Edit Toggle & Independent Download Options */}
+      <div className="flex flex-col gap-4 p-5 bg-white/92 backdrop-blur-md border border-slate-200 rounded-2xl shadow-sm">
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <TrendingUp className="w-5 h-5 text-emerald-400" />
-              <h2 className="text-lg font-bold text-white tracking-tight">
+              <TrendingUp className="w-5 h-5 text-emerald-700" />
+              <h2 className="text-lg font-bold text-slate-900 tracking-tight">
                 Five Standard Financial Statements &amp; Schedules
               </h2>
-              <span className="text-[11px] font-semibold text-emerald-300 bg-emerald-950/60 border border-emerald-800/50 px-2 py-0.5 rounded-md">
-                Section 76 &amp; Editable
+              <span className="text-[11px] font-medium text-slate-600">
+                · Section 76 &amp; Editable ·{' '}
+                {validationIssues.length === 0 ? (
+                  <span className="text-emerald-700 font-semibold inline-flex items-center gap-1">
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    All {histCount + projCount}Y Reconciled
+                  </span>
+                ) : (
+                  <span className="text-amber-700 font-semibold inline-flex items-center gap-1">
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    {validationIssues.length} Audit Alert(s)
+                  </span>
+                )}
               </span>
-              {validationIssues.length === 0 ? (
-                <span className="text-[10px] font-semibold text-emerald-300 bg-emerald-950/60 border border-emerald-700/60 px-2 py-0.5 rounded-md inline-flex items-center gap-1">
-                  <ShieldCheck className="w-3 h-3" />
-                  All {histCount + projCount}Y Reconciled
-                </span>
-              ) : (
-                <span className="text-[10px] font-semibold text-amber-300 bg-amber-950/60 border border-amber-700/60 px-2 py-0.5 rounded-md inline-flex items-center gap-1">
-                  <AlertTriangle className="w-3 h-3" />
-                  {validationIssues.length} Audit Alert(s)
-                </span>
-              )}
             </div>
-            <p className="text-xs text-slate-400 mt-1">
+            <p className="text-xs text-slate-600 mt-1">
               {companyProfile.companyName} · {companyProfile.accountingFramework} · {companyProfile.reportingCurrency} in {companyProfile.reportingUnit}
             </p>
           </div>
@@ -365,10 +385,10 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
               <button
                 type="button"
                 onClick={onJumpToRepaymentSchedule}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all flex items-center gap-1.5 ${
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
                   isScheduleImplemented
-                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-400 shadow-sm'
-                    : 'bg-slate-800 hover:bg-emerald-600/80 text-emerald-300 hover:text-white border-slate-700'
+                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600 shadow-sm'
+                    : 'bg-white hover:bg-emerald-50 text-emerald-700 border-slate-300 hover:border-emerald-400'
                 }`}
                 title="Open Repayment Schedule Upload & DSCR Studio"
               >
@@ -382,10 +402,10 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
               <button
                 type="button"
                 onClick={() => setShowYearSelector(!showYearSelector)}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all flex items-center gap-1.5 ${
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
                   showYearSelector
-                    ? 'bg-sky-600 text-white border-sky-400'
-                    : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+                    ? 'bg-sky-600 text-white border-sky-600 shadow-sm'
+                    : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-300'
                 }`}
               >
                 <Calendar className="w-3.5 h-3.5" />
@@ -396,10 +416,10 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
             {/* Universal Edit Mode Button */}
             <button
               onClick={() => setIsEditMode(!isEditMode)}
-              className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg border transition-all flex items-center gap-1.5 shadow-sm ${
+              className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg border transition-all flex items-center gap-1.5 shadow-sm whitespace-nowrap shrink-0 ${
                 isEditMode
-                  ? 'bg-amber-500 text-slate-950 border-amber-400 ring-2 ring-amber-500/30'
-                  : 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700 hover:text-white'
+                  ? 'bg-amber-500 text-white border-amber-500 ring-2 ring-amber-400/30'
+                  : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-300 hover:text-slate-900'
               }`}
               title="Toggle inline editing for every line item title and financial number"
             >
@@ -410,7 +430,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
             {isEditMode && formatMode === 'section76' && (
               <button
                 onClick={onResetOverrides}
-                className="px-2.5 py-1.5 text-xs font-medium text-slate-400 hover:text-rose-300 bg-slate-800 hover:bg-slate-700/60 rounded-lg border border-slate-700 transition-colors flex items-center gap-1"
+                className="px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-rose-700 bg-white hover:bg-rose-50 rounded-lg border border-slate-300 transition-colors flex items-center gap-1 whitespace-nowrap shrink-0"
                 title="Reset any custom numbers back to the calculation engine defaults"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
@@ -420,29 +440,29 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
 
             {/* Individual Statement Export Options for Section 76 */}
             {formatMode === 'section76' && (
-              <div className="flex items-center gap-1 pl-2 border-l border-slate-800">
+              <div className="flex items-center gap-1 pl-2 border-l border-slate-200">
                 <button
                   onClick={handleExportExcel}
-                  className="px-2.5 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors flex items-center gap-1.5"
+                  className="px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-emerald-50 hover:text-emerald-800 rounded-lg border border-slate-300 transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0"
                   title="Export this statement to Microsoft Excel (.xlsx)"
                 >
-                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
                   Excel
                 </button>
                 <button
                   onClick={handleExportWord}
-                  className="px-2.5 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors flex items-center gap-1.5"
+                  className="px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-blue-50 hover:text-blue-800 rounded-lg border border-slate-300 transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0"
                   title="Export this statement to Microsoft Word (.docx)"
                 >
-                  <FileText className="w-3.5 h-3.5 text-blue-400" />
+                  <FileText className="w-3.5 h-3.5 text-blue-600" />
                   Word
                 </button>
                 <button
                   onClick={handleExportPdf}
-                  className="px-2.5 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors flex items-center gap-1.5"
+                  className="px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-rose-50 hover:text-rose-800 rounded-lg border border-slate-300 transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0"
                   title="Export this statement to Adobe PDF (.pdf)"
                 >
-                  <Download className="w-3.5 h-3.5 text-rose-400" />
+                  <Download className="w-3.5 h-3.5 text-rose-600" />
                   PDF
                 </button>
               </div>
@@ -450,17 +470,17 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
           </div>
         </div>
 
-        {/* Statement Presentation Format Bar (Preserves Section 76 + Exact PDF Formats) */}
-        <div className="pt-3 border-t border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+        {/* Statement Presentation Format Bar */}
+        <div className="pt-3 border-t border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-2.5">
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-[11px] font-semibold text-slate-400 mr-1">Presentation Format:</span>
+            <span className="text-[11px] font-semibold text-slate-600 mr-1">Presentation Format:</span>
             <button
               type="button"
               onClick={() => setFormatMode('section76')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border whitespace-nowrap shrink-0 ${
                 formatMode === 'section76'
-                  ? 'bg-emerald-600 text-white border-emerald-400/50 shadow-sm'
-                  : 'bg-slate-950 text-slate-300 border-slate-800 hover:bg-slate-800'
+                  ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                  : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
               }`}
             >
               Section 76 Standard (All Years)
@@ -468,10 +488,10 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
             <button
               type="button"
               onClick={() => setFormatMode('previous_format')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border whitespace-nowrap shrink-0 ${
                 formatMode === 'previous_format'
-                  ? 'bg-emerald-600 text-white border-emerald-400/50 shadow-sm'
-                  : 'bg-slate-950 text-slate-300 border-slate-800 hover:bg-slate-800'
+                  ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                  : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
               }`}
             >
               Previous Financials Format ({histCount}Y)
@@ -479,18 +499,127 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
             <button
               type="button"
               onClick={() => setFormatMode('projected_format')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border whitespace-nowrap shrink-0 ${
                 formatMode === 'projected_format'
-                  ? 'bg-sky-600 text-white border-sky-400/50 shadow-sm'
-                  : 'bg-slate-950 text-slate-300 border-slate-800 hover:bg-slate-800'
+                  ? 'bg-sky-600 text-white border-sky-600 shadow-sm'
+                  : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
               }`}
             >
               Projected Financials Format ({projCount}Y)
             </button>
           </div>
-          <span className="text-[11px] text-slate-400 font-mono">
+          <span className="text-[11px] text-slate-500 font-mono">
             Fixed Inputs Preserved: Sales · Inventory · Finance Cost · NPAT · Borrowings Repay · Gross FA
           </span>
+        </div>
+
+        {/* Always-Accessible Quick Separate Downloads Strip (Previous Comparative Sets & Projected All-Years) */}
+        <div className="pt-3 border-t border-slate-200/80 grid grid-cols-1 xl:grid-cols-2 gap-3">
+          {/* Option 1: Previous Financials Comparative Sets */}
+          <div className="p-3 bg-emerald-50/55 border border-emerald-200 rounded-xl flex flex-col gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-xs font-bold text-emerald-950">
+                Previous Financials Downloads ({previousComparativePairs.length} Comparative {previousComparativePairs.length === 1 ? 'Set' : 'Sets'})
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => exportAllPreviousComparativePairsExcel(companyProfile, previousComparativePairs, pairData => (getPairScopedNotes ? getPairScopedNotes(pairData) : notes))}
+                  className="px-2 py-1 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-semibold transition-colors whitespace-nowrap shrink-0"
+                  title="Download all Previous Comparative sets as Excel workbooks"
+                >
+                  All .XLSX
+                </button>
+                <button
+                  type="button"
+                  onClick={() => exportAllPreviousComparativePairsWord(companyProfile, previousComparativePairs, pairData => (getPairScopedNotes ? getPairScopedNotes(pairData) : notes))}
+                  className="px-2 py-1 rounded-md bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-semibold transition-colors whitespace-nowrap shrink-0"
+                  title="Download all Previous Comparative sets as Word documents"
+                >
+                  All .DOCX
+                </button>
+                <button
+                  type="button"
+                  onClick={() => exportAllPreviousComparativePairsPdf(companyProfile, previousComparativePairs, pairData => (getPairScopedNotes ? getPairScopedNotes(pairData) : notes))}
+                  className="px-2 py-1 rounded-md bg-rose-600 hover:bg-rose-700 text-white text-[10px] font-semibold transition-colors whitespace-nowrap shrink-0"
+                  title="Download all Previous Comparative sets as PDF statements"
+                >
+                  All .PDF
+                </button>
+              </div>
+            </div>
+            {previousComparativePairs.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {previousComparativePairs.map(pair => (
+                  <div
+                    key={pair.id}
+                    className="flex items-center gap-1.5 bg-white border border-emerald-200/90 rounded-lg px-2 py-1 text-[11px]"
+                  >
+                    <span className="font-semibold text-slate-800">{pair.label}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadPair(pair, 'xlsx')}
+                      className="px-1.5 py-0.5 rounded bg-emerald-50 hover:bg-emerald-600 text-emerald-800 hover:text-white font-mono text-[10px] font-semibold transition-colors"
+                    >
+                      XLS
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadPair(pair, 'docx')}
+                      className="px-1.5 py-0.5 rounded bg-blue-50 hover:bg-blue-600 text-blue-800 hover:text-white font-mono text-[10px] font-semibold transition-colors"
+                    >
+                      DOC
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadPair(pair, 'pdf')}
+                      className="px-1.5 py-0.5 rounded bg-rose-50 hover:bg-rose-600 text-rose-800 hover:text-white font-mono text-[10px] font-semibold transition-colors"
+                    >
+                      PDF
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Option 2: Projected Financials All Selected Years */}
+          <div className="p-3 bg-sky-50/55 border border-sky-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <div className="text-xs font-bold text-sky-950">
+                Projected Financials Download ({projectedFormatData.length} Selected {projectedFormatData.length === 1 ? 'Year' : 'Years'})
+              </div>
+              <div className="text-[11px] text-slate-600">
+                All selected projected years combined in exact landscape format
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => exportProjectedFinancialsExcel(companyProfile, projectedFormatData)}
+                className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-semibold flex items-center gap-1 shadow-xs transition-colors whitespace-nowrap shrink-0"
+              >
+                <FileSpreadsheet className="w-3 h-3" />
+                .XLSX
+              </button>
+              <button
+                type="button"
+                onClick={() => exportProjectedFinancialsWord(companyProfile, projectedFormatData)}
+                className="px-2.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-semibold flex items-center gap-1 shadow-xs transition-colors whitespace-nowrap shrink-0"
+              >
+                <FileText className="w-3 h-3" />
+                .DOCX
+              </button>
+              <button
+                type="button"
+                onClick={() => exportProjectedFinancialsPdf(companyProfile, projectedFormatData)}
+                className="px-2.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-semibold flex items-center gap-1 shadow-xs transition-colors whitespace-nowrap shrink-0"
+              >
+                <Download className="w-3 h-3" />
+                .PDF
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -508,16 +637,16 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
 
       {/* Edit Mode Notification Banner */}
       {isEditMode && (
-        <div className="p-3.5 bg-amber-950/30 border border-amber-800/40 rounded-xl text-xs text-amber-200 flex items-center justify-between gap-3 animate-in fade-in duration-200">
+        <div className="p-3.5 bg-amber-50/95 border border-amber-300 rounded-xl text-xs text-amber-950 flex items-center justify-between gap-3 animate-in fade-in duration-200 shadow-xs">
           <div className="flex items-center gap-2">
-            <Edit3 className="w-4 h-4 text-amber-400 shrink-0" />
+            <Edit3 className="w-4 h-4 text-amber-600 shrink-0" />
             <span>
               <strong>Direct Editing Enabled:</strong> Edit primary fixed inputs or statement cells directly in the tables below. All dependent calculations and exports update immediately.
             </span>
           </div>
           <button
             onClick={() => setIsEditMode(false)}
-            className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 rounded font-medium text-[11px] shrink-0 border border-amber-500/30"
+            className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded font-medium text-[11px] shrink-0"
           >
             Done Editing
           </button>
@@ -529,6 +658,8 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         <PreviousFormatSuiteView
           companyProfile={companyProfile}
           prevData={previousFormatData}
+          comparativePairs={previousComparativePairs}
+          getPairScopedNotes={getPairScopedNotes}
           notes={notes}
           isEditMode={isEditMode}
           onUpdatePrimaryDriver={onUpdatePrimaryDriver}
@@ -548,7 +679,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
       {formatMode === 'section76' && (
         <>
           {/* Statement Tabs Bar & Horizon Selector */}
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-2">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-2">
             <div className="flex items-center gap-1.5 overflow-x-auto pb-1 max-w-full scrollbar-thin">
               {statementTabs.map(tab => {
                 const Icon = tab.icon;
@@ -559,11 +690,11 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
                     onClick={() => setActiveStatement(tab.id)}
                     className={`px-3 py-2 text-xs font-semibold rounded-lg transition-all whitespace-nowrap shrink-0 flex items-center gap-2 ${
                       isActive
-                        ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md shadow-emerald-950/40 ring-1 ring-emerald-400/30'
-                        : 'bg-slate-900/90 text-slate-300 hover:bg-slate-800 hover:text-white border border-slate-800/90'
+                        ? 'bg-emerald-600 text-white shadow-sm'
+                        : 'bg-white/90 text-slate-700 hover:bg-slate-50 hover:text-slate-900 border border-slate-200'
                     }`}
                   >
-                    <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-white' : 'text-slate-400'}`} />
+                    <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-white' : 'text-slate-500'}`} />
                     <span>{tab.label}</span>
                   </button>
                 );
@@ -573,36 +704,36 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
             {/* Year Filter Controls & Horizon Selector */}
             {activeStatement !== 'notes' && (
               <div className="flex flex-wrap items-center gap-2">
-                <div className="flex items-center gap-1.5 text-xs bg-slate-900 border border-slate-800 p-1 rounded-lg">
-                  <Filter className="w-3.5 h-3.5 text-slate-400 ml-1.5" />
+                <div className="flex items-center gap-1.5 text-xs bg-white/92 border border-slate-200 p-1 rounded-lg shadow-xs">
+                  <Filter className="w-3.5 h-3.5 text-slate-500 ml-1.5" />
                   <button
                     onClick={() => setYearViewMode('all')}
-                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-                      yearViewMode === 'all' ? 'bg-slate-800 text-emerald-400 font-bold' : 'text-slate-400 hover:text-slate-200'
+                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                      yearViewMode === 'all' ? 'bg-emerald-50 text-emerald-800 font-bold' : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
                     All ({histCount}H+{projCount}P)
                   </button>
                   <button
                     onClick={() => setYearViewMode('historical')}
-                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-                      yearViewMode === 'historical' ? 'bg-slate-800 text-emerald-400 font-bold' : 'text-slate-400 hover:text-slate-200'
+                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                      yearViewMode === 'historical' ? 'bg-emerald-50 text-emerald-800 font-bold' : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
                     Historical ({histCount}Y)
                   </button>
                   <button
                     onClick={() => setYearViewMode('comparative5')}
-                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-                      yearViewMode === 'comparative5' ? 'bg-slate-800 text-emerald-400 font-bold' : 'text-slate-400 hover:text-slate-200'
+                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                      yearViewMode === 'comparative5' ? 'bg-emerald-50 text-emerald-800 font-bold' : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
                     Comparative (5Y)
                   </button>
                   <button
                     onClick={() => setYearViewMode('projected')}
-                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-                      yearViewMode === 'projected' ? 'bg-slate-800 text-emerald-400 font-bold' : 'text-slate-400 hover:text-slate-200'
+                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                      yearViewMode === 'projected' ? 'bg-emerald-50 text-emerald-800 font-bold' : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
                     Projected ({projCount}Y)
@@ -611,12 +742,12 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
 
                 {/* Direct Number of Projected Years Selector */}
                 {assumptions && onUpdateAssumptions && (
-                  <div className="flex items-center gap-1.5 text-xs bg-slate-900 border border-slate-800 px-2 py-1 rounded-lg">
-                    <span className="text-slate-400 text-[11px] font-medium">Horizon:</span>
+                  <div className="flex items-center gap-1.5 text-xs bg-white/92 border border-slate-200 px-2.5 py-1 rounded-lg shadow-xs">
+                    <span className="text-slate-600 text-[11px] font-medium">Horizon:</span>
                     <select
                       value={projCount}
                       onChange={(e) => onUpdateAssumptions({ ...assumptions, projectedYearsCount: Number(e.target.value) })}
-                      className="bg-slate-800 text-emerald-400 font-bold rounded px-1.5 py-0.5 border border-slate-700 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                      className="bg-slate-50 text-emerald-700 font-bold rounded px-1.5 py-0.5 border border-slate-300 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
                     >
                       {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 18, 20].map(y => (
                         <option key={y} value={y}>{y} {y === 1 ? 'Year' : 'Years'}</option>
@@ -746,26 +877,26 @@ const StatementMasthead: React.FC<StatementMastheadProps> = ({
   companyProfile,
 }) => {
   return (
-    <div className="p-4 sm:p-5 bg-gradient-to-r from-slate-900/95 via-slate-850 to-slate-900/95 border-b border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+    <div className="p-4 sm:p-5 bg-slate-50/85 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
       <div>
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] font-mono uppercase tracking-widest text-emerald-400 font-bold">
+        <div className="flex items-center gap-2 text-[11px] font-mono">
+          <span className="uppercase tracking-wider text-emerald-700 font-bold">
             {companyProfile?.companyName || 'Corporate Entity'}
           </span>
-          <span className="text-slate-600">·</span>
-          <span className="text-[10px] font-mono text-slate-400">
+          <span className="text-slate-300" aria-hidden="true">·</span>
+          <span className="text-slate-600">
             {companyProfile?.accountingFramework || 'IFRS / IAS Standards'}
           </span>
         </div>
-        <h3 className="text-base sm:text-lg font-bold text-white tracking-tight mt-0.5 font-sans">
+        <h3 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight mt-0.5 font-sans">
           {title}
         </h3>
-        <p className="text-[11px] text-slate-400 mt-0.5">
+        <p className="text-[11px] text-slate-600 mt-0.5">
           {subtitle} {companyProfile ? `· Reported in ${companyProfile.reportingCurrency} (${companyProfile.reportingUnit})` : ''}
         </p>
       </div>
       <div className="flex items-center gap-2 shrink-0">
-        <span className="text-[10px] font-mono font-bold uppercase tracking-wider px-2.5 py-1 rounded border shadow-sm text-emerald-400 bg-emerald-950/80 border-emerald-800/70">
+        <span className="text-[11px] font-mono font-bold uppercase tracking-wider text-emerald-700">
           {standard}
         </span>
       </div>
@@ -828,7 +959,7 @@ const EditableCell: React.FC<EditableCellProps> = ({
         onBlur={handleBlur}
         onKeyDown={handleKeyDown}
         autoFocus={isEditingSingle}
-        className="w-24 sm:w-28 bg-slate-950 border border-emerald-500/80 rounded px-1.5 py-0.5 text-right font-mono text-xs text-white focus:outline-none focus:ring-1 focus:ring-emerald-400"
+        className="w-24 sm:w-28 bg-white border border-emerald-600 rounded px-1.5 py-0.5 text-right font-mono text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-emerald-500 shadow-xs"
       />
     );
   }
@@ -837,7 +968,7 @@ const EditableCell: React.FC<EditableCellProps> = ({
     <span
       onClick={() => setIsEditingSingle(true)}
       title="Click to edit value directly"
-      className={`cursor-pointer hover:underline hover:text-emerald-300 transition-colors font-mono tabular-nums ${className}`}
+      className={`cursor-pointer hover:underline hover:text-emerald-700 transition-colors font-mono tabular-nums ${className}`}
     >
       {isNegative || val < 0 ? `(${fmtStatementNum(val)})` : fmtStatementNum(val)}
     </span>
@@ -881,7 +1012,7 @@ const EditableLabel: React.FC<EditableLabelProps> = ({
         onBlur={handleBlur}
         onKeyDown={(e) => e.key === 'Enter' && handleBlur()}
         autoFocus={isEditingSingle}
-        className="w-full bg-slate-950 border border-emerald-500/80 rounded px-1.5 py-0.5 text-left text-xs font-medium text-white focus:outline-none focus:ring-1 focus:ring-emerald-400"
+        className="w-full bg-white border border-emerald-600 rounded px-1.5 py-0.5 text-left text-xs font-medium text-slate-900 focus:outline-none focus:ring-1 focus:ring-emerald-500 shadow-xs"
       />
     );
   }
@@ -890,7 +1021,7 @@ const EditableLabel: React.FC<EditableLabelProps> = ({
     <span
       onClick={() => setIsEditingSingle(true)}
       title="Click to edit row label"
-      className={`cursor-pointer hover:text-emerald-300 transition-colors ${className}`}
+      className={`cursor-pointer hover:text-emerald-700 transition-colors ${className}`}
     >
       {label}
     </span>
@@ -918,7 +1049,7 @@ function StatementOfCashFlowsTable({
   onUpdateLabel: (stmt: string, field: string, newLabel: string) => void;
 }) {
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
+    <div className="bg-white/92 backdrop-blur-md border border-slate-200/90 rounded-2xl overflow-hidden shadow-sm">
       <StatementMasthead
         title="Statement of Cash Flows (Indirect Method)"
         subtitle="Comprehensive cash flow movements from Operating, Investing, and Financing activities"
@@ -928,17 +1059,17 @@ function StatementOfCashFlowsTable({
 
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs font-mono">
-          <thead className="bg-slate-800/90 text-slate-300 border-b border-slate-700 text-[11px]">
+          <thead className="bg-slate-100/95 text-slate-700 border-b border-slate-200 text-[11px]">
             <tr>
-              <th className="py-3 px-4 font-sans font-semibold text-white tracking-wide">
+              <th className="py-3 px-4 font-sans font-semibold text-slate-900 tracking-wide">
                 Activity / Financial Cash Flow Account
               </th>
               {cashFlowData.map(d => (
-                <th key={d.year} className={`py-2.5 px-3 text-right ${d.isProjected ? 'bg-sky-950/20 text-sky-300' : 'text-slate-200'}`}>
+                <th key={d.year} className={`py-2.5 px-3 text-right ${d.isProjected ? 'bg-sky-50/90 text-sky-900' : 'text-slate-800'}`}>
                   <div className="flex flex-col items-end">
                     <span className="font-bold text-xs">{d.year}</span>
                     <span className={`text-[9px] font-sans uppercase tracking-wider font-semibold ${
-                      d.isProjected ? 'text-sky-400' : 'text-slate-400'
+                      d.isProjected ? 'text-sky-700' : 'text-slate-500'
                     }`}>
                       {d.isProjected ? 'Forecast' : 'Audited'}
                     </span>
@@ -947,16 +1078,16 @@ function StatementOfCashFlowsTable({
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-800/60 tabular-nums">
+          <tbody className="divide-y divide-slate-200/70 tabular-nums">
             {/* A. Operating Activities */}
-            <tr className="bg-slate-800/50 font-sans font-bold text-emerald-400">
+            <tr className="bg-emerald-50/75 font-sans font-bold text-emerald-800">
               <td colSpan={cashFlowData.length + 1} className="py-2.5 px-4 text-xs tracking-wider uppercase">
                 A. Cash Flows from Operating Activities
               </td>
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-200">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-800 font-medium">
                 <EditableLabel
                   label={getLbl('cf', 'profitBeforeTax', 'Net Profit Before Tax')}
                   isEditMode={isEditMode}
@@ -964,7 +1095,7 @@ function StatementOfCashFlowsTable({
                 />
               </td>
               {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-200">
+                <td key={d.year} className="py-2 px-3 text-right text-slate-800">
                   <EditableCell
                     val={getVal('cf', 'profitBeforeTax', d.year, d.profitBeforeTax)}
                     isEditMode={isEditMode}
@@ -974,8 +1105,8 @@ function StatementOfCashFlowsTable({
               ))}
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-400 pl-6">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
                 <EditableLabel
                   label={getLbl('cf', 'adjDepreciation', 'Adjustments for Depreciation')}
                   isEditMode={isEditMode}
@@ -983,7 +1114,7 @@ function StatementOfCashFlowsTable({
                 />
               </td>
               {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-300">
+                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
                   <EditableCell
                     val={getVal('cf', 'adjDepreciation', d.year, d.adjDepreciation)}
                     isEditMode={isEditMode}
@@ -993,8 +1124,8 @@ function StatementOfCashFlowsTable({
               ))}
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-400 pl-6">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
                 <EditableLabel
                   label={getLbl('cf', 'adjAmortization', 'Adjustments for Amortization')}
                   isEditMode={isEditMode}
@@ -1002,7 +1133,7 @@ function StatementOfCashFlowsTable({
                 />
               </td>
               {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-300">
+                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
                   <EditableCell
                     val={getVal('cf', 'adjAmortization', d.year, d.adjAmortization)}
                     isEditMode={isEditMode}
@@ -1012,8 +1143,8 @@ function StatementOfCashFlowsTable({
               ))}
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-400 pl-6">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
                 <EditableLabel
                   label={getLbl('cf', 'adjFinanceCost', 'Finance Cost Adjustment')}
                   isEditMode={isEditMode}
@@ -1021,7 +1152,7 @@ function StatementOfCashFlowsTable({
                 />
               </td>
               {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-300">
+                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
                   <EditableCell
                     val={getVal('cf', 'adjFinanceCost', d.year, d.adjFinanceCost)}
                     isEditMode={isEditMode}
@@ -1031,8 +1162,8 @@ function StatementOfCashFlowsTable({
               ))}
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-400 pl-6">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
                 <EditableLabel
                   label={getLbl('cf', 'adjInterestIncome', 'Interest & Investment Income')}
                   isEditMode={isEditMode}
@@ -1040,7 +1171,7 @@ function StatementOfCashFlowsTable({
                 />
               </td>
               {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-300">
+                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
                   <EditableCell
                     val={getVal('cf', 'adjInterestIncome', d.year, d.adjInterestIncome)}
                     isEditMode={isEditMode}
@@ -1050,7 +1181,7 @@ function StatementOfCashFlowsTable({
               ))}
             </tr>
 
-            <tr className="bg-slate-800/30 font-semibold text-slate-200">
+            <tr className="bg-slate-100/80 font-semibold text-slate-800">
               <td className="py-2 px-4 font-sans">
                 <EditableLabel
                   label={getLbl('cf', 'operatingProfitBeforeWC', 'Operating Profit Before Working Capital Changes')}
@@ -1059,7 +1190,7 @@ function StatementOfCashFlowsTable({
                 />
               </td>
               {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-emerald-300 font-bold">
+                <td key={d.year} className="py-2 px-3 text-right text-emerald-700 font-bold">
                   <EditableCell
                     val={getVal('cf', 'operatingProfitBeforeWC', d.year, d.operatingProfitBeforeWC)}
                     isEditMode={isEditMode}
@@ -1069,8 +1200,8 @@ function StatementOfCashFlowsTable({
               ))}
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-400 pl-6">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
                 <EditableLabel
                   label={getLbl('cf', 'changeInInventory', '(Increase) / Decrease in Inventory')}
                   isEditMode={isEditMode}
@@ -1078,7 +1209,7 @@ function StatementOfCashFlowsTable({
                 />
               </td>
               {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-300">
+                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
                   <EditableCell
                     val={getVal('cf', 'changeInInventory', d.year, d.changeInInventory)}
                     isEditMode={isEditMode}
@@ -1088,8 +1219,8 @@ function StatementOfCashFlowsTable({
               ))}
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-400 pl-6">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
                 <EditableLabel
                   label={getLbl('cf', 'changeInReceivables', '(Increase) / Decrease in Trade Receivables')}
                   isEditMode={isEditMode}
@@ -1097,7 +1228,7 @@ function StatementOfCashFlowsTable({
                 />
               </td>
               {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-300">
+                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
                   <EditableCell
                     val={getVal('cf', 'changeInReceivables', d.year, d.changeInReceivables)}
                     isEditMode={isEditMode}
@@ -1107,8 +1238,8 @@ function StatementOfCashFlowsTable({
               ))}
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-400 pl-6">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
                 <EditableLabel
                   label={getLbl('cf', 'changeInPayables', 'Increase / (Decrease) in Trade Payables')}
                   isEditMode={isEditMode}
@@ -1116,7 +1247,7 @@ function StatementOfCashFlowsTable({
                 />
               </td>
               {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-300">
+                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
                   <EditableCell
                     val={getVal('cf', 'changeInPayables', d.year, d.changeInPayables)}
                     isEditMode={isEditMode}
@@ -1126,8 +1257,8 @@ function StatementOfCashFlowsTable({
               ))}
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-400 pl-6">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
                 <EditableLabel
                   label={getLbl('cf', 'incomeTaxPaid', 'Income Tax Paid')}
                   isEditMode={isEditMode}
@@ -1135,7 +1266,7 @@ function StatementOfCashFlowsTable({
                 />
               </td>
               {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-rose-300">
+                <td key={d.year} className="py-2 px-3 text-right text-rose-700">
                   <EditableCell
                     val={getVal('cf', 'incomeTaxPaid', d.year, d.incomeTaxPaid)}
                     isEditMode={isEditMode}
@@ -1146,8 +1277,8 @@ function StatementOfCashFlowsTable({
               ))}
             </tr>
 
-            <tr className="bg-slate-800/60 font-bold border-t border-slate-700">
-              <td className="py-2.5 px-4 font-sans text-emerald-400">
+            <tr className="bg-emerald-50/60 font-bold border-t border-emerald-200">
+              <td className="py-2.5 px-4 font-sans text-emerald-800">
                 <EditableLabel
                   label={getLbl('cf', 'netCashFromOperating', 'Net Cash Generated from / (Used in) Operating Activities')}
                   isEditMode={isEditMode}
@@ -1155,7 +1286,7 @@ function StatementOfCashFlowsTable({
                 />
               </td>
               {cashFlowData.map(d => (
-                <td key={d.year} className={`py-2.5 px-3 text-right ${d.netCashFromOperating >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                <td key={d.year} className={`py-2.5 px-3 text-right ${d.netCashFromOperating >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
                   <EditableCell
                     val={getVal('cf', 'netCashFromOperating', d.year, d.netCashFromOperating)}
                     isEditMode={isEditMode}
@@ -1166,14 +1297,14 @@ function StatementOfCashFlowsTable({
             </tr>
 
             {/* B. Investing Activities */}
-            <tr className="bg-slate-800/50 font-sans font-bold text-sky-400">
+            <tr className="bg-sky-50/80 font-sans font-bold text-sky-800">
               <td colSpan={cashFlowData.length + 1} className="py-2.5 px-4 text-xs tracking-wider uppercase">
                 B. Cash Flows from Investing Activities
               </td>
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-400 pl-6">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
                 <EditableLabel
                   label={getLbl('cf', 'purchasePPE', 'Purchase of Property, Plant & Equipment (Capex)')}
                   isEditMode={isEditMode}
@@ -1181,7 +1312,7 @@ function StatementOfCashFlowsTable({
                 />
               </td>
               {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-rose-300">
+                <td key={d.year} className="py-2 px-3 text-right text-rose-700">
                   <EditableCell
                     val={getVal('cf', 'purchasePPE', d.year, d.purchasePPE)}
                     isEditMode={isEditMode}
@@ -1192,8 +1323,8 @@ function StatementOfCashFlowsTable({
               ))}
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-400 pl-6">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
                 <EditableLabel
                   label={getLbl('cf', 'salePPE', 'Proceeds from Sale of Fixed Assets')}
                   isEditMode={isEditMode}
@@ -1201,7 +1332,7 @@ function StatementOfCashFlowsTable({
                 />
               </td>
               {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-300">
+                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
                   <EditableCell
                     val={getVal('cf', 'salePPE', d.year, d.salePPE)}
                     isEditMode={isEditMode}
@@ -1211,8 +1342,8 @@ function StatementOfCashFlowsTable({
               ))}
             </tr>
 
-            <tr className="bg-slate-800/60 font-bold border-t border-slate-700">
-              <td className="py-2.5 px-4 font-sans text-sky-400">
+            <tr className="bg-sky-50/60 font-bold border-t border-sky-200">
+              <td className="py-2.5 px-4 font-sans text-sky-800">
                 <EditableLabel
                   label={getLbl('cf', 'netCashFromInvesting', 'Net Cash Generated from / (Used in) Investing Activities')}
                   isEditMode={isEditMode}
@@ -1220,7 +1351,7 @@ function StatementOfCashFlowsTable({
                 />
               </td>
               {cashFlowData.map(d => (
-                <td key={d.year} className={`py-2.5 px-3 text-right ${d.netCashFromInvesting >= 0 ? 'text-sky-400' : 'text-rose-400'}`}>
+                <td key={d.year} className={`py-2.5 px-3 text-right ${d.netCashFromInvesting >= 0 ? 'text-sky-700' : 'text-rose-700'}`}>
                   <EditableCell
                     val={getVal('cf', 'netCashFromInvesting', d.year, d.netCashFromInvesting)}
                     isEditMode={isEditMode}
@@ -1231,17 +1362,17 @@ function StatementOfCashFlowsTable({
             </tr>
 
             {/* C. Financing Activities */}
-            <tr className="bg-slate-800/50 font-sans font-bold text-amber-400">
+            <tr className="bg-amber-50/85 font-sans font-bold text-amber-900">
               <td colSpan={cashFlowData.length + 1} className="py-2.5 px-4 text-xs tracking-wider uppercase flex items-center justify-between">
                 <span>C. Cash Flows from Financing Activities</span>
-                <span className="text-[10px] font-normal normal-case text-amber-300 bg-amber-950 px-2 py-0.5 rounded border border-amber-800/50">
+                <span className="text-[10px] font-semibold normal-case text-amber-900 bg-amber-100 px-2 py-0.5 rounded border border-amber-300">
                   Mandatory Direct User Input
                 </span>
               </td>
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-300 pl-6">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-700 pl-6">
                 <EditableLabel
                   label={getLbl('cf', 'financingProceedsBorrowings', 'Proceeds from Borrowings & Financing')}
                   isEditMode={isEditMode}
@@ -1249,7 +1380,7 @@ function StatementOfCashFlowsTable({
                 />
               </td>
               {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-200">
+                <td key={d.year} className="py-2 px-3 text-right text-slate-800">
                   <EditableCell
                     val={getVal('cf', 'financingProceedsBorrowings', d.year, d.financingProceedsBorrowings)}
                     isEditMode={isEditMode}
@@ -1259,21 +1390,21 @@ function StatementOfCashFlowsTable({
               ))}
             </tr>
 
-            <tr className="bg-rose-950/20 font-medium">
-              <td className="py-2.5 px-4 font-sans text-rose-300 pl-6 flex items-center gap-1.5">
+            <tr className="bg-rose-50/65 font-medium">
+              <td className="py-2.5 px-4 font-sans text-rose-800 pl-6 flex items-center gap-1.5">
                 <EditableLabel
                   label={getLbl('cf', 'repaymentOfBorrowings', 'Repayment of Borrowings & Financing (Outflow) *')}
                   isEditMode={isEditMode}
                   onSave={(lbl) => onUpdateLabel('cf', 'repaymentOfBorrowings', lbl)}
                 />
-                <span className="text-[10px] bg-rose-900/60 text-rose-200 border border-rose-700/50 px-1.5 py-0.2 rounded font-normal">
+                <span className="text-[10px] bg-rose-100 text-rose-800 border border-rose-300 px-1.5 py-0.2 rounded font-semibold">
                   User Input
                 </span>
               </td>
               {cashFlowData.map(d => {
                 const repVal = getVal('cf', 'repaymentOfBorrowings', d.year, d.repaymentOfBorrowings || Math.abs(d.financingRepaymentBorrowings));
                 return (
-                  <td key={d.year} className="py-2.5 px-3 text-right text-rose-300 font-bold">
+                  <td key={d.year} className="py-2.5 px-3 text-right text-rose-700 font-bold">
                     <EditableCell
                       val={repVal}
                       isEditMode={isEditMode}
@@ -1285,8 +1416,8 @@ function StatementOfCashFlowsTable({
               })}
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-300 pl-6">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-700 pl-6">
                 <EditableLabel
                   label={getLbl('cf', 'financingDividendsPaid', 'Dividends Paid to Shareholders')}
                   isEditMode={isEditMode}
@@ -1294,7 +1425,7 @@ function StatementOfCashFlowsTable({
                 />
               </td>
               {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-rose-300">
+                <td key={d.year} className="py-2 px-3 text-right text-rose-700">
                   <EditableCell
                     val={getVal('cf', 'financingDividendsPaid', d.year, d.financingDividendsPaid)}
                     isEditMode={isEditMode}
@@ -1305,8 +1436,8 @@ function StatementOfCashFlowsTable({
               ))}
             </tr>
 
-            <tr className="bg-amber-950/20 font-semibold border-t border-slate-800">
-              <td className="py-2 px-4 font-sans text-amber-300">
+            <tr className="bg-amber-50/75 font-semibold border-t border-amber-200">
+              <td className="py-2 px-4 font-sans text-amber-900">
                 <EditableLabel
                   label={getLbl('cf', 'directlyEnteredFinancingCashFlow', 'Directly Entered Cash Flow from Financing Activities *')}
                   isEditMode={isEditMode}
@@ -1314,7 +1445,7 @@ function StatementOfCashFlowsTable({
                 />
               </td>
               {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-amber-300 font-bold">
+                <td key={d.year} className="py-2 px-3 text-right text-amber-800 font-bold">
                   <EditableCell
                     val={getVal('cf', 'directlyEnteredFinancingCashFlow', d.year, d.directlyEnteredFinancingCashFlow)}
                     isEditMode={isEditMode}
@@ -1324,8 +1455,8 @@ function StatementOfCashFlowsTable({
               ))}
             </tr>
 
-            <tr className="bg-slate-800/60 font-bold border-t border-slate-700">
-              <td className="py-2.5 px-4 font-sans text-amber-400">
+            <tr className="bg-amber-50/90 font-bold border-t border-amber-200">
+              <td className="py-2.5 px-4 font-sans text-amber-900">
                 <EditableLabel
                   label={getLbl('cf', 'netCashFromFinancing', 'Net Cash Generated from / (Used in) Financing Activities')}
                   isEditMode={isEditMode}
@@ -1333,7 +1464,7 @@ function StatementOfCashFlowsTable({
                 />
               </td>
               {cashFlowData.map(d => (
-                <td key={d.year} className="py-2.5 px-3 text-right text-amber-400">
+                <td key={d.year} className="py-2.5 px-3 text-right text-amber-900">
                   <EditableCell
                     val={getVal('cf', 'netCashFromFinancing', d.year, d.netCashFromFinancing)}
                     isEditMode={isEditMode}
@@ -1344,7 +1475,7 @@ function StatementOfCashFlowsTable({
             </tr>
 
             {/* D. Net Increase / Decrease in Cash */}
-            <tr className="bg-slate-800 font-bold text-white border-t-2 border-slate-600">
+            <tr className="bg-slate-100 font-bold text-slate-900 border-t-2 border-slate-300">
               <td className="py-3 px-4 font-sans">
                 <EditableLabel
                   label={getLbl('cf', 'netChangeInCash', 'Net Increase / (Decrease) in Cash and Cash Equivalents')}
@@ -1353,7 +1484,7 @@ function StatementOfCashFlowsTable({
                 />
               </td>
               {cashFlowData.map(d => (
-                <td key={d.year} className={`py-3 px-3 text-right ${d.netChangeInCash >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>
+                <td key={d.year} className={`py-3 px-3 text-right ${d.netChangeInCash >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
                   <EditableCell
                     val={getVal('cf', 'netChangeInCash', d.year, d.netChangeInCash)}
                     isEditMode={isEditMode}
@@ -1363,8 +1494,8 @@ function StatementOfCashFlowsTable({
               ))}
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-400">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-600">
                 <EditableLabel
                   label={getLbl('cf', 'openingCash', 'Opening Cash and Cash Equivalents')}
                   isEditMode={isEditMode}
@@ -1372,7 +1503,7 @@ function StatementOfCashFlowsTable({
                 />
               </td>
               {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-300">
+                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
                   <EditableCell
                     val={getVal('cf', 'openingCash', d.year, d.openingCash)}
                     isEditMode={isEditMode}
@@ -1382,7 +1513,7 @@ function StatementOfCashFlowsTable({
               ))}
             </tr>
 
-            <tr className="font-bold text-emerald-400 bg-emerald-950/20 border-b-4 border-double border-emerald-500/80 border-t border-emerald-800/60">
+            <tr className="font-bold text-emerald-800 bg-emerald-50/85 border-b-4 border-double border-emerald-600 border-t border-emerald-200">
               <td className="py-3 px-4 font-sans text-sm">
                 <EditableLabel
                   label={getLbl('cf', 'closingCashCalculated', 'Closing Cash and Cash Equivalents (Calculated)')}
@@ -1391,7 +1522,7 @@ function StatementOfCashFlowsTable({
                 />
               </td>
               {cashFlowData.map(d => (
-                <td key={d.year} className="py-3 px-3 text-right text-emerald-400 font-bold text-sm">
+                <td key={d.year} className="py-3 px-3 text-right text-emerald-800 font-bold text-sm">
                   <EditableCell
                     val={getVal('cf', 'closingCashCalculated', d.year, d.closingCashCalculated)}
                     isEditMode={isEditMode}
@@ -1401,7 +1532,7 @@ function StatementOfCashFlowsTable({
               ))}
             </tr>
 
-            <tr className="font-semibold text-sky-400">
+            <tr className="font-semibold text-sky-800 bg-sky-50/40">
               <td className="py-2.5 px-4 font-sans">
                 <EditableLabel
                   label={getLbl('cf', 'balanceSheetCash', 'Stated Cash in Statement of Financial Position')}
@@ -1447,7 +1578,7 @@ function IncomeStatementTable({
   onUpdateLabel: (stmt: string, field: string, newLabel: string) => void;
 }) {
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
+    <div className="bg-white/92 backdrop-blur-md border border-slate-200/90 rounded-2xl overflow-hidden shadow-sm">
       <StatementMasthead
         title="Statement of Comprehensive Income (Profit & Loss)"
         subtitle="Operating revenues, cost of sales, operating margins, finance costs, and net earnings"
@@ -1456,17 +1587,17 @@ function IncomeStatementTable({
       />
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs font-mono">
-          <thead className="bg-slate-800/90 text-slate-300 border-b border-slate-700 text-[11px]">
+          <thead className="bg-slate-100/95 text-slate-700 border-b border-slate-200 text-[11px]">
             <tr>
-              <th className="py-3 px-4 font-sans font-semibold text-white tracking-wide">
+              <th className="py-3 px-4 font-sans font-semibold text-slate-900 tracking-wide">
                 Financial Revenue / Expense Account
               </th>
               {incomeData.map(d => (
-                <th key={d.year} className={`py-2.5 px-3 text-right ${d.isProjected ? 'bg-sky-950/20 text-sky-300' : 'text-slate-200'}`}>
+                <th key={d.year} className={`py-2.5 px-3 text-right ${d.isProjected ? 'bg-sky-50/90 text-sky-900' : 'text-slate-800'}`}>
                   <div className="flex flex-col items-end">
                     <span className="font-bold text-xs">{d.year}</span>
                     <span className={`text-[9px] font-sans uppercase tracking-wider font-semibold ${
-                      d.isProjected ? 'text-sky-400' : 'text-slate-400'
+                      d.isProjected ? 'text-sky-700' : 'text-slate-500'
                     }`}>
                       {d.isProjected ? 'Forecast' : 'Audited'}
                     </span>
@@ -1475,8 +1606,8 @@ function IncomeStatementTable({
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-800/60 tabular-nums">
-            <tr className="font-semibold text-white">
+          <tbody className="divide-y divide-slate-200/70 tabular-nums">
+            <tr className="font-semibold text-slate-900 hover:bg-slate-50/70">
               <td className="py-2.5 px-4 font-sans">
                 <EditableLabel
                   label={getLbl('income', 'revenue', 'Sales Revenue')}
@@ -1485,7 +1616,7 @@ function IncomeStatementTable({
                 />
               </td>
               {incomeData.map(d => (
-                <td key={d.year} className="py-2.5 px-3 text-right text-emerald-400 font-bold">
+                <td key={d.year} className="py-2.5 px-3 text-right text-emerald-700 font-bold">
                   <EditableCell
                     val={getVal('income', 'revenue', d.year, d.revenue)}
                     isEditMode={isEditMode}
@@ -1495,8 +1626,8 @@ function IncomeStatementTable({
               ))}
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-400 pl-6">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
                 <EditableLabel
                   label={getLbl('income', 'costOfSales', 'Cost of Goods Sold / Cost of Sales')}
                   isEditMode={isEditMode}
@@ -1504,7 +1635,7 @@ function IncomeStatementTable({
                 />
               </td>
               {incomeData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-rose-300">
+                <td key={d.year} className="py-2 px-3 text-right text-rose-700">
                   <EditableCell
                     val={getVal('income', 'costOfSales', d.year, d.costOfSales)}
                     isEditMode={isEditMode}
@@ -1515,7 +1646,7 @@ function IncomeStatementTable({
               ))}
             </tr>
 
-            <tr className="bg-slate-800/40 font-bold text-slate-100">
+            <tr className="bg-slate-100/80 font-bold text-slate-900">
               <td className="py-2.5 px-4 font-sans">
                 <EditableLabel
                   label={getLbl('income', 'grossProfit', 'Gross Profit')}
@@ -1524,7 +1655,7 @@ function IncomeStatementTable({
                 />
               </td>
               {incomeData.map(d => (
-                <td key={d.year} className="py-2.5 px-3 text-right text-white">
+                <td key={d.year} className="py-2.5 px-3 text-right text-slate-900">
                   <EditableCell
                     val={getVal('income', 'grossProfit', d.year, d.grossProfit)}
                     isEditMode={isEditMode}
@@ -1534,8 +1665,8 @@ function IncomeStatementTable({
               ))}
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-400 pl-6">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
                 <EditableLabel
                   label={getLbl('income', 'operatingExpenses', 'Operating Expenses (Admin & Selling)')}
                   isEditMode={isEditMode}
@@ -1543,7 +1674,7 @@ function IncomeStatementTable({
                 />
               </td>
               {incomeData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-rose-300">
+                <td key={d.year} className="py-2 px-3 text-right text-rose-700">
                   <EditableCell
                     val={getVal('income', 'operatingExpenses', d.year, d.operatingExpenses)}
                     isEditMode={isEditMode}
@@ -1554,8 +1685,8 @@ function IncomeStatementTable({
               ))}
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-400 pl-6">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
                 <EditableLabel
                   label={getLbl('income', 'depreciationExpense', 'Depreciation Expense (Schedule of Fixed Assets)')}
                   isEditMode={isEditMode}
@@ -1563,7 +1694,7 @@ function IncomeStatementTable({
                 />
               </td>
               {incomeData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-rose-300">
+                <td key={d.year} className="py-2 px-3 text-right text-rose-700">
                   <EditableCell
                     val={getVal('income', 'depreciationExpense', d.year, d.depreciationExpense)}
                     isEditMode={isEditMode}
@@ -1574,7 +1705,7 @@ function IncomeStatementTable({
               ))}
             </tr>
 
-            <tr className="bg-slate-800/50 font-bold text-sky-300">
+            <tr className="bg-sky-50/75 font-bold text-sky-800">
               <td className="py-2.5 px-4 font-sans">
                 <EditableLabel
                   label={getLbl('income', 'operatingProfit', 'Operating Profit (EBIT)')}
@@ -1593,8 +1724,8 @@ function IncomeStatementTable({
               ))}
             </tr>
 
-            <tr className="bg-amber-950/20 font-semibold">
-              <td className="py-2 px-4 font-sans text-amber-300 pl-6">
+            <tr className="bg-amber-50/75 font-semibold">
+              <td className="py-2 px-4 font-sans text-amber-900 pl-6">
                 <EditableLabel
                   label={getLbl('income', 'financeCost', 'Finance Cost (Mandatory Direct Entry)')}
                   isEditMode={isEditMode}
@@ -1602,7 +1733,7 @@ function IncomeStatementTable({
                 />
               </td>
               {incomeData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-amber-300">
+                <td key={d.year} className="py-2 px-3 text-right text-amber-800">
                   <EditableCell
                     val={getVal('income', 'financeCost', d.year, d.financeCost)}
                     isEditMode={isEditMode}
@@ -1613,7 +1744,7 @@ function IncomeStatementTable({
               ))}
             </tr>
 
-            <tr className="font-bold text-slate-100">
+            <tr className="font-bold text-slate-900 hover:bg-slate-50/70">
               <td className="py-2.5 px-4 font-sans">
                 <EditableLabel
                   label={getLbl('income', 'profitBeforeTax', 'Profit Before Tax (EBT)')}
@@ -1632,8 +1763,8 @@ function IncomeStatementTable({
               ))}
             </tr>
 
-            <tr className="bg-emerald-950/30 font-bold text-emerald-400 border-t-2 border-emerald-800 border-b-4 border-double border-emerald-500/80">
-              <td className="py-3 px-4 font-sans text-emerald-400 text-sm">
+            <tr className="bg-emerald-50/85 font-bold text-emerald-800 border-t-2 border-emerald-300 border-b-4 border-double border-emerald-600">
+              <td className="py-3 px-4 font-sans text-emerald-800 text-sm">
                 <EditableLabel
                   label={getLbl('income', 'netProfit', 'Net Profit After Tax')}
                   isEditMode={isEditMode}
@@ -1641,7 +1772,7 @@ function IncomeStatementTable({
                 />
               </td>
               {incomeData.map(d => (
-                <td key={d.year} className="py-3 px-3 text-right text-emerald-400 text-sm font-bold">
+                <td key={d.year} className="py-3 px-3 text-right text-emerald-800 text-sm font-bold">
                   <EditableCell
                     val={getVal('income', 'netProfit', d.year, d.netProfit)}
                     isEditMode={isEditMode}
@@ -1678,7 +1809,7 @@ function BalanceSheetTable({
   onUpdateLabel: (stmt: string, field: string, newLabel: string) => void;
 }) {
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
+    <div className="bg-white/92 backdrop-blur-md border border-slate-200/90 rounded-2xl overflow-hidden shadow-sm">
       <StatementMasthead
         title="Statement of Financial Position (Balance Sheet)"
         subtitle="Assets, liabilities, and shareholders equity solvency schedule"
@@ -1687,17 +1818,17 @@ function BalanceSheetTable({
       />
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs font-mono">
-          <thead className="bg-slate-800/90 text-slate-300 border-b border-slate-700 text-[11px]">
+          <thead className="bg-slate-100/95 text-slate-700 border-b border-slate-200 text-[11px]">
             <tr>
-              <th className="py-3 px-4 font-sans font-semibold text-white tracking-wide">
+              <th className="py-3 px-4 font-sans font-semibold text-slate-900 tracking-wide">
                 Financial Asset / Liability / Equity Item
               </th>
               {balanceData.map(d => (
-                <th key={d.year} className={`py-2.5 px-3 text-right ${d.isProjected ? 'bg-sky-950/20 text-sky-300' : 'text-slate-200'}`}>
+                <th key={d.year} className={`py-2.5 px-3 text-right ${d.isProjected ? 'bg-sky-50/90 text-sky-900' : 'text-slate-800'}`}>
                   <div className="flex flex-col items-end">
                     <span className="font-bold text-xs">{d.year}</span>
                     <span className={`text-[9px] font-sans uppercase tracking-wider font-semibold ${
-                      d.isProjected ? 'text-sky-400' : 'text-slate-400'
+                      d.isProjected ? 'text-sky-700' : 'text-slate-500'
                     }`}>
                       {d.isProjected ? 'Forecast' : 'Audited'}
                     </span>
@@ -1706,13 +1837,13 @@ function BalanceSheetTable({
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-800/60 tabular-nums">
-            <tr className="bg-slate-800/40 font-sans font-bold text-sky-400">
+          <tbody className="divide-y divide-slate-200/70 tabular-nums">
+            <tr className="bg-sky-50/75 font-sans font-bold text-sky-800">
               <td colSpan={balanceData.length + 1} className="py-2 px-4 uppercase text-[11px]">Current Assets</td>
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-200">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-800 font-medium">
                 <EditableLabel
                   label={getLbl('bs', 'cashAndEquivalents', 'Cash and Cash Equivalents')}
                   isEditMode={isEditMode}
@@ -1720,7 +1851,7 @@ function BalanceSheetTable({
                 />
               </td>
               {balanceData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-sky-300 font-medium">
+                <td key={d.year} className="py-2 px-3 text-right text-sky-700 font-medium">
                   <EditableCell
                     val={getVal('bs', 'cashAndEquivalents', d.year, d.cashAndEquivalents)}
                     isEditMode={isEditMode}
@@ -1730,8 +1861,8 @@ function BalanceSheetTable({
               ))}
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-300">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-700">
                 <EditableLabel
                   label={getLbl('bs', 'tradeReceivables', 'Trade Receivables')}
                   isEditMode={isEditMode}
@@ -1739,7 +1870,7 @@ function BalanceSheetTable({
                 />
               </td>
               {balanceData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right">
+                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
                   <EditableCell
                     val={getVal('bs', 'tradeReceivables', d.year, d.tradeReceivables)}
                     isEditMode={isEditMode}
@@ -1749,8 +1880,8 @@ function BalanceSheetTable({
               ))}
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-300">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-700">
                 <EditableLabel
                   label={getLbl('bs', 'closingInventory', 'Closing Inventory')}
                   isEditMode={isEditMode}
@@ -1758,7 +1889,7 @@ function BalanceSheetTable({
                 />
               </td>
               {balanceData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right">
+                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
                   <EditableCell
                     val={getVal('bs', 'closingInventory', d.year, d.closingInventory)}
                     isEditMode={isEditMode}
@@ -1768,7 +1899,7 @@ function BalanceSheetTable({
               ))}
             </tr>
 
-            <tr className="bg-slate-800/30 font-semibold text-slate-100">
+            <tr className="bg-slate-100/80 font-semibold text-slate-900">
               <td className="py-2 px-4 font-sans">
                 <EditableLabel
                   label={getLbl('bs', 'totalCurrentAssets', 'Total Current Assets')}
@@ -1777,7 +1908,7 @@ function BalanceSheetTable({
                 />
               </td>
               {balanceData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right font-bold text-sky-300">
+                <td key={d.year} className="py-2 px-3 text-right font-bold text-sky-800">
                   <EditableCell
                     val={getVal('bs', 'totalCurrentAssets', d.year, d.totalCurrentAssets)}
                     isEditMode={isEditMode}
@@ -1787,12 +1918,12 @@ function BalanceSheetTable({
               ))}
             </tr>
 
-            <tr className="bg-slate-800/40 font-sans font-bold text-sky-400">
+            <tr className="bg-sky-50/75 font-sans font-bold text-sky-800">
               <td colSpan={balanceData.length + 1} className="py-2 px-4 uppercase text-[11px]">Non-Current Assets</td>
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-200">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-800 font-medium">
                 <EditableLabel
                   label={getLbl('bs', 'propertyPlantEquipment', 'Property, Plant and Equipment (NBV)')}
                   isEditMode={isEditMode}
@@ -1800,7 +1931,7 @@ function BalanceSheetTable({
                 />
               </td>
               {balanceData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-emerald-300">
+                <td key={d.year} className="py-2 px-3 text-right text-emerald-700 font-medium">
                   <EditableCell
                     val={getVal('bs', 'propertyPlantEquipment', d.year, d.propertyPlantEquipment)}
                     isEditMode={isEditMode}
@@ -1810,7 +1941,7 @@ function BalanceSheetTable({
               ))}
             </tr>
 
-            <tr className="bg-emerald-950/20 font-bold text-emerald-400 border-t-2 border-emerald-800 border-b-4 border-double border-emerald-500/80">
+            <tr className="bg-emerald-50/85 font-bold text-emerald-800 border-t-2 border-emerald-300 border-b-4 border-double border-emerald-600">
               <td className="py-3 px-4 font-sans text-sm">
                 <EditableLabel
                   label={getLbl('bs', 'totalAssets', 'TOTAL ASSETS')}
@@ -1819,7 +1950,7 @@ function BalanceSheetTable({
                 />
               </td>
               {balanceData.map(d => (
-                <td key={d.year} className="py-3 px-3 text-right text-sm font-bold text-emerald-400">
+                <td key={d.year} className="py-3 px-3 text-right text-sm font-bold text-emerald-800">
                   <EditableCell
                     val={getVal('bs', 'totalAssets', d.year, d.totalAssets)}
                     isEditMode={isEditMode}
@@ -1830,12 +1961,12 @@ function BalanceSheetTable({
             </tr>
 
             {/* Liabilities */}
-            <tr className="bg-slate-800/40 font-sans font-bold text-rose-400">
+            <tr className="bg-rose-50/75 font-sans font-bold text-rose-800">
               <td colSpan={balanceData.length + 1} className="py-2 px-4 uppercase text-[11px]">Liabilities</td>
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-300">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-700">
                 <EditableLabel
                   label={getLbl('bs', 'tradePayables', 'Trade Payables')}
                   isEditMode={isEditMode}
@@ -1843,7 +1974,7 @@ function BalanceSheetTable({
                 />
               </td>
               {balanceData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right">
+                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
                   <EditableCell
                     val={getVal('bs', 'tradePayables', d.year, d.tradePayables)}
                     isEditMode={isEditMode}
@@ -1853,8 +1984,8 @@ function BalanceSheetTable({
               ))}
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-300">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-700">
                 <EditableLabel
                   label={getLbl('bs', 'longTermBorrowings', 'Long-Term Borrowings')}
                   isEditMode={isEditMode}
@@ -1862,7 +1993,7 @@ function BalanceSheetTable({
                 />
               </td>
               {balanceData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right">
+                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
                   <EditableCell
                     val={getVal('bs', 'longTermBorrowings', d.year, d.longTermBorrowings)}
                     isEditMode={isEditMode}
@@ -1873,12 +2004,12 @@ function BalanceSheetTable({
             </tr>
 
             {/* Equity */}
-            <tr className="bg-slate-800/40 font-sans font-bold text-teal-400">
+            <tr className="bg-teal-50/75 font-sans font-bold text-teal-800">
               <td colSpan={balanceData.length + 1} className="py-2 px-4 uppercase text-[11px]">Shareholders Equity</td>
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-300">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-700">
                 <EditableLabel
                   label={getLbl('bs', 'shareCapital', 'Share Capital')}
                   isEditMode={isEditMode}
@@ -1886,7 +2017,7 @@ function BalanceSheetTable({
                 />
               </td>
               {balanceData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right">
+                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
                   <EditableCell
                     val={getVal('bs', 'shareCapital', d.year, d.shareCapital)}
                     isEditMode={isEditMode}
@@ -1896,8 +2027,8 @@ function BalanceSheetTable({
               ))}
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-300">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-700">
                 <EditableLabel
                   label={getLbl('bs', 'retainedEarnings', 'Retained Earnings')}
                   isEditMode={isEditMode}
@@ -1905,7 +2036,7 @@ function BalanceSheetTable({
                 />
               </td>
               {balanceData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right">
+                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
                   <EditableCell
                     val={getVal('bs', 'retainedEarnings', d.year, d.retainedEarnings)}
                     isEditMode={isEditMode}
@@ -1915,7 +2046,7 @@ function BalanceSheetTable({
               ))}
             </tr>
 
-            <tr className="bg-emerald-950/20 font-bold text-emerald-400 border-t-2 border-emerald-800 border-b-4 border-double border-emerald-500/80">
+            <tr className="bg-emerald-50/85 font-bold text-emerald-800 border-t-2 border-emerald-300 border-b-4 border-double border-emerald-600">
               <td className="py-3 px-4 font-sans text-sm">
                 <EditableLabel
                   label={getLbl('bs', 'totalLiabilitiesAndEquity', 'TOTAL LIABILITIES & EQUITY')}
@@ -1924,7 +2055,7 @@ function BalanceSheetTable({
                 />
               </td>
               {balanceData.map(d => (
-                <td key={d.year} className="py-3 px-3 text-right text-sm font-bold text-emerald-400">
+                <td key={d.year} className="py-3 px-3 text-right text-sm font-bold text-emerald-800">
                   <EditableCell
                     val={getVal('bs', 'totalLiabilitiesAndEquity', d.year, d.totalLiabilitiesAndEquity)}
                     isEditMode={isEditMode}
@@ -1961,7 +2092,7 @@ function EquityStatementTable({
   onUpdateLabel: (stmt: string, field: string, newLabel: string) => void;
 }) {
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
+    <div className="bg-white/92 backdrop-blur-md border border-slate-200/90 rounded-2xl overflow-hidden shadow-sm">
       <StatementMasthead
         title="Statement of Changes in Equity"
         subtitle="Share capital movements, retained earnings rollforward, and closing shareholders equity"
@@ -1970,17 +2101,17 @@ function EquityStatementTable({
       />
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs font-mono">
-          <thead className="bg-slate-800/90 text-slate-300 border-b border-slate-700 text-[11px]">
+          <thead className="bg-slate-100/95 text-slate-700 border-b border-slate-200 text-[11px]">
             <tr>
-              <th className="py-3 px-4 font-sans font-semibold text-white tracking-wide">
+              <th className="py-3 px-4 font-sans font-semibold text-slate-900 tracking-wide">
                 Equity Classification / Component
               </th>
               {equityData.map(d => (
-                <th key={d.year} className={`py-2.5 px-3 text-right ${d.isProjected ? 'bg-sky-950/20 text-sky-300' : 'text-slate-200'}`}>
+                <th key={d.year} className={`py-2.5 px-3 text-right ${d.isProjected ? 'bg-sky-50/90 text-sky-900' : 'text-slate-800'}`}>
                   <div className="flex flex-col items-end">
                     <span className="font-bold text-xs">{d.year}</span>
                     <span className={`text-[9px] font-sans uppercase tracking-wider font-semibold ${
-                      d.isProjected ? 'text-sky-400' : 'text-slate-400'
+                      d.isProjected ? 'text-sky-700' : 'text-slate-500'
                     }`}>
                       {d.isProjected ? 'Forecast' : 'Audited'}
                     </span>
@@ -1989,9 +2120,9 @@ function EquityStatementTable({
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-800/60 tabular-nums">
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-300">
+          <tbody className="divide-y divide-slate-200/70 tabular-nums">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-700 font-medium">
                 <EditableLabel
                   label={getLbl('eq', 'openingShareCapital', 'Opening Share Capital')}
                   isEditMode={isEditMode}
@@ -1999,7 +2130,7 @@ function EquityStatementTable({
                 />
               </td>
               {equityData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right">
+                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
                   <EditableCell
                     val={getVal('eq', 'openingShareCapital', d.year, d.openingShareCapital)}
                     isEditMode={isEditMode}
@@ -2009,8 +2140,8 @@ function EquityStatementTable({
               ))}
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-400 pl-6">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
                 <EditableLabel
                   label={getLbl('eq', 'shareCapitalIssued', 'Share Capital Issued during Year')}
                   isEditMode={isEditMode}
@@ -2018,7 +2149,7 @@ function EquityStatementTable({
                 />
               </td>
               {equityData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right">
+                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
                   <EditableCell
                     val={getVal('eq', 'shareCapitalIssued', d.year, d.shareCapitalIssued)}
                     isEditMode={isEditMode}
@@ -2028,8 +2159,8 @@ function EquityStatementTable({
               ))}
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-400 pl-6">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
                 <EditableLabel
                   label={getLbl('eq', 'netProfitForYear', 'Net Profit for the Year')}
                   isEditMode={isEditMode}
@@ -2037,7 +2168,7 @@ function EquityStatementTable({
                 />
               </td>
               {equityData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-emerald-400">
+                <td key={d.year} className="py-2 px-3 text-right text-emerald-700 font-medium">
                   <EditableCell
                     val={getVal('eq', 'netProfitForYear', d.year, d.netProfitForYear)}
                     isEditMode={isEditMode}
@@ -2047,8 +2178,8 @@ function EquityStatementTable({
               ))}
             </tr>
 
-            <tr>
-              <td className="py-2 px-4 font-sans text-slate-400 pl-6">
+            <tr className="hover:bg-slate-50/70">
+              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
                 <EditableLabel
                   label={getLbl('eq', 'dividendsPaid', 'Dividends Paid to Shareholders')}
                   isEditMode={isEditMode}
@@ -2056,7 +2187,7 @@ function EquityStatementTable({
                 />
               </td>
               {equityData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-rose-300">
+                <td key={d.year} className="py-2 px-3 text-right text-rose-700">
                   <EditableCell
                     val={getVal('eq', 'dividendsPaid', d.year, d.dividendsPaid)}
                     isEditMode={isEditMode}
@@ -2067,7 +2198,7 @@ function EquityStatementTable({
               ))}
             </tr>
 
-            <tr className="bg-emerald-950/20 font-bold text-emerald-400 border-t-2 border-emerald-800 border-b-4 border-double border-emerald-500/80 text-sm">
+            <tr className="bg-emerald-50/85 font-bold text-emerald-800 border-t-2 border-emerald-300 border-b-4 border-double border-emerald-600 text-sm">
               <td className="py-3 px-4 font-sans">
                 <EditableLabel
                   label={getLbl('eq', 'totalClosingEquity', 'TOTAL CLOSING SHAREHOLDERS EQUITY')}
@@ -2076,7 +2207,7 @@ function EquityStatementTable({
                 />
               </td>
               {equityData.map(d => (
-                <td key={d.year} className="py-3 px-3 text-right font-bold text-emerald-400">
+                <td key={d.year} className="py-3 px-3 text-right font-bold text-emerald-800">
                   <EditableCell
                     val={getVal('eq', 'totalClosingEquity', d.year, d.totalClosingEquity)}
                     isEditMode={isEditMode}
@@ -2110,7 +2241,7 @@ function FixedAssetsScheduleTable({
   const latest = fixedAssetsData[fixedAssetsData.length - 1];
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
+    <div className="bg-white/92 backdrop-blur-md border border-slate-200/90 rounded-2xl overflow-hidden shadow-sm">
       <StatementMasthead
         title={`Schedule of Fixed Assets (Property, Plant & Equipment) — FY ${latest.year}`}
         subtitle={`Asset classes, capital additions, disposals, depreciation, and carrying net book values (${latest.isProjected ? 'Projected Period' : 'Historical Period'})`}
@@ -2120,97 +2251,97 @@ function FixedAssetsScheduleTable({
 
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs font-mono">
-          <thead className="bg-slate-800/80 text-slate-300 border-b border-slate-700 text-[11px]">
+          <thead className="bg-slate-100/95 text-slate-700 border-b border-slate-200 text-[11px]">
             <tr>
-              <th className="py-3 px-4 font-sans font-semibold text-white">Asset Class</th>
-              <th className="py-3 px-2 text-right">Dep %</th>
-              <th className="py-3 px-3 text-right">Opening Cost</th>
-              <th className="py-3 px-3 text-right text-emerald-400">Additions</th>
-              <th className="py-3 px-3 text-right text-rose-300">Disposals</th>
-              <th className="py-3 px-3 text-right text-white">Closing Cost</th>
-              <th className="py-3 px-3 text-right">Opening Dep</th>
-              <th className="py-3 px-3 text-right text-rose-300">Charge</th>
-              <th className="py-3 px-3 text-right text-white">Closing Dep</th>
-              <th className="py-3 px-4 text-right text-emerald-400 font-bold">Net Book Value</th>
+              <th className="py-3 px-4 font-sans font-semibold text-slate-900">Asset Class</th>
+              <th className="py-3 px-2 text-right font-semibold">Dep %</th>
+              <th className="py-3 px-3 text-right font-semibold">Opening Cost</th>
+              <th className="py-3 px-3 text-right text-emerald-700 font-semibold">Additions</th>
+              <th className="py-3 px-3 text-right text-rose-700 font-semibold">Disposals</th>
+              <th className="py-3 px-3 text-right text-slate-900 font-semibold">Closing Cost</th>
+              <th className="py-3 px-3 text-right font-semibold">Opening Dep</th>
+              <th className="py-3 px-3 text-right text-rose-700 font-semibold">Charge</th>
+              <th className="py-3 px-3 text-right text-slate-900 font-semibold">Closing Dep</th>
+              <th className="py-3 px-4 text-right text-emerald-700 font-bold">Net Book Value</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-800/60 tabular-nums">
+          <tbody className="divide-y divide-slate-200/70 tabular-nums">
             {latest.categories.map((c, idx) => (
-              <tr key={c.name} className="hover:bg-slate-800/30">
-                <td className="py-2.5 px-4 font-sans text-slate-200 font-medium">
+              <tr key={c.name} className="hover:bg-slate-50">
+                <td className="py-2.5 px-4 font-sans text-slate-900 font-medium">
                   {isEditMode ? (
                     <input
                       type="text"
                       value={c.name}
                       onChange={(e) => onUpdateCategory(idx, 'name', e.target.value)}
-                      className="bg-slate-950 border border-emerald-500/80 rounded px-1.5 py-0.5 text-xs text-white w-full"
+                      className="bg-white border border-emerald-600 rounded px-1.5 py-0.5 text-xs text-slate-900 w-full focus:outline-none focus:ring-1 focus:ring-emerald-500"
                     />
                   ) : (
                     c.name
                   )}
                 </td>
-                <td className="py-2.5 px-2 text-right text-slate-400">{c.depRate}%</td>
-                <td className="py-2.5 px-3 text-right text-slate-300">
+                <td className="py-2.5 px-2 text-right text-slate-600">{c.depRate}%</td>
+                <td className="py-2.5 px-3 text-right text-slate-700">
                   <EditableCell
                     val={c.costOpening}
                     isEditMode={isEditMode}
                     onSave={(v) => onUpdateCategory(idx, 'costOpening', v)}
                   />
                 </td>
-                <td className="py-2.5 px-3 text-right text-emerald-400">
+                <td className="py-2.5 px-3 text-right text-emerald-700">
                   <EditableCell
                     val={c.additions}
                     isEditMode={isEditMode}
                     onSave={(v) => onUpdateCategory(idx, 'additions', v)}
                   />
                 </td>
-                <td className="py-2.5 px-3 text-right text-rose-300">
+                <td className="py-2.5 px-3 text-right text-rose-700">
                   <EditableCell
                     val={c.disposals}
                     isEditMode={isEditMode}
                     onSave={(v) => onUpdateCategory(idx, 'disposals', v)}
                   />
                 </td>
-                <td className="py-2.5 px-3 text-right text-white font-semibold">
+                <td className="py-2.5 px-3 text-right text-slate-900 font-semibold">
                   {c.costClosing.toLocaleString()}
                 </td>
-                <td className="py-2.5 px-3 text-right text-slate-400">
+                <td className="py-2.5 px-3 text-right text-slate-600">
                   <EditableCell
                     val={c.depOpening}
                     isEditMode={isEditMode}
                     onSave={(v) => onUpdateCategory(idx, 'depOpening', v)}
                   />
                 </td>
-                <td className="py-2.5 px-3 text-right text-rose-300">
+                <td className="py-2.5 px-3 text-right text-rose-700">
                   <EditableCell
                     val={c.depCharge}
                     isEditMode={isEditMode}
                     onSave={(v) => onUpdateCategory(idx, 'depCharge', v)}
                   />
                 </td>
-                <td className="py-2.5 px-3 text-right text-slate-300">
+                <td className="py-2.5 px-3 text-right text-slate-700">
                   {c.depClosing.toLocaleString()}
                 </td>
-                <td className="py-2.5 px-4 text-right text-emerald-400 font-bold">
+                <td className="py-2.5 px-4 text-right text-emerald-700 font-bold">
                   {c.netBookValue.toLocaleString()}
                 </td>
               </tr>
             ))}
 
             {/* Total Carrying Net Book Value row with Double Underline */}
-            <tr className="bg-emerald-950/20 font-bold text-emerald-400 border-t-2 border-emerald-800 border-b-4 border-double border-emerald-500/80 text-xs">
-              <td className="py-3 px-4 font-sans font-bold text-white">
+            <tr className="bg-emerald-50/85 font-bold text-emerald-800 border-t-2 border-emerald-300 border-b-4 border-double border-emerald-600 text-xs">
+              <td className="py-3 px-4 font-sans font-bold text-slate-900">
                 TOTAL PROPERTY, PLANT & EQUIPMENT
               </td>
               <td className="py-3 px-2 text-right text-slate-500">-</td>
-              <td className="py-3 px-3 text-right text-slate-300 font-semibold">{latest.categories.reduce((s, c) => s + c.costOpening, 0).toLocaleString()}</td>
-              <td className="py-3 px-3 text-right text-emerald-400 font-bold">{latest.categories.reduce((s, c) => s + c.additions, 0).toLocaleString()}</td>
-              <td className="py-3 px-3 text-right text-rose-300">{latest.categories.reduce((s, c) => s + c.disposals, 0).toLocaleString()}</td>
-              <td className="py-3 px-3 text-right text-white font-bold">{latest.categories.reduce((s, c) => s + c.costClosing, 0).toLocaleString()}</td>
-              <td className="py-3 px-3 text-right text-slate-400">{latest.categories.reduce((s, c) => s + c.depOpening, 0).toLocaleString()}</td>
-              <td className="py-3 px-3 text-right text-rose-300">{latest.categories.reduce((s, c) => s + c.depCharge, 0).toLocaleString()}</td>
-              <td className="py-3 px-3 text-right text-white">{latest.categories.reduce((s, c) => s + c.depClosing, 0).toLocaleString()}</td>
-              <td className="py-3 px-4 text-right text-emerald-400 font-extrabold text-sm font-mono">
+              <td className="py-3 px-3 text-right text-slate-700 font-semibold">{latest.categories.reduce((s, c) => s + c.costOpening, 0).toLocaleString()}</td>
+              <td className="py-3 px-3 text-right text-emerald-700 font-bold">{latest.categories.reduce((s, c) => s + c.additions, 0).toLocaleString()}</td>
+              <td className="py-3 px-3 text-right text-rose-700">{latest.categories.reduce((s, c) => s + c.disposals, 0).toLocaleString()}</td>
+              <td className="py-3 px-3 text-right text-slate-900 font-bold">{latest.categories.reduce((s, c) => s + c.costClosing, 0).toLocaleString()}</td>
+              <td className="py-3 px-3 text-right text-slate-600">{latest.categories.reduce((s, c) => s + c.depOpening, 0).toLocaleString()}</td>
+              <td className="py-3 px-3 text-right text-rose-700">{latest.categories.reduce((s, c) => s + c.depCharge, 0).toLocaleString()}</td>
+              <td className="py-3 px-3 text-right text-slate-900">{latest.categories.reduce((s, c) => s + c.depClosing, 0).toLocaleString()}</td>
+              <td className="py-3 px-4 text-right text-emerald-800 font-extrabold text-sm font-mono">
                 {latest.categories.reduce((s, c) => s + c.netBookValue, 0).toLocaleString()}
               </td>
             </tr>
@@ -2247,24 +2378,24 @@ function NotesViewer({
 
   return (
     <div className="space-y-4">
-      <div className="p-4 bg-slate-900 border border-slate-800 rounded-2xl flex items-center justify-between">
+      <div className="p-4 bg-white/92 backdrop-blur-md border border-slate-200/90 rounded-2xl flex items-center justify-between shadow-sm">
         <div>
-          <h3 className="text-sm font-bold text-white">
+          <h3 className="text-sm font-bold text-slate-900">
             Notes to the Financial Statements (Notes 1 to 12)
           </h3>
-          <p className="text-xs text-slate-400">
+          <p className="text-xs text-slate-600">
             Mandatory disclosures, accounting policies, and cash flow reconciliations (All editable)
           </p>
         </div>
-        <span className="text-xs text-emerald-400 font-medium">12 Statutory Notes</span>
+        <span className="text-xs text-emerald-700 font-semibold">12 Statutory Notes</span>
       </div>
 
       <div className="space-y-4">
         {notes.map(note => (
-          <div key={note.noteNumber} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-              <h4 className="text-xs font-bold text-white flex items-center gap-2 flex-1">
-                <span className="w-5 h-5 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-800 flex items-center justify-center text-[10px] shrink-0">
+          <div key={note.noteNumber} className="bg-white/92 backdrop-blur-md border border-slate-200/90 rounded-2xl p-5 space-y-3 shadow-sm">
+            <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+              <h4 className="text-xs font-bold text-slate-900 flex items-center gap-2 flex-1">
+                <span className="w-5 h-5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-300 flex items-center justify-center text-[10px] shrink-0">
                   {note.noteNumber}
                 </span>
                 {isEditMode ? (
@@ -2272,13 +2403,13 @@ function NotesViewer({
                     type="text"
                     value={note.title}
                     onChange={(e) => handleNoteTitleChange(note.noteNumber, e.target.value)}
-                    className="bg-slate-950 border border-emerald-500/80 rounded px-2 py-0.5 text-xs font-bold text-white flex-1"
+                    className="bg-white border border-emerald-600 rounded px-2 py-0.5 text-xs font-bold text-slate-900 flex-1 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                   />
                 ) : (
                   <span>Note {note.noteNumber}: {note.title}</span>
                 )}
               </h4>
-              <span className="text-[10px] text-slate-400 bg-slate-800 px-2 py-0.5 rounded ml-2 shrink-0">
+              <span className="text-[10px] text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded ml-2 shrink-0">
                 {note.category}
               </span>
             </div>
@@ -2288,10 +2419,10 @@ function NotesViewer({
                 value={note.textDescription}
                 onChange={(e) => handleNoteTextChange(note.noteNumber, e.target.value)}
                 rows={3}
-                className="w-full bg-slate-950 border border-emerald-500/80 rounded p-2 text-xs text-slate-200 font-sans focus:outline-none focus:ring-1 focus:ring-emerald-400"
+                className="w-full bg-white border border-emerald-600 rounded p-2 text-xs text-slate-900 font-sans focus:outline-none focus:ring-1 focus:ring-emerald-500"
               />
             ) : (
-              <p className="text-xs text-slate-300 leading-relaxed font-sans">
+              <p className="text-xs text-slate-700 leading-relaxed font-sans">
                 {note.textDescription}
               </p>
             )}
@@ -2299,29 +2430,29 @@ function NotesViewer({
             {note.tableData && (
               <div className="overflow-x-auto pt-2">
                 <table className="w-full text-left text-xs font-mono">
-                  <thead className="bg-slate-800/80 text-slate-300 text-[11px]">
+                  <thead className="bg-slate-100 text-slate-700 border-b border-slate-200 text-[11px]">
                     <tr>
                       {note.tableData.headers.map((h, i) => (
-                        <th key={i} className={`py-2 px-3 ${i === 0 ? 'text-left font-sans' : 'text-right'}`}>
+                        <th key={i} className={`py-2 px-3 font-semibold ${i === 0 ? 'text-left font-sans text-slate-900' : 'text-right'}`}>
                           {h}
                         </th>
                       ))}
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-800/60 tabular-nums">
+                  <tbody className="divide-y divide-slate-200/70 tabular-nums">
                     {note.tableData.rows.map((r, ri) => (
-                      <tr key={ri} className="hover:bg-slate-800/20">
-                        <td className="py-2 px-3 font-sans text-slate-300">{r.label}</td>
+                      <tr key={ri} className="hover:bg-slate-50">
+                        <td className="py-2 px-3 font-sans text-slate-700">{r.label}</td>
                         {r.values.map((v, vi) => (
-                          <td key={vi} className="py-2 px-3 text-right text-slate-200">{v}</td>
+                          <td key={vi} className="py-2 px-3 text-right text-slate-800">{v}</td>
                         ))}
                       </tr>
                     ))}
                     {note.tableData.totalRow && (
-                      <tr className="bg-slate-800/50 font-bold border-t border-slate-700">
-                        <td className="py-2 px-3 font-sans text-white">{note.tableData.totalRow.label}</td>
+                      <tr className="bg-emerald-50/75 font-bold border-t border-emerald-200">
+                        <td className="py-2 px-3 font-sans text-slate-900">{note.tableData.totalRow.label}</td>
                         {note.tableData.totalRow.values.map((v, vi) => (
-                          <td key={vi} className="py-2 px-3 text-right text-emerald-400">{v}</td>
+                          <td key={vi} className="py-2 px-3 text-right text-emerald-800">{v}</td>
                         ))}
                       </tr>
                     )}
@@ -2352,13 +2483,13 @@ function DebtServiceCoverageSummaryPanel({
   if (activeRows.length === 0) return null;
 
   return (
-    <div className="bg-slate-900 border border-emerald-700/50 rounded-2xl overflow-hidden shadow-sm">
-      <div className="p-4 border-b border-slate-800 bg-emerald-950/20 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+    <div className="bg-white/92 backdrop-blur-md border border-emerald-300 rounded-2xl overflow-hidden shadow-sm">
+      <div className="p-4 border-b border-emerald-200 bg-emerald-50/75 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <span className="text-[10px] font-mono uppercase tracking-widest text-emerald-400 font-bold">
+          <span className="text-[10px] font-mono uppercase tracking-widest text-emerald-800 font-bold">
             Implemented Repayment Schedule Coverage · {parsedSchedule?.metadata?.sourceFileName || companyProfile.companyName}
           </span>
-          <h4 className="text-sm font-bold text-white mt-0.5">
+          <h4 className="text-sm font-bold text-slate-900 mt-0.5">
             Debt Servicing &amp; Repayment Capacity Verification (DSCR)
           </h4>
         </div>
@@ -2366,7 +2497,7 @@ function DebtServiceCoverageSummaryPanel({
           <button
             type="button"
             onClick={onJumpToRepaymentSchedule}
-            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-700/60 rounded-lg text-xs font-semibold flex items-center gap-1.5 self-start sm:self-auto"
+            className="px-3 py-1.5 bg-white hover:bg-slate-50 text-emerald-800 border border-emerald-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 self-start sm:self-auto shadow-xs"
           >
             <CalendarCheck2 className="w-3.5 h-3.5" />
             <span>Inspect Schedule Ledger</span>
@@ -2377,45 +2508,45 @@ function DebtServiceCoverageSummaryPanel({
 
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs font-mono">
-          <thead className="bg-slate-800/90 text-slate-300 border-b border-slate-700 text-[11px]">
+          <thead className="bg-slate-100/95 text-slate-700 border-b border-slate-200 text-[11px]">
             <tr>
-              <th className="py-2.5 px-4 font-sans font-semibold text-white">Year</th>
-              <th className="py-2.5 px-3 text-right">EBITDA</th>
-              <th className="py-2.5 px-3 text-right">Pre-Fin OCF</th>
-              <th className="py-2.5 px-3 text-right text-amber-300">Inst. Principal</th>
-              <th className="py-2.5 px-3 text-right text-sky-300">Finance Cost (Profit)</th>
-              <th className="py-2.5 px-3 text-right text-white">Total Debt Service</th>
-              <th className="py-2.5 px-3 text-right">EBITDA DSCR</th>
-              <th className="py-2.5 px-3 text-right">Cash DSCR</th>
-              <th className="py-2.5 px-3 text-right">Closing Cash</th>
-              <th className="py-2.5 px-4 text-right">Status</th>
+              <th className="py-2.5 px-4 font-sans font-semibold text-slate-900">Year</th>
+              <th className="py-2.5 px-3 text-right font-semibold">EBITDA</th>
+              <th className="py-2.5 px-3 text-right font-semibold">Pre-Fin OCF</th>
+              <th className="py-2.5 px-3 text-right text-amber-800 font-semibold">Inst. Principal</th>
+              <th className="py-2.5 px-3 text-right text-sky-800 font-semibold">Finance Cost (Profit)</th>
+              <th className="py-2.5 px-3 text-right text-slate-900 font-semibold">Total Debt Service</th>
+              <th className="py-2.5 px-3 text-right font-semibold">EBITDA DSCR</th>
+              <th className="py-2.5 px-3 text-right font-semibold">Cash DSCR</th>
+              <th className="py-2.5 px-3 text-right font-semibold">Closing Cash</th>
+              <th className="py-2.5 px-4 text-right font-semibold">Status</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-800/60 tabular-nums">
+          <tbody className="divide-y divide-slate-200/70 tabular-nums">
             {activeRows.map(row => (
-              <tr key={row.year} className="hover:bg-slate-800/25">
-                <td className="py-2 px-4 font-bold text-white">
-                  {row.year} <span className="text-[10px] text-slate-400 font-normal">{row.isProjected ? '(P)' : '(H)'}</span>
+              <tr key={row.year} className="hover:bg-slate-50">
+                <td className="py-2 px-4 font-bold text-slate-900">
+                  {row.year} <span className="text-[10px] text-slate-500 font-normal">{row.isProjected ? '(P)' : '(H)'}</span>
                 </td>
-                <td className="py-2 px-3 text-right text-slate-200">{fmtStatementNum(row.ebitda)}</td>
-                <td className="py-2 px-3 text-right text-slate-200">{fmtStatementNum(row.operatingCashFlowBeforeFinance)}</td>
-                <td className="py-2 px-3 text-right text-amber-300 font-semibold">{fmtStatementNum(row.scheduledPrincipal)}</td>
-                <td className="py-2 px-3 text-right text-sky-300 font-semibold">{fmtStatementNum(row.scheduledFinanceCost)}</td>
-                <td className="py-2 px-3 text-right text-white font-bold">{fmtStatementNum(row.totalDebtService)}</td>
-                <td className={`py-2 px-3 text-right font-bold ${row.ebitdaDscr >= 1.25 ? 'text-emerald-400' : 'text-amber-300'}`}>
+                <td className="py-2 px-3 text-right text-slate-800">{fmtStatementNum(row.ebitda)}</td>
+                <td className="py-2 px-3 text-right text-slate-800">{fmtStatementNum(row.operatingCashFlowBeforeFinance)}</td>
+                <td className="py-2 px-3 text-right text-amber-800 font-semibold">{fmtStatementNum(row.scheduledPrincipal)}</td>
+                <td className="py-2 px-3 text-right text-sky-800 font-semibold">{fmtStatementNum(row.scheduledFinanceCost)}</td>
+                <td className="py-2 px-3 text-right text-slate-900 font-bold">{fmtStatementNum(row.totalDebtService)}</td>
+                <td className={`py-2 px-3 text-right font-bold ${row.ebitdaDscr >= 1.25 ? 'text-emerald-700' : 'text-amber-800'}`}>
                   {row.ebitdaDscr.toFixed(2)}x
                 </td>
-                <td className={`py-2 px-3 text-right font-bold ${row.cashDscr >= 1.15 ? 'text-emerald-400' : 'text-amber-300'}`}>
+                <td className={`py-2 px-3 text-right font-bold ${row.cashDscr >= 1.15 ? 'text-emerald-700' : 'text-amber-800'}`}>
                   {row.cashDscr.toFixed(2)}x
                 </td>
-                <td className="py-2 px-3 text-right text-emerald-300">{fmtStatementNum(row.closingCash)}</td>
+                <td className="py-2 px-3 text-right text-emerald-700 font-medium">{fmtStatementNum(row.closingCash)}</td>
                 <td className="py-2 px-4 text-right font-sans">
                   <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded border ${
                     row.capacityStatus === 'STRONG'
-                      ? 'bg-emerald-950/70 text-emerald-300 border-emerald-700/60'
+                      ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
                       : row.capacityStatus === 'ADEQUATE'
-                      ? 'bg-sky-950/70 text-sky-300 border-sky-700/60'
-                      : 'bg-amber-950/70 text-amber-300 border-amber-700/60'
+                      ? 'bg-sky-50 text-sky-800 border-sky-300'
+                      : 'bg-amber-50 text-amber-900 border-amber-300'
                   }`}>
                     {row.capacityStatus}
                   </span>
@@ -2457,16 +2588,16 @@ function CompletePackagePreview({
 }) {
   const hasDscr = debtServiceCoverage.some(d => d.totalDebtService > 0);
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-800 pb-5">
+    <div className="bg-white/92 backdrop-blur-md border border-slate-200/90 rounded-2xl p-6 space-y-6 shadow-sm">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-200 pb-5">
         <div>
-          <span className="text-[11px] font-semibold text-emerald-400 uppercase tracking-wider block">
+          <span className="text-[11px] font-semibold text-emerald-700 uppercase tracking-wider block">
             Section 76.11 Export Engine
           </span>
-          <h3 className="text-xl font-bold text-white tracking-tight">
+          <h3 className="text-xl font-bold text-slate-900 tracking-tight">
             Export Complete Financial Statements Package
           </h3>
-          <p className="text-xs text-slate-400 mt-1">
+          <p className="text-xs text-slate-600 mt-1">
             Generate one master consolidated report containing all five standard financial statements, fixed assets schedule, and twelve notes. All edited figures and custom labels are preserved in the export.
           </p>
         </div>
@@ -2498,34 +2629,34 @@ function CompletePackagePreview({
 
       {/* Package Contents Breakdown Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-xs">
-        <div className="p-4 bg-slate-800/40 border border-slate-700/60 rounded-xl space-y-1">
-          <span className="text-slate-200 font-bold block">1. Income Statement</span>
-          <p className="text-slate-400">Revenue, cost of sales, operating expenses, EBIT, finance cost, and net profit.</p>
+        <div className="p-4 bg-slate-50/90 border border-slate-200 rounded-xl space-y-1">
+          <span className="text-slate-900 font-bold block">1. Income Statement</span>
+          <p className="text-slate-600">Revenue, cost of sales, operating expenses, EBIT, finance cost, and net profit.</p>
         </div>
-        <div className="p-4 bg-slate-800/40 border border-slate-700/60 rounded-xl space-y-1">
-          <span className="text-slate-200 font-bold block">2. Balance Sheet</span>
-          <p className="text-slate-400">Statement of Financial Position: Current & Non-Current Assets, Liabilities, and Equity.</p>
+        <div className="p-4 bg-slate-50/90 border border-slate-200 rounded-xl space-y-1">
+          <span className="text-slate-900 font-bold block">2. Balance Sheet</span>
+          <p className="text-slate-600">Statement of Financial Position: Current & Non-Current Assets, Liabilities, and Equity.</p>
         </div>
-        <div className="p-4 bg-slate-800/40 border border-slate-700/60 rounded-xl space-y-1">
-          <span className="text-slate-200 font-bold block">3. Statement of Cash Flows</span>
-          <p className="text-slate-400">Indirect method, operating, capex investing, and directly entered financing cash flows.</p>
+        <div className="p-4 bg-slate-50/90 border border-slate-200 rounded-xl space-y-1">
+          <span className="text-slate-900 font-bold block">3. Statement of Cash Flows</span>
+          <p className="text-slate-600">Indirect method, operating, capex investing, and directly entered financing cash flows.</p>
         </div>
-        <div className="p-4 bg-slate-800/40 border border-slate-700/60 rounded-xl space-y-1">
-          <span className="text-slate-200 font-bold block">4. Statement of Changes in Equity</span>
-          <p className="text-slate-400">Share capital movement, retained earnings, comprehensive reserves, and dividends.</p>
+        <div className="p-4 bg-slate-50/90 border border-slate-200 rounded-xl space-y-1">
+          <span className="text-slate-900 font-bold block">4. Statement of Changes in Equity</span>
+          <p className="text-slate-600">Share capital movement, retained earnings, comprehensive reserves, and dividends.</p>
         </div>
-        <div className="p-4 bg-slate-800/40 border border-slate-700/60 rounded-xl space-y-1">
-          <span className="text-slate-200 font-bold block">5. Schedule of Fixed Assets</span>
-          <p className="text-slate-400">Category-wise gross carrying amounts, additions, disposals, depreciation, and NBV.</p>
+        <div className="p-4 bg-slate-50/90 border border-slate-200 rounded-xl space-y-1">
+          <span className="text-slate-900 font-bold block">5. Schedule of Fixed Assets</span>
+          <p className="text-slate-600">Category-wise gross carrying amounts, additions, disposals, depreciation, and NBV.</p>
         </div>
-        <div className="p-4 bg-slate-800/40 border border-slate-700/60 rounded-xl space-y-1">
-          <span className="text-slate-200 font-bold block">6. Notes to Financials (1 to 12)</span>
-          <p className="text-slate-400">Accounting policies, statutory disclosures, and cash flow balance sheet audit reconciliations.</p>
+        <div className="p-4 bg-slate-50/90 border border-slate-200 rounded-xl space-y-1">
+          <span className="text-slate-900 font-bold block">6. Notes to Financials (1 to 12)</span>
+          <p className="text-slate-600">Accounting policies, statutory disclosures, and cash flow balance sheet audit reconciliations.</p>
         </div>
         {hasDscr && (
-          <div className="p-4 bg-emerald-950/25 border border-emerald-700/50 rounded-xl space-y-1 md:col-span-2 lg:col-span-3">
-            <span className="text-emerald-300 font-bold block">7. Debt Servicing &amp; DSCR Schedule (Repayment Schedule Active)</span>
-            <p className="text-slate-300">Annual Scheduled Principal, Scheduled Profit (Finance Cost), EBITDA DSCR, Cash DSCR, and Closing Cash sustainability metrics.</p>
+          <div className="p-4 bg-emerald-50/75 border border-emerald-200 rounded-xl space-y-1 md:col-span-2 lg:col-span-3">
+            <span className="text-emerald-800 font-bold block">7. Debt Servicing &amp; DSCR Schedule (Repayment Schedule Active)</span>
+            <p className="text-slate-700">Annual Scheduled Principal, Scheduled Profit (Finance Cost), EBITDA DSCR, Cash DSCR, and Closing Cash sustainability metrics.</p>
           </div>
         )}
       </div>
