@@ -107,6 +107,11 @@ export interface YearDataInput {
   financingRepaymentBorrowings?: number;
   financingDividendsPaid?: number;
   financingLeasePaid?: number;
+
+  // Repayment Schedule lock metadata (ensures exact extracted Principal & Finance Cost remain untouched)
+  isScheduleLocked?: boolean;
+  schedulePrincipalLocked?: number;
+  scheduleFinanceCostLocked?: number;
 }
 
 export interface FixedAssetCategory {
@@ -516,5 +521,88 @@ export interface ProjectedFormatYearData {
   schedDepreciation: number;
   schedWDV: number;
   schedGrossAssetBase: number; // exact fixedAssetsGross
+}
+
+// ---------------- REPAYMENT SCHEDULE INTEGRATION & DEBT SERVICING TYPES ---------------- //
+export interface RepaymentInstallmentRow {
+  id: string;
+  installmentNo: number;
+  eventType: string;
+  emiDateRaw: string;
+  emiDateISO: string;
+  financialYear: number;
+  instPrincipal: number;
+  instProfit: number;
+  gestationPayment: number;
+  overdueGestation: number;
+  overdueProfit: number;
+  balance: number;
+  totalInstallment: number;
+  isDisbursement?: boolean;
+}
+
+export interface RepaymentScheduleMetadata {
+  sourceFileName: string;
+  parserMethod: 'pdf-text' | 'excel' | 'csv' | 'gemini-ocr' | 'manual-paste' | 'ababil-reference';
+  investmentMade?: number;
+  interval?: string;
+  numberOfInstallments?: number;
+  disbursementDate?: string;
+  firstInstallmentDate?: string;
+  expiryDate?: string;
+  statedTotalPrincipal?: number;
+  statedTotalProfit?: number;
+  dateFormatDetected: 'DD/MM/YYYY' | 'MM/DD/YYYY' | 'YYYY-MM-DD' | 'EXCEL_SERIAL';
+  uploadedAt: string;
+}
+
+export interface AnnualRepaymentSummary {
+  financialYear: number;
+  installmentCount: number;
+  totalPrincipal: number; // Exact sum of Inst. Principal -> Repayment from Borrowings and Financing
+  totalProfit: number; // Exact sum of Inst. Profit -> Finance Cost
+  totalDebtService: number;
+  disbursementAmount: number;
+  closingBalance: number;
+  isSelectedInModel: boolean;
+}
+
+export interface ParsedRepaymentSchedule {
+  metadata: RepaymentScheduleMetadata;
+  rows: RepaymentInstallmentRow[];
+  annualSummaries: AnnualRepaymentSummary[];
+  grandTotalPrincipal: number;
+  grandTotalProfit: number;
+  grandTotalDebtService: number;
+  validationErrors: string[];
+  validationWarnings: string[];
+  isValid: boolean;
+}
+
+export interface DebtServiceCoverageYear {
+  year: number;
+  isProjected: boolean;
+  scheduledPrincipal: number;
+  scheduledFinanceCost: number;
+  totalDebtService: number;
+  ebitda: number;
+  operatingCashFlowBeforeFinance: number;
+  ebitdaDscr: number;
+  cashDscr: number;
+  interestCoverage: number;
+  closingCash: number;
+  netCashAfterDebtService: number;
+  isScheduleCovered: boolean;
+  capacityStatus: 'STRONG' | 'ADEQUATE' | 'TIGHT' | 'DEFICIT';
+}
+
+export interface RepaymentScheduleSnapshot {
+  capturedAt: string;
+  historicalYearsStore: Record<number, YearDataInput>;
+  customProjectedOverrides: Record<number, YearDataInput>;
+  assumptions: ProjectionAssumptions;
+  autoFillConfigs: AutoFillConfigs;
+  companyProfile: CompanyProfile;
+  cellOverrides: StatementCellOverrides;
 }
 

@@ -1,12 +1,33 @@
 import React from 'react';
-import { Scale, CheckCircle2, AlertTriangle, ShieldCheck } from 'lucide-react';
-import { CashFlowStatementYear, BalanceSheetYear, CompanyProfile, FinancialValidationIssue } from '../types/financial';
+import { Scale, CheckCircle2, AlertTriangle, ShieldCheck, CalendarCheck2, ArrowUpRight } from 'lucide-react';
+import {
+  CashFlowStatementYear,
+  BalanceSheetYear,
+  CompanyProfile,
+  FinancialValidationIssue,
+  DebtServiceCoverageYear,
+  ParsedRepaymentSchedule,
+} from '../types/financial';
+
+function fmtAuditNum(val: number): string {
+  if (Math.abs(val) < 0.005) return '0';
+  const absVal = Math.abs(val);
+  const hasCents = Math.abs(absVal - Math.round(absVal)) >= 0.005;
+  const s = hasCents
+    ? absVal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : Math.round(absVal).toLocaleString('en-US');
+  return val < 0 ? `-${s}` : s;
+}
 
 interface CashFlowReconciliationAuditProps {
   cashFlowYears: CashFlowStatementYear[];
   balanceSheetYears: BalanceSheetYear[];
   companyProfile: CompanyProfile;
   validationIssues?: FinancialValidationIssue[];
+  debtServiceCoverage?: DebtServiceCoverageYear[];
+  isScheduleImplemented?: boolean;
+  parsedSchedule?: ParsedRepaymentSchedule | null;
+  onJumpToRepaymentSchedule?: () => void;
 }
 
 export const CashFlowReconciliationAudit: React.FC<CashFlowReconciliationAuditProps> = ({
@@ -14,10 +35,15 @@ export const CashFlowReconciliationAudit: React.FC<CashFlowReconciliationAuditPr
   balanceSheetYears,
   companyProfile,
   validationIssues = [],
+  debtServiceCoverage = [],
+  isScheduleImplemented = false,
+  parsedSchedule = null,
+  onJumpToRepaymentSchedule,
 }) => {
   const reconciledCount = cashFlowYears.filter(cf => cf.reconciliationDifference === 0).length;
   const isAllReconciled = reconciledCount === cashFlowYears.length;
   const balancedBSCount = balanceSheetYears.filter(bs => Math.abs(bs.balanceCheck) <= 1).length;
+  const scheduleCoverageYears = debtServiceCoverage.filter(d => d.totalDebtService > 0);
 
   return (
     <div className="space-y-6">
@@ -45,11 +71,24 @@ export const CashFlowReconciliationAudit: React.FC<CashFlowReconciliationAuditPr
             </div>
           </div>
 
-          <div className="flex items-center gap-2 bg-slate-950/80 border border-slate-800 px-3.5 py-2 rounded-xl shrink-0">
-            <div className={`w-2.5 h-2.5 rounded-full ${isAllReconciled ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
-            <span className="text-xs font-mono font-bold text-white">
-              {reconciledCount} / {cashFlowYears.length} Periods Reconciled · BS {balancedBSCount}/{balanceSheetYears.length}
-            </span>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {onJumpToRepaymentSchedule && (
+              <button
+                type="button"
+                onClick={onJumpToRepaymentSchedule}
+                className="px-3 py-2 bg-emerald-600/90 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
+              >
+                <CalendarCheck2 className="w-3.5 h-3.5" />
+                <span>{isScheduleImplemented ? 'Repayment Schedule Active' : 'Repayment Schedule'}</span>
+                <ArrowUpRight className="w-3.5 h-3.5" />
+              </button>
+            )}
+            <div className="flex items-center gap-2 bg-slate-950/80 border border-slate-800 px-3.5 py-2 rounded-xl">
+              <div className={`w-2.5 h-2.5 rounded-full ${isAllReconciled ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+              <span className="text-xs font-mono font-bold text-white">
+                {reconciledCount} / {cashFlowYears.length} Periods Reconciled · BS {balancedBSCount}/{balanceSheetYears.length}
+              </span>
+            </div>
           </div>
         </div>
       </div>
@@ -178,7 +217,7 @@ export const CashFlowReconciliationAudit: React.FC<CashFlowReconciliationAuditPr
                 <td className="py-2.5 px-4 font-sans text-slate-200 font-medium">A. Operating Cash Flow (Calculated)</td>
                 {cashFlowYears.map(cf => (
                   <td key={cf.year} className={`py-2.5 px-3 text-right font-medium ${cf.netCashFromOperating >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                    {cf.netCashFromOperating.toLocaleString()}
+                    {fmtAuditNum(cf.netCashFromOperating)}
                   </td>
                 ))}
               </tr>
@@ -187,7 +226,7 @@ export const CashFlowReconciliationAudit: React.FC<CashFlowReconciliationAuditPr
                 <td className="py-2.5 px-4 font-sans text-slate-200 font-medium">B. Investing Cash Flow (Calculated)</td>
                 {cashFlowYears.map(cf => (
                   <td key={cf.year} className={`py-2.5 px-3 text-right font-medium ${cf.netCashFromInvesting >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                    {cf.netCashFromInvesting.toLocaleString()}
+                    {fmtAuditNum(cf.netCashFromInvesting)}
                   </td>
                 ))}
               </tr>
@@ -201,7 +240,7 @@ export const CashFlowReconciliationAudit: React.FC<CashFlowReconciliationAuditPr
                 </td>
                 {cashFlowYears.map(cf => (
                   <td key={cf.year} className="py-2.5 px-3 text-right text-amber-300 font-bold">
-                    {cf.directlyEnteredFinancingCashFlow.toLocaleString()}
+                    {fmtAuditNum(cf.directlyEnteredFinancingCashFlow)}
                   </td>
                 ))}
               </tr>
@@ -210,7 +249,7 @@ export const CashFlowReconciliationAudit: React.FC<CashFlowReconciliationAuditPr
                 <td className="py-2.5 px-4 font-sans text-white">Net Change in Cash (A + B + C)</td>
                 {cashFlowYears.map(cf => (
                   <td key={cf.year} className={`py-2.5 px-3 text-right font-bold ${cf.netChangeInCash >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>
-                    {cf.netChangeInCash.toLocaleString()}
+                    {fmtAuditNum(cf.netChangeInCash)}
                   </td>
                 ))}
               </tr>
@@ -219,7 +258,7 @@ export const CashFlowReconciliationAudit: React.FC<CashFlowReconciliationAuditPr
                 <td className="py-2.5 px-4 font-sans text-slate-400">Opening Cash & Cash Equivalents</td>
                 {cashFlowYears.map(cf => (
                   <td key={cf.year} className="py-2.5 px-3 text-right text-slate-300">
-                    {cf.openingCash.toLocaleString()}
+                    {fmtAuditNum(cf.openingCash)}
                   </td>
                 ))}
               </tr>
@@ -229,7 +268,7 @@ export const CashFlowReconciliationAudit: React.FC<CashFlowReconciliationAuditPr
                 <td className="py-3 px-4 font-sans text-sm">Closing Cash Derived (Opening + Net Change)</td>
                 {cashFlowYears.map(cf => (
                   <td key={cf.year} className="py-3 px-3 text-right text-emerald-400 font-bold text-sm">
-                    {cf.closingCashCalculated.toLocaleString()}
+                    {fmtAuditNum(cf.closingCashCalculated)}
                   </td>
                 ))}
               </tr>
@@ -238,7 +277,7 @@ export const CashFlowReconciliationAudit: React.FC<CashFlowReconciliationAuditPr
                 <td className="py-2.5 px-4 font-sans text-sky-400">Stated Cash in Statement of Financial Position</td>
                 {cashFlowYears.map(cf => (
                   <td key={cf.year} className="py-2.5 px-3 text-right text-sky-400 font-semibold">
-                    {cf.balanceSheetCash.toLocaleString()}
+                    {fmtAuditNum(cf.balanceSheetCash)}
                   </td>
                 ))}
               </tr>
@@ -249,10 +288,10 @@ export const CashFlowReconciliationAudit: React.FC<CashFlowReconciliationAuditPr
                   <span className="text-[10px] text-slate-400 font-normal font-sans">(Derived - Stated)</span>
                 </td>
                 {cashFlowYears.map(cf => {
-                  const isZero = cf.reconciliationDifference === 0;
+                  const isZero = Math.abs(cf.reconciliationDifference) < 0.005;
                   return (
                     <td key={cf.year} className={`py-3 px-3 text-right ${isZero ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}`}>
-                      {cf.reconciliationDifference > 0 ? `+${cf.reconciliationDifference.toLocaleString()}` : cf.reconciliationDifference.toLocaleString()}
+                      {cf.reconciliationDifference > 0 ? `+${fmtAuditNum(cf.reconciliationDifference)}` : fmtAuditNum(cf.reconciliationDifference)}
                     </td>
                   );
                 })}
@@ -261,7 +300,7 @@ export const CashFlowReconciliationAudit: React.FC<CashFlowReconciliationAuditPr
               <tr className="bg-slate-900/90 font-sans">
                 <td className="py-2.5 px-4 text-slate-400 text-[11px] font-medium">Audit Verdict</td>
                 {cashFlowYears.map(cf => {
-                  const isZero = cf.reconciliationDifference === 0;
+                  const isZero = Math.abs(cf.reconciliationDifference) < 0.005;
                   return (
                     <td key={cf.year} className="py-2.5 px-3 text-right">
                       {isZero ? (
@@ -281,6 +320,102 @@ export const CashFlowReconciliationAudit: React.FC<CashFlowReconciliationAuditPr
           </table>
         </div>
       </div>
+
+      {/* Debt Servicing & Repayment Capacity Audit Matrix */}
+      {scheduleCoverageYears.length > 0 && (
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
+          <div className="p-4 border-b border-slate-800 bg-slate-850/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-mono uppercase tracking-widest text-emerald-400 font-bold">
+                  {parsedSchedule?.metadata?.sourceFileName || companyProfile.companyName}
+                </span>
+                {parsedSchedule?.metadata?.investmentMade && (
+                  <>
+                    <span className="text-slate-600">·</span>
+                    <span className="text-[10px] font-mono text-slate-400">
+                      Principal Facility {fmtAuditNum(parsedSchedule.metadata.investmentMade)}
+                    </span>
+                  </>
+                )}
+              </div>
+              <h3 className="text-sm font-bold text-white tracking-tight mt-0.5">
+                Debt Servicing &amp; Repayment Capacity Audit (DSCR)
+              </h3>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                Annual verification that Operating Cash Flow and EBITDA sustain Scheduled Installment Principal + Profit obligations.
+              </p>
+            </div>
+            <span className={`text-xs font-mono font-bold px-2.5 py-1 rounded border ${
+              isScheduleImplemented
+                ? 'text-emerald-300 bg-emerald-950/80 border-emerald-700/70'
+                : 'text-sky-300 bg-sky-950/80 border-sky-700/70'
+            }`}>
+              {isScheduleImplemented ? 'Schedule Locked & Implemented' : 'Model Debt Servicing'}
+            </span>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs font-mono">
+              <thead className="bg-slate-800/90 text-slate-300 border-b border-slate-700 text-[11px]">
+                <tr>
+                  <th className="py-2.5 px-4 font-sans font-semibold text-white">Year</th>
+                  <th className="py-2.5 px-3 text-right">EBITDA</th>
+                  <th className="py-2.5 px-3 text-right">Pre-Fin OCF</th>
+                  <th className="py-2.5 px-3 text-right text-amber-300">Principal</th>
+                  <th className="py-2.5 px-3 text-right text-sky-300">Finance Cost</th>
+                  <th className="py-2.5 px-3 text-right text-white">Total Debt Service</th>
+                  <th className="py-2.5 px-3 text-right">EBITDA DSCR</th>
+                  <th className="py-2.5 px-3 text-right">Cash DSCR</th>
+                  <th className="py-2.5 px-3 text-right">Closing Cash</th>
+                  <th className="py-2.5 px-4 text-right">Capacity Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/60 tabular-nums">
+                {debtServiceCoverage.map(row => (
+                  <tr key={row.year} className="hover:bg-slate-800/20">
+                    <td className="py-2.5 px-4 font-bold text-white">
+                      {row.year}{' '}
+                      <span className="text-[9px] font-normal text-slate-400">
+                        {row.isProjected ? '(P)' : '(H)'}{row.isScheduleCovered ? ' · Covered' : ''}
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-3 text-right text-slate-200">{fmtAuditNum(row.ebitda)}</td>
+                    <td className="py-2.5 px-3 text-right text-slate-200">{fmtAuditNum(row.operatingCashFlowBeforeFinance)}</td>
+                    <td className="py-2.5 px-3 text-right text-amber-300 font-semibold">{fmtAuditNum(row.scheduledPrincipal)}</td>
+                    <td className="py-2.5 px-3 text-right text-sky-300 font-semibold">{fmtAuditNum(row.scheduledFinanceCost)}</td>
+                    <td className="py-2.5 px-3 text-right text-white font-bold">{fmtAuditNum(row.totalDebtService)}</td>
+                    <td className={`py-2.5 px-3 text-right font-bold ${
+                      row.ebitdaDscr >= 1.25 ? 'text-emerald-400' : row.ebitdaDscr >= 1.0 ? 'text-amber-300' : 'text-rose-400'
+                    }`}>
+                      {row.totalDebtService > 0 ? `${row.ebitdaDscr.toFixed(2)}x` : '-'}
+                    </td>
+                    <td className={`py-2.5 px-3 text-right font-bold ${
+                      row.cashDscr >= 1.15 ? 'text-emerald-400' : row.cashDscr >= 1.0 ? 'text-amber-300' : 'text-rose-400'
+                    }`}>
+                      {row.totalDebtService > 0 ? `${row.cashDscr.toFixed(2)}x` : '-'}
+                    </td>
+                    <td className="py-2.5 px-3 text-right text-emerald-300">{fmtAuditNum(row.closingCash)}</td>
+                    <td className="py-2.5 px-4 text-right font-sans">
+                      <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded border ${
+                        row.capacityStatus === 'STRONG'
+                          ? 'bg-emerald-950/70 text-emerald-300 border-emerald-700/60'
+                          : row.capacityStatus === 'ADEQUATE'
+                          ? 'bg-sky-950/70 text-sky-300 border-sky-700/60'
+                          : row.capacityStatus === 'TIGHT'
+                          ? 'bg-amber-950/70 text-amber-300 border-amber-700/60'
+                          : 'bg-rose-950/70 text-rose-300 border-rose-700/60'
+                      }`}>
+                        {row.capacityStatus}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

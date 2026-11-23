@@ -25,6 +25,7 @@ import {
   FinancialNoteItem,
   PreviousFormatYearData,
   ProjectedFormatYearData,
+  DebtServiceCoverageYear,
 } from '../types/financial';
 
 function downloadBlob(blob: Blob, filename: string) {
@@ -46,24 +47,38 @@ function colLetter(colIdxZeroBased: number): string {
   return XLSX.utils.encode_col(colIdxZeroBased);
 }
 
+function fmtExportNum(val: number): string {
+  if (Math.abs(val) < 0.005) return '-';
+  const absVal = Math.abs(val);
+  const hasCents = Math.abs(absVal - Math.round(absVal)) >= 0.005;
+  const formatted = hasCents
+    ? absVal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : Math.round(absVal).toLocaleString('en-US');
+  return val < 0 ? `(${formatted})` : formatted;
+}
+
 /**
  * Builds an editable Excel formula cell with cached numeric value
  * so spreadsheets evaluate dynamically in Excel, LibreOffice, and Google Sheets.
  */
 function fCell(formula: string, cachedValue: number): XLSX.CellObject {
+  const num = Number.isFinite(cachedValue) ? cachedValue : 0;
+  const hasCents = Math.abs(num - Math.round(num)) >= 0.005;
   return {
     t: 'n',
-    v: Number.isFinite(cachedValue) ? cachedValue : 0,
+    v: num,
     f: formula,
-    z: '#,##0;(#,##0);"-"',
+    z: hasCents ? '#,##0.00;(#,##0.00);"-"' : '#,##0;(#,##0);"-"',
   };
 }
 
 function nCell(value: number): XLSX.CellObject {
+  const num = Number.isFinite(value) ? value : 0;
+  const hasCents = Math.abs(num - Math.round(num)) >= 0.005;
   return {
     t: 'n',
-    v: Number.isFinite(value) ? value : 0,
-    z: '#,##0;(#,##0);"-"',
+    v: num,
+    z: hasCents ? '#,##0.00;(#,##0.00);"-"' : '#,##0;(#,##0);"-"',
   };
 }
 
@@ -522,6 +537,46 @@ export function exportNotesExcel(
   XLSX.writeFile(wb, filename);
 }
 
+function buildDebtServiceCoverageWorksheet(
+  company: CompanyProfile,
+  dscrData: DebtServiceCoverageYear[]
+): XLSX.WorkSheet {
+  const headers = [
+    'Year',
+    'Period',
+    'EBITDA',
+    'Pre-Fin OCF',
+    'Scheduled Principal (Inst. Principal)',
+    'Scheduled Finance Cost (Inst. Profit)',
+    'Total Debt Service',
+    'EBITDA DSCR (x)',
+    'Cash DSCR (x)',
+    'Closing Cash',
+    'Capacity Status',
+  ];
+  const r = STD_DATA_START_ROW;
+  const rows: ExcelCellValue[][] = dscrData.map((d, idx) => {
+    const rowNum = r + idx;
+    return [
+      d.year,
+      d.isProjected ? 'Projected' : 'Historical',
+      nCell(d.ebitda),
+      nCell(d.operatingCashFlowBeforeFinance),
+      nCell(d.scheduledPrincipal),
+      nCell(d.scheduledFinanceCost),
+      fCell(`E${rowNum}+F${rowNum}`, d.totalDebtService),
+      Number(d.ebitdaDscr.toFixed(2)),
+      Number(d.cashDscr.toFixed(2)),
+      nCell(d.closingCash),
+      d.capacityStatus,
+    ];
+  });
+  const sheetData = createTableDataForStatement('Debt Servicing & Repayment Capacity (DSCR)', company, headers, rows);
+  const ws = XLSX.utils.aoa_to_sheet(sheetData);
+  applyColumnWidths(ws, [10, 12, 16, 16, 26, 26, 20, 14, 14, 18, 16]);
+  return ws;
+}
+
 // COMPLETE COMBINED EXCEL PACKAGE (Section 76.11.A)
 export function exportCompletePackageExcel(
   company: CompanyProfile,
@@ -531,7 +586,8 @@ export function exportCompletePackageExcel(
   equityData: EquityStatementYear[],
   fixedAssetsData: ScheduleOfFixedAssetsYear[],
   notes: FinancialNoteItem[],
-  filename = `${company.companyName.replace(/\s+/g, '_')}_Complete_Financial_Package.xlsx`
+  filename = `${company.companyName.replace(/\s+/g, '_')}_Complete_Financial_Package.xlsx`,
+  debtServiceCoverage?: DebtServiceCoverageYear[]
 ) {
   const wb = XLSX.utils.book_new();
 
@@ -562,6 +618,11 @@ export function exportCompletePackageExcel(
   const wsNotes = XLSX.utils.aoa_to_sheet(notesRows);
   applyColumnWidths(wsNotes, [45, 22, 22, 22]);
   XLSX.utils.book_append_sheet(wb, wsNotes, '6. Notes to Financials');
+
+  const activeDscr = (debtServiceCoverage || []).filter(d => d.totalDebtService > 0);
+  if (activeDscr.length > 0) {
+    XLSX.utils.book_append_sheet(wb, buildDebtServiceCoverageWorksheet(company, activeDscr), '7. Debt Servicing & DSCR');
+  }
 
   XLSX.writeFile(wb, filename);
 }
@@ -612,7 +673,7 @@ function createDocxTable(headers: string[], rows: (string | number)[][], leftCol
             children: [new Paragraph({
               children: [new TextRun({
                 text: typeof cell === 'number'
-                  ? (cell === 0 ? '-' : (cell < 0 ? `(${Math.abs(cell).toLocaleString()})` : cell.toLocaleString()))
+                  ? fmtExportNum(cell)
                   : String(cell),
                 size: 17,
                 bold: isBoldRow,
@@ -690,7 +751,8 @@ export async function exportCompletePackageWord(
   equityData: EquityStatementYear[],
   fixedAssetsData: ScheduleOfFixedAssetsYear[],
   notes: FinancialNoteItem[],
-  filename = `${company.companyName.replace(/\s+/g, '_')}_Complete_Package.docx`
+  filename = `${company.companyName.replace(/\s+/g, '_')}_Complete_Package.docx`,
+  debtServiceCoverage?: DebtServiceCoverageYear[]
 ) {
   const isHeaders = ['Item', ...incomeData.map(d => `${d.year}${d.isProjected ? ' (P)' : ''}`)];
   const isRows: (string | number)[][] = [
@@ -795,6 +857,29 @@ export async function exportCompletePackageWord(
             ...(n.tableData ? [createDocxTable(n.tableData.headers, n.tableData.rows.map(r => [r.label, ...r.values]))] : []),
             new Paragraph({ text: '' }),
           ]),
+
+          ...((debtServiceCoverage || []).some(d => d.totalDebtService > 0)
+            ? [
+                new Paragraph({ text: '7. Debt Servicing & Repayment Capacity Analysis (DSCR)', heading: HeadingLevel.HEADING_2 }),
+                createDocxTable(
+                  ['Year', 'EBITDA', 'Pre-Fin OCF', 'Inst. Principal', 'Finance Cost', 'Total Debt Service', 'EBITDA DSCR', 'Cash DSCR', 'Closing Cash', 'Status'],
+                  (debtServiceCoverage || [])
+                    .filter(d => d.totalDebtService > 0)
+                    .map(d => [
+                      `${d.year}${d.isProjected ? ' (P)' : ''}`,
+                      d.ebitda,
+                      d.operatingCashFlowBeforeFinance,
+                      d.scheduledPrincipal,
+                      d.scheduledFinanceCost,
+                      d.totalDebtService,
+                      `${d.ebitdaDscr.toFixed(2)}x`,
+                      `${d.cashDscr.toFixed(2)}x`,
+                      d.closingCash,
+                      d.capacityStatus,
+                    ])
+                ),
+              ]
+            : []),
         ],
       },
     ],
@@ -830,7 +915,7 @@ export function exportDocumentPdf(
 
   autoTable(doc, {
     head: [headers],
-    body: rows.map(r => r.map(c => typeof c === 'number' ? c.toLocaleString() : String(c))),
+    body: rows.map(r => r.map(c => typeof c === 'number' ? fmtExportNum(c) : String(c))),
     startY: 28,
     styles: { fontSize: 8, cellPadding: 2, font: 'helvetica' },
     headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: 'bold' },
@@ -865,7 +950,8 @@ export function exportCompletePackagePdf(
   equityData: EquityStatementYear[],
   fixedAssetsData: ScheduleOfFixedAssetsYear[],
   notes: FinancialNoteItem[],
-  filename = `${company.companyName.replace(/\s+/g, '_')}_Complete_Financial_Package.pdf`
+  filename = `${company.companyName.replace(/\s+/g, '_')}_Complete_Financial_Package.pdf`,
+  debtServiceCoverage?: DebtServiceCoverageYear[]
 ) {
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
 
@@ -924,7 +1010,7 @@ export function exportCompletePackagePdf(
   ];
   autoTable(doc, {
     head: [isHeaders],
-    body: isRows.map(r => r.map(c => typeof c === 'number' ? c.toLocaleString() : String(c))),
+    body: isRows.map(r => r.map(c => typeof c === 'number' ? fmtExportNum(c) : String(c))),
     startY: 28,
     styles: { fontSize: 8, cellPadding: 2 },
     headStyles: { fillColor: [30, 41, 59] },
@@ -956,7 +1042,7 @@ export function exportCompletePackagePdf(
   ];
   autoTable(doc, {
     head: [bsHeaders],
-    body: bsRows.map(r => r.map(c => typeof c === 'number' ? c.toLocaleString() : String(c))),
+    body: bsRows.map(r => r.map(c => typeof c === 'number' ? fmtExportNum(c) : String(c))),
     startY: 28,
     styles: { fontSize: 8, cellPadding: 2 },
     headStyles: { fillColor: [30, 41, 59] },
@@ -993,7 +1079,7 @@ export function exportCompletePackagePdf(
   ];
   autoTable(doc, {
     head: [cfHeaders],
-    body: cfRows.map(r => r.map(c => typeof c === 'number' ? c.toLocaleString() : String(c))),
+    body: cfRows.map(r => r.map(c => typeof c === 'number' ? fmtExportNum(c) : String(c))),
     startY: 28,
     styles: { fontSize: 7.5, cellPadding: 1.8 },
     headStyles: { fillColor: [30, 41, 59] },
@@ -1016,7 +1102,7 @@ export function exportCompletePackagePdf(
   ];
   autoTable(doc, {
     head: [eqHeaders],
-    body: eqRows.map(r => r.map(c => typeof c === 'number' ? c.toLocaleString() : String(c))),
+    body: eqRows.map(r => r.map(c => typeof c === 'number' ? fmtExportNum(c) : String(c))),
     startY: 28,
     styles: { fontSize: 8, cellPadding: 2 },
     headStyles: { fillColor: [30, 41, 59] },
@@ -1033,7 +1119,7 @@ export function exportCompletePackagePdf(
   faRows.push(['TOTAL PPE', latestFA.totalCostOpening, latestFA.totalAdditions, latestFA.totalDisposals, latestFA.totalCostClosing, latestFA.totalDepOpening, latestFA.totalDepCharge, latestFA.totalDepClosing, latestFA.totalNetBookValue]);
   autoTable(doc, {
     head: [faHeaders],
-    body: faRows.map(r => r.map(c => typeof c === 'number' ? c.toLocaleString() : String(c))),
+    body: faRows.map(r => r.map(c => typeof c === 'number' ? fmtExportNum(c) : String(c))),
     startY: 28,
     styles: { fontSize: 8, cellPadding: 2 },
     headStyles: { fillColor: [30, 41, 59] },
@@ -1062,6 +1148,30 @@ export function exportCompletePackagePdf(
     doc.text(splitText, 14, yPos);
     yPos += splitText.length * 4 + 4;
   });
+
+  const activeDscr = (debtServiceCoverage || []).filter(d => d.totalDebtService > 0);
+  if (activeDscr.length > 0) {
+    doc.addPage();
+    renderPdfHeader(doc, company, '7. DEBT SERVICING & REPAYMENT CAPACITY ANALYSIS (DSCR)');
+    autoTable(doc, {
+      head: [['Year', 'EBITDA', 'Pre-Fin OCF', 'Inst. Principal', 'Finance Cost', 'Total Debt Service', 'EBITDA DSCR', 'Cash DSCR', 'Closing Cash', 'Status']],
+      body: activeDscr.map(d => [
+        `${d.year}${d.isProjected ? ' (P)' : ''}`,
+        fmtExportNum(d.ebitda),
+        fmtExportNum(d.operatingCashFlowBeforeFinance),
+        fmtExportNum(d.scheduledPrincipal),
+        fmtExportNum(d.scheduledFinanceCost),
+        fmtExportNum(d.totalDebtService),
+        `${d.ebitdaDscr.toFixed(2)}x`,
+        `${d.cashDscr.toFixed(2)}x`,
+        fmtExportNum(d.closingCash),
+        d.capacityStatus,
+      ]),
+      startY: 28,
+      styles: { fontSize: 8, cellPadding: 2 },
+      headStyles: { fillColor: [30, 41, 59] },
+    });
+  }
 
   const totalPages = doc.getNumberOfPages();
   for (let i = 2; i <= totalPages; i++) {
@@ -1102,9 +1212,7 @@ function getCurrencyUnitCaption(company: CompanyProfile): string {
 }
 
 function fmtExactNum(val: number): string {
-  if (val === 0) return '-';
-  if (val < 0) return `(${Math.abs(val).toLocaleString()})`;
-  return val.toLocaleString();
+  return fmtExportNum(val);
 }
 
 export function exportPreviousFinancialsExcel(

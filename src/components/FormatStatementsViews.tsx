@@ -28,9 +28,13 @@ import {
 } from '../services/exportService';
 
 function fmtCell(val: number): string {
-  if (val === 0) return '-';
-  if (val < 0) return `(${Math.abs(val).toLocaleString()})`;
-  return val.toLocaleString();
+  if (Math.abs(val) < 0.005) return '-';
+  const absVal = Math.abs(val);
+  const hasCents = Math.abs(absVal - Math.round(absVal)) >= 0.005;
+  const formatted = hasCents
+    ? absVal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : Math.round(absVal).toLocaleString('en-US');
+  return val < 0 ? `(${formatted})` : formatted;
 }
 
 interface InlineDriverInputProps {

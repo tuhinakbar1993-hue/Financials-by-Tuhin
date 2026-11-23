@@ -15,6 +15,8 @@ import {
   Building2,
   ShieldCheck,
   Calendar,
+  CalendarCheck2,
+  ArrowUpRight,
 } from 'lucide-react';
 import {
   CompanyProfile,
@@ -33,6 +35,8 @@ import {
   PreviousFormatYearData,
   ProjectedFormatYearData,
   YearDataInput,
+  DebtServiceCoverageYear,
+  ParsedRepaymentSchedule,
 } from '../types/financial';
 import {
   exportIncomeStatementExcel,
@@ -80,6 +84,10 @@ interface StatementsViewerProps {
   onSetHistoricalYears?: (years: number[]) => void;
   onSetProjectedYears?: (years: number[]) => void;
   onUpdatePrimaryDriver?: (year: number, driver: keyof YearDataInput, val: number) => void;
+  debtServiceCoverage?: DebtServiceCoverageYear[];
+  isScheduleImplemented?: boolean;
+  parsedSchedule?: ParsedRepaymentSchedule | null;
+  onJumpToRepaymentSchedule?: () => void;
 }
 
 export const StatementsViewer: React.FC<StatementsViewerProps> = ({
@@ -111,6 +119,10 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
   onSetHistoricalYears,
   onSetProjectedYears,
   onUpdatePrimaryDriver,
+  debtServiceCoverage = [],
+  isScheduleImplemented = false,
+  parsedSchedule = null,
+  onJumpToRepaymentSchedule,
 }) => {
   const [activeStatement, setActiveStatement] = useState<string>('cashFlow');
   const [yearViewMode, setYearViewMode] = useState<'all' | 'historical' | 'projected' | 'comparative5'>('all');
@@ -191,14 +203,34 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         exportNotesExcel(companyProfile, notes);
         break;
       case 'complete':
-        exportCompletePackageExcel(companyProfile, filteredIncome, filteredBalance, filteredCashFlow, filteredEquity, filteredFixedAssets, notes);
+        exportCompletePackageExcel(
+          companyProfile,
+          filteredIncome,
+          filteredBalance,
+          filteredCashFlow,
+          filteredEquity,
+          filteredFixedAssets,
+          notes,
+          undefined,
+          isScheduleImplemented ? debtServiceCoverage : undefined
+        );
         break;
     }
   };
 
   const handleExportWord = () => {
     if (activeStatement === 'complete') {
-      exportCompletePackageWord(companyProfile, filteredIncome, filteredBalance, filteredCashFlow, filteredEquity, filteredFixedAssets, notes);
+      exportCompletePackageWord(
+        companyProfile,
+        filteredIncome,
+        filteredBalance,
+        filteredCashFlow,
+        filteredEquity,
+        filteredFixedAssets,
+        notes,
+        undefined,
+        isScheduleImplemented ? debtServiceCoverage : undefined
+      );
       return;
     }
     const { title, headers, rows } = getTableDataForExport(activeStatement);
@@ -207,7 +239,17 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
 
   const handleExportPdf = () => {
     if (activeStatement === 'complete') {
-      exportCompletePackagePdf(companyProfile, filteredIncome, filteredBalance, filteredCashFlow, filteredEquity, filteredFixedAssets, notes);
+      exportCompletePackagePdf(
+        companyProfile,
+        filteredIncome,
+        filteredBalance,
+        filteredCashFlow,
+        filteredEquity,
+        filteredFixedAssets,
+        notes,
+        undefined,
+        isScheduleImplemented ? debtServiceCoverage : undefined
+      );
       return;
     }
     const { title, headers, rows } = getTableDataForExport(activeStatement);
@@ -319,6 +361,23 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
 
           {/* Global Controls: Year Selector, Edit Mode Toggle & Export Strip */}
           <div className="flex flex-wrap items-center gap-2">
+            {onJumpToRepaymentSchedule && (
+              <button
+                type="button"
+                onClick={onJumpToRepaymentSchedule}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all flex items-center gap-1.5 ${
+                  isScheduleImplemented
+                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-400 shadow-sm'
+                    : 'bg-slate-800 hover:bg-emerald-600/80 text-emerald-300 hover:text-white border-slate-700'
+                }`}
+                title="Open Repayment Schedule Upload & DSCR Studio"
+              >
+                <CalendarCheck2 className="w-3.5 h-3.5" />
+                <span>{isScheduleImplemented ? 'Schedule Locked' : 'Repayment Schedule'}</span>
+                <ArrowUpRight className="w-3 h-3" />
+              </button>
+            )}
+
             {onToggleHistoricalYear && onToggleProjectedYear && onSetHistoricalYears && onSetProjectedYears && (
               <button
                 type="button"
@@ -571,16 +630,26 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
 
           {/* Render Statement Body */}
           {activeStatement === 'cashFlow' && (
-            <StatementOfCashFlowsTable
-              cashFlowData={filteredCashFlow}
-              currency={companyProfile.reportingCurrency}
-              companyProfile={companyProfile}
-              isEditMode={isEditMode}
-              getVal={getVal}
-              getLbl={getLbl}
-              onUpdateValue={onUpdateStatementValue}
-              onUpdateLabel={onUpdateStatementLabel}
-            />
+            <div className="space-y-6">
+              <StatementOfCashFlowsTable
+                cashFlowData={filteredCashFlow}
+                currency={companyProfile.reportingCurrency}
+                companyProfile={companyProfile}
+                isEditMode={isEditMode}
+                getVal={getVal}
+                getLbl={getLbl}
+                onUpdateValue={onUpdateStatementValue}
+                onUpdateLabel={onUpdateStatementLabel}
+              />
+              {isScheduleImplemented && debtServiceCoverage.some(d => d.totalDebtService > 0) && (
+                <DebtServiceCoverageSummaryPanel
+                  coverage={debtServiceCoverage}
+                  companyProfile={companyProfile}
+                  parsedSchedule={parsedSchedule}
+                  onJumpToRepaymentSchedule={onJumpToRepaymentSchedule}
+                />
+              )}
+            </div>
           )}
 
           {activeStatement === 'income' && (
@@ -650,6 +719,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
               equityData={filteredEquity}
               fixedAssetsData={filteredFixedAssets}
               notes={notes}
+              debtServiceCoverage={isScheduleImplemented ? debtServiceCoverage : []}
               onExportExcel={handleExportExcel}
               onExportWord={handleExportWord}
               onExportPdf={handleExportPdf}
@@ -702,6 +772,15 @@ const StatementMasthead: React.FC<StatementMastheadProps> = ({
     </div>
   );
 };
+
+function fmtStatementNum(val: number): string {
+  const absVal = Math.abs(val);
+  if (absVal < 0.005) return '0';
+  const hasCents = Math.abs(absVal - Math.round(absVal)) >= 0.005;
+  return hasCents
+    ? absVal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : Math.round(absVal).toLocaleString('en-US');
+}
 
 // ----------------- EDITABLE CELL COMPONENT ----------------- //
 interface EditableCellProps {
@@ -760,7 +839,7 @@ const EditableCell: React.FC<EditableCellProps> = ({
       title="Click to edit value directly"
       className={`cursor-pointer hover:underline hover:text-emerald-300 transition-colors font-mono tabular-nums ${className}`}
     >
-      {isNegative ? `(${Math.abs(val).toLocaleString()})` : val.toLocaleString()}
+      {isNegative || val < 0 ? `(${fmtStatementNum(val)})` : fmtStatementNum(val)}
     </span>
   );
 };
@@ -2257,6 +2336,99 @@ function NotesViewer({
   );
 }
 
+// ----------------- DEBT SERVICING & REPAYMENT CAPACITY (DSCR) PANEL ----------------- //
+function DebtServiceCoverageSummaryPanel({
+  coverage,
+  companyProfile,
+  parsedSchedule,
+  onJumpToRepaymentSchedule,
+}: {
+  coverage: DebtServiceCoverageYear[];
+  companyProfile: CompanyProfile;
+  parsedSchedule?: ParsedRepaymentSchedule | null;
+  onJumpToRepaymentSchedule?: () => void;
+}) {
+  const activeRows = coverage.filter(r => r.totalDebtService > 0);
+  if (activeRows.length === 0) return null;
+
+  return (
+    <div className="bg-slate-900 border border-emerald-700/50 rounded-2xl overflow-hidden shadow-sm">
+      <div className="p-4 border-b border-slate-800 bg-emerald-950/20 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <span className="text-[10px] font-mono uppercase tracking-widest text-emerald-400 font-bold">
+            Implemented Repayment Schedule Coverage · {parsedSchedule?.metadata?.sourceFileName || companyProfile.companyName}
+          </span>
+          <h4 className="text-sm font-bold text-white mt-0.5">
+            Debt Servicing &amp; Repayment Capacity Verification (DSCR)
+          </h4>
+        </div>
+        {onJumpToRepaymentSchedule && (
+          <button
+            type="button"
+            onClick={onJumpToRepaymentSchedule}
+            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-700/60 rounded-lg text-xs font-semibold flex items-center gap-1.5 self-start sm:self-auto"
+          >
+            <CalendarCheck2 className="w-3.5 h-3.5" />
+            <span>Inspect Schedule Ledger</span>
+            <ArrowUpRight className="w-3 h-3" />
+          </button>
+        )}
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-xs font-mono">
+          <thead className="bg-slate-800/90 text-slate-300 border-b border-slate-700 text-[11px]">
+            <tr>
+              <th className="py-2.5 px-4 font-sans font-semibold text-white">Year</th>
+              <th className="py-2.5 px-3 text-right">EBITDA</th>
+              <th className="py-2.5 px-3 text-right">Pre-Fin OCF</th>
+              <th className="py-2.5 px-3 text-right text-amber-300">Inst. Principal</th>
+              <th className="py-2.5 px-3 text-right text-sky-300">Finance Cost (Profit)</th>
+              <th className="py-2.5 px-3 text-right text-white">Total Debt Service</th>
+              <th className="py-2.5 px-3 text-right">EBITDA DSCR</th>
+              <th className="py-2.5 px-3 text-right">Cash DSCR</th>
+              <th className="py-2.5 px-3 text-right">Closing Cash</th>
+              <th className="py-2.5 px-4 text-right">Status</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-800/60 tabular-nums">
+            {activeRows.map(row => (
+              <tr key={row.year} className="hover:bg-slate-800/25">
+                <td className="py-2 px-4 font-bold text-white">
+                  {row.year} <span className="text-[10px] text-slate-400 font-normal">{row.isProjected ? '(P)' : '(H)'}</span>
+                </td>
+                <td className="py-2 px-3 text-right text-slate-200">{fmtStatementNum(row.ebitda)}</td>
+                <td className="py-2 px-3 text-right text-slate-200">{fmtStatementNum(row.operatingCashFlowBeforeFinance)}</td>
+                <td className="py-2 px-3 text-right text-amber-300 font-semibold">{fmtStatementNum(row.scheduledPrincipal)}</td>
+                <td className="py-2 px-3 text-right text-sky-300 font-semibold">{fmtStatementNum(row.scheduledFinanceCost)}</td>
+                <td className="py-2 px-3 text-right text-white font-bold">{fmtStatementNum(row.totalDebtService)}</td>
+                <td className={`py-2 px-3 text-right font-bold ${row.ebitdaDscr >= 1.25 ? 'text-emerald-400' : 'text-amber-300'}`}>
+                  {row.ebitdaDscr.toFixed(2)}x
+                </td>
+                <td className={`py-2 px-3 text-right font-bold ${row.cashDscr >= 1.15 ? 'text-emerald-400' : 'text-amber-300'}`}>
+                  {row.cashDscr.toFixed(2)}x
+                </td>
+                <td className="py-2 px-3 text-right text-emerald-300">{fmtStatementNum(row.closingCash)}</td>
+                <td className="py-2 px-4 text-right font-sans">
+                  <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded border ${
+                    row.capacityStatus === 'STRONG'
+                      ? 'bg-emerald-950/70 text-emerald-300 border-emerald-700/60'
+                      : row.capacityStatus === 'ADEQUATE'
+                      ? 'bg-sky-950/70 text-sky-300 border-sky-700/60'
+                      : 'bg-amber-950/70 text-amber-300 border-amber-700/60'
+                  }`}>
+                    {row.capacityStatus}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // ----------------- COMPLETE PACKAGE PREVIEW ----------------- //
 function CompletePackagePreview({
   companyProfile,
@@ -2266,6 +2438,7 @@ function CompletePackagePreview({
   equityData,
   fixedAssetsData,
   notes,
+  debtServiceCoverage = [],
   onExportExcel,
   onExportWord,
   onExportPdf,
@@ -2277,10 +2450,12 @@ function CompletePackagePreview({
   equityData: EquityStatementYear[];
   fixedAssetsData: ScheduleOfFixedAssetsYear[];
   notes: FinancialNoteItem[];
+  debtServiceCoverage?: DebtServiceCoverageYear[];
   onExportExcel: () => void;
   onExportWord: () => void;
   onExportPdf: () => void;
 }) {
+  const hasDscr = debtServiceCoverage.some(d => d.totalDebtService > 0);
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-800 pb-5">
@@ -2302,7 +2477,7 @@ function CompletePackagePreview({
             className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg shadow-sm transition-colors flex items-center gap-2"
           >
             <FileSpreadsheet className="w-4 h-4" />
-            Excel Workbook (6 Sheets)
+            Excel Workbook ({hasDscr ? '7' : '6'} Sheets)
           </button>
           <button
             onClick={onExportWord}
@@ -2347,6 +2522,12 @@ function CompletePackagePreview({
           <span className="text-slate-200 font-bold block">6. Notes to Financials (1 to 12)</span>
           <p className="text-slate-400">Accounting policies, statutory disclosures, and cash flow balance sheet audit reconciliations.</p>
         </div>
+        {hasDscr && (
+          <div className="p-4 bg-emerald-950/25 border border-emerald-700/50 rounded-xl space-y-1 md:col-span-2 lg:col-span-3">
+            <span className="text-emerald-300 font-bold block">7. Debt Servicing &amp; DSCR Schedule (Repayment Schedule Active)</span>
+            <p className="text-slate-300">Annual Scheduled Principal, Scheduled Profit (Finance Cost), EBITDA DSCR, Cash DSCR, and Closing Cash sustainability metrics.</p>
+          </div>
+        )}
       </div>
     </div>
   );

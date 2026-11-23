@@ -27,14 +27,19 @@ import {
   PrimaryDriverKey,
   AutoFillConfigs,
   FinancialValidationIssue,
+  ParsedRepaymentSchedule,
+  RepaymentScheduleSnapshot,
+  DebtServiceCoverageYear,
 } from '../types/financial';
 import {
   calculateFinancialRatios,
   FinancialRatios,
   PRIMARY_DRIVERS_METADATA,
   calculateDriverAutoFillSeries,
+  ImplementScheduleResult,
 } from '../services/financialEngine';
 import { YearSelectorControl } from './YearSelectorControl';
+import { RepaymentScheduleStudio } from './RepaymentScheduleStudio';
 
 interface FinancialDataEntryProps {
   yearsData: YearDataInput[];
@@ -59,6 +64,16 @@ interface FinancialDataEntryProps {
   onToggleProjectedYear?: (year: number) => void;
   onSetHistoricalYears?: (years: number[]) => void;
   onSetProjectedYears?: (years: number[]) => void;
+  parsedSchedule?: ParsedRepaymentSchedule | null;
+  onSetParsedSchedule?: (schedule: ParsedRepaymentSchedule | null) => void;
+  scheduleSnapshot?: RepaymentScheduleSnapshot | null;
+  isScheduleImplemented?: boolean;
+  lastImplementationResult?: ImplementScheduleResult | null;
+  debtServiceCoverage?: DebtServiceCoverageYear[];
+  onImplementRepaymentSchedule?: (options: { autoIncludeScheduleYears: boolean; alignHistoricalScale: boolean }) => void;
+  onRevertScheduleSnapshot?: () => void;
+  onUnlockScheduleYear?: (year: number) => void;
+  initialShowScheduleStudio?: boolean;
 }
 
 export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
@@ -83,14 +98,31 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
   onToggleProjectedYear,
   onSetHistoricalYears,
   onSetProjectedYears,
+  parsedSchedule = null,
+  onSetParsedSchedule,
+  scheduleSnapshot = null,
+  isScheduleImplemented = false,
+  lastImplementationResult = null,
+  debtServiceCoverage = [],
+  onImplementRepaymentSchedule,
+  onRevertScheduleSnapshot,
+  onUnlockScheduleYear,
+  initialShowScheduleStudio = true,
 }) => {
   const [viewMode, setViewMode] = useState<'grid' | 'single'>('grid');
   const [selectedYear, setSelectedYear] = useState<number>(yearsData[0]?.year || 2023);
   const [showInterconnectionLogic, setShowInterconnectionLogic] = useState<boolean>(false);
   const [showAutoFillPanel, setShowAutoFillPanel] = useState<boolean>(true);
+  const [showScheduleStudio, setShowScheduleStudio] = useState<boolean>(initialShowScheduleStudio);
   const [showYearSelector, setShowYearSelector] = useState<boolean>(false);
   const [activeModalDriver, setActiveModalDriver] = useState<PrimaryDriverKey | null>(null);
   const [activeNotification, setActiveNotification] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (initialShowScheduleStudio) {
+      setShowScheduleStudio(true);
+    }
+  }, [initialShowScheduleStudio]);
 
   // Independent base-year selections for each of the 6 drivers (initialized to 2024 or first year)
   const [selectedBaseYears, setSelectedBaseYears] = useState<Record<PrimaryDriverKey, number>>({
@@ -361,6 +393,22 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
               )}
             </button>
 
+            {/* Repayment Schedule & DSCR Toggle */}
+            {onSetParsedSchedule && onImplementRepaymentSchedule && onRevertScheduleSnapshot && (
+              <button
+                type="button"
+                onClick={() => setShowScheduleStudio(!showScheduleStudio)}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-xl border transition-all flex items-center gap-1.5 ${
+                  showScheduleStudio
+                    ? 'bg-emerald-600 border-emerald-400 text-white shadow-sm'
+                    : 'bg-slate-800 border-slate-700 text-slate-200 hover:bg-slate-700'
+                }`}
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                Repayment Schedule{isScheduleImplemented ? ' (Locked)' : ''}
+              </button>
+            )}
+
             {/* Interconnection Logic Info Toggle */}
             <button
               type="button"
@@ -432,6 +480,30 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
           onToggleProjectedYear={onToggleProjectedYear}
           onSetHistoricalYears={onSetHistoricalYears}
           onSetProjectedYears={onSetProjectedYears}
+        />
+      )}
+
+      {/* Repayment Schedule Upload, Implementation & DSCR Studio */}
+      {showScheduleStudio && onSetParsedSchedule && onImplementRepaymentSchedule && onRevertScheduleSnapshot && (
+        <RepaymentScheduleStudio
+          companyProfile={companyProfile}
+          allModelYears={yearsData.map(y => y.year)}
+          parsedSchedule={parsedSchedule}
+          onSetParsedSchedule={onSetParsedSchedule}
+          scheduleSnapshot={scheduleSnapshot}
+          isScheduleImplemented={isScheduleImplemented}
+          lastImplementationResult={lastImplementationResult}
+          debtServiceCoverage={debtServiceCoverage}
+          onImplementRepaymentSchedule={(opts) => {
+            onImplementRepaymentSchedule(opts);
+            setActiveNotification(
+              'Repayment schedule implemented! Exact annual Principal and Finance Cost are locked and projected cash flows are sustainably optimized.'
+            );
+          }}
+          onRevertScheduleSnapshot={() => {
+            onRevertScheduleSnapshot();
+            setActiveNotification('Reverted all financial figures back to the pre-schedule snapshot.');
+          }}
         />
       )}
 
@@ -831,16 +903,33 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
                           const isAuto = y.isProjected && inputMode === 'automatic';
                           const isBaseYear = activeConfig?.isActive && activeConfig?.baseYear === y.year;
                           const isAutoFilled = activeConfig?.isActive && activeConfig?.baseYear !== y.year;
+                          const isCellScheduleLocked = Boolean(
+                            y.isScheduleLocked &&
+                            (driver.field === 'repaymentOfBorrowings' || driver.field === 'financeCost')
+                          );
 
                           return (
                             <td key={y.year} className="py-2.5 px-2.5 text-right">
                               <div className="relative group">
                                 <input
                                   type="number"
+                                  step={isCellScheduleLocked ? '0.01' : 'any'}
+                                  readOnly={isCellScheduleLocked}
                                   value={rawVal ?? 0}
-                                  onChange={(e) => handleDriverChange(y.year, driver.field, Number(e.target.value))}
+                                  onChange={(e) => {
+                                    if (!isCellScheduleLocked) {
+                                      handleDriverChange(y.year, driver.field, Number(e.target.value));
+                                    }
+                                  }}
+                                  title={
+                                    isCellScheduleLocked
+                                      ? `Strictly locked from Repayment Schedule (${driver.field === 'repaymentOfBorrowings' ? 'Exact Annual Inst. Principal' : 'Exact Annual Inst. Profit'})`
+                                      : undefined
+                                  }
                                   className={`w-full text-right px-2.5 py-1.5 rounded-lg text-xs font-mono font-bold transition-all tabular-nums ${
-                                    isBaseYear
+                                    isCellScheduleLocked
+                                      ? 'bg-emerald-950/60 border border-emerald-500/80 text-emerald-200 cursor-not-allowed'
+                                      : isBaseYear
                                       ? 'bg-emerald-950/40 border-2 border-emerald-500 text-emerald-200 ring-2 ring-emerald-500/20 shadow-sm'
                                       : isAutoFilled
                                       ? 'bg-slate-800/95 border border-indigo-600/50 text-indigo-100 hover:border-indigo-400 focus:border-emerald-500'
@@ -849,42 +938,59 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
                                       : 'bg-slate-800/90 border border-slate-700 hover:border-emerald-500/60 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500'
                                   }`}
                                 />
-                                {isBaseYear && (
+                                {isCellScheduleLocked && (
+                                  <span className="absolute -top-2 right-1.5 text-[8px] font-bold bg-emerald-700 text-white px-1.5 py-0.2 rounded shadow pointer-events-none flex items-center gap-0.5 z-10">
+                                    <Lock className="w-2 h-2" /> Schedule
+                                  </span>
+                                )}
+                                {!isCellScheduleLocked && isBaseYear && (
                                   <span className="absolute -top-2 right-1.5 text-[8px] font-bold bg-emerald-600 text-white px-1.5 py-0.2 rounded shadow pointer-events-none flex items-center gap-0.5 z-10">
                                     <Star className="w-2 h-2 fill-white" /> Base Year
                                   </span>
                                 )}
-                                {!isBaseYear && isAutoFilled && (
+                                {!isCellScheduleLocked && !isBaseYear && isAutoFilled && (
                                   <span className="absolute -top-1.5 right-1.5 text-[8px] bg-indigo-950/90 text-indigo-300 border border-indigo-700/60 px-1 rounded pointer-events-none">
                                     Auto ({y.year < activeConfig.baseYear ? 'Prior' : 'Proj'})
                                   </span>
                                 )}
-                                {!isBaseYear && !isAutoFilled && isAuto && (
+                                {!isCellScheduleLocked && !isBaseYear && !isAutoFilled && isAuto && (
                                   <span className="absolute -top-1.5 right-1.5 text-[8px] bg-sky-900/90 text-sky-300 border border-sky-700/60 px-1 rounded pointer-events-none">
                                     Auto
                                   </span>
                                 )}
 
-                                {/* One-Click Auto-Fill Action directly from cell */}
-                                <div className="pt-1 flex items-center justify-end">
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      onApplyAutoFill(driverKey, y.year, rawVal);
-                                      setActiveNotification(
-                                        `Auto-filled all remaining years for ${driver.title} using ${y.year} (${companyProfile.reportingCurrency} ${rawVal.toLocaleString()}) as base reference.`
-                                      );
-                                    }}
-                                    className={`text-[8.5px] font-semibold px-1.5 py-0.5 rounded transition-all flex items-center gap-0.5 ${
-                                      isBaseYear
-                                        ? 'text-emerald-400 bg-emerald-950/80 border border-emerald-700/60 hover:bg-emerald-600 hover:text-white'
-                                        : 'text-slate-400 hover:text-emerald-200 bg-slate-900/90 hover:bg-emerald-950 border border-slate-800 hover:border-emerald-600'
-                                    }`}
-                                    title={`Click to auto-fill all other years using ${y.year} value (${rawVal.toLocaleString()})`}
-                                  >
-                                    <Zap className="w-2 h-2 text-emerald-400" />
-                                    {isBaseYear ? 'Recalculate All' : `Auto-Fill from ${y.year}`}
-                                  </button>
+                                {/* One-Click Auto-Fill Action or Schedule Unlock */}
+                                <div className="pt-1 flex items-center justify-end gap-1">
+                                  {isCellScheduleLocked && onUnlockScheduleYear ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => onUnlockScheduleYear(y.year)}
+                                      className="text-[8.5px] font-semibold px-1.5 py-0.5 rounded bg-slate-900 text-amber-300 hover:bg-amber-950 border border-amber-700/50 transition-all flex items-center gap-0.5"
+                                      title={`Unlock ${y.year} schedule values for manual editing`}
+                                    >
+                                      <Unlock className="w-2 h-2" />
+                                      Unlock {y.year}
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        onApplyAutoFill(driverKey, y.year, rawVal);
+                                        setActiveNotification(
+                                          `Auto-filled all remaining years for ${driver.title} using ${y.year} (${companyProfile.reportingCurrency} ${rawVal.toLocaleString()}) as base reference.`
+                                        );
+                                      }}
+                                      className={`text-[8.5px] font-semibold px-1.5 py-0.5 rounded transition-all flex items-center gap-0.5 ${
+                                        isBaseYear
+                                          ? 'text-emerald-400 bg-emerald-950/80 border border-emerald-700/60 hover:bg-emerald-600 hover:text-white'
+                                          : 'text-slate-400 hover:text-emerald-200 bg-slate-900/90 hover:bg-emerald-950 border border-slate-800 hover:border-emerald-600'
+                                      }`}
+                                      title={`Click to auto-fill all other years using ${y.year} value (${rawVal.toLocaleString()})`}
+                                    >
+                                      <Zap className="w-2 h-2 text-emerald-400" />
+                                      {isBaseYear ? 'Recalculate All' : `Auto-Fill from ${y.year}`}
+                                    </button>
+                                  )}
                                 </div>
                               </div>
                             </td>
@@ -1402,12 +1508,18 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
               const activeConfig = autoFillConfigs[driverKey];
               const isBaseYear = activeConfig?.isActive && activeConfig?.baseYear === currentYearData.year;
               const isAutoFilled = activeConfig?.isActive && activeConfig?.baseYear !== currentYearData.year;
+              const isSingleLocked = Boolean(
+                currentYearData.isScheduleLocked &&
+                (driver.field === 'repaymentOfBorrowings' || driver.field === 'financeCost')
+              );
 
               return (
                 <div
                   key={driver.id}
                   className={`border rounded-2xl p-5 space-y-3.5 transition-all ${
-                    isBaseYear
+                    isSingleLocked
+                      ? 'bg-emerald-950/25 border-emerald-500/70 shadow-md'
+                      : isBaseYear
                       ? 'bg-emerald-950/20 border-emerald-500/70 shadow-md ring-1 ring-emerald-500/30'
                       : 'bg-slate-900 border-slate-800 hover:border-slate-700'
                   }`}
@@ -1420,7 +1532,13 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
                       {driver.title}
                     </span>
                     <div className="flex items-center gap-1">
-                      {isBaseYear && (
+                      {isSingleLocked && (
+                        <span className="text-[10px] font-bold text-emerald-300 bg-emerald-950 px-2 py-0.5 rounded-md border border-emerald-600/50 flex items-center gap-1">
+                          <Lock className="w-2.5 h-2.5" />
+                          Schedule Locked
+                        </span>
+                      )}
+                      {!isSingleLocked && isBaseYear && (
                         <span className="text-[10px] font-bold text-emerald-300 bg-emerald-950 px-2 py-0.5 rounded-md border border-emerald-600/50 flex items-center gap-1">
                           <Star className="w-2.5 h-2.5 fill-emerald-400 text-emerald-400" />
                           Base Year
@@ -1440,15 +1558,23 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
                     <label className="text-[11px] text-slate-300 font-medium flex items-center justify-between">
                       <span>Input Value ({companyProfile.reportingCurrency})</span>
                       <span className="text-[10px] font-mono text-slate-400">
-                        {isBaseYear ? 'Active Anchor (Dynamic)' : (isAutoFilled ? 'Auto-Filled' : 'Direct Editable')}
+                        {isSingleLocked ? 'Exact Schedule Value' : isBaseYear ? 'Active Anchor (Dynamic)' : (isAutoFilled ? 'Auto-Filled' : 'Direct Editable')}
                       </span>
                     </label>
                     <input
                       type="number"
+                      step={isSingleLocked ? '0.01' : 'any'}
+                      readOnly={isSingleLocked}
                       value={val ?? 0}
-                      onChange={(e) => handleDriverChange(currentYearData.year, driver.field, Number(e.target.value))}
+                      onChange={(e) => {
+                        if (!isSingleLocked) {
+                          handleDriverChange(currentYearData.year, driver.field, Number(e.target.value));
+                        }
+                      }}
                       className={`w-full text-base font-bold rounded-xl px-3.5 py-2 font-mono tabular-nums transition-all ${
-                        isBaseYear
+                        isSingleLocked
+                          ? 'bg-emerald-950/50 border-2 border-emerald-500/80 text-emerald-200 cursor-not-allowed'
+                          : isBaseYear
                           ? 'bg-slate-800 border-2 border-emerald-500 text-emerald-200 focus:ring-1 focus:ring-emerald-500'
                           : 'bg-slate-800/90 border border-slate-700 focus:border-emerald-500 text-white'
                       }`}
@@ -1457,25 +1583,44 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
 
                   {/* Auto-Fill Action & Dynamic Status */}
                   <div className="pt-2 border-t border-slate-800/80 space-y-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onApplyAutoFill(driverKey, currentYearData.year, val);
-                        setActiveNotification(
-                          `Auto-filled all remaining years for ${driver.title} using ${currentYearData.year} (${companyProfile.reportingCurrency} ${val.toLocaleString()}) as base reference.`
-                        );
-                      }}
-                      className={`w-full py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 shadow-sm ${
-                        isBaseYear
-                          ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
-                          : 'bg-slate-800 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-slate-700 hover:border-emerald-500'
-                      }`}
-                    >
-                      <Zap className="w-3.5 h-3.5" />
-                      {isBaseYear
-                        ? `Recalculate All Years from ${currentYearData.year} Base`
-                        : `Auto-Fill Remaining Years from ${currentYearData.year}`}
-                    </button>
+                    {isSingleLocked ? (
+                      <div className="flex items-center justify-between gap-2 py-2 px-3 rounded-xl bg-emerald-950/60 border border-emerald-700/60 text-xs">
+                        <span className="text-emerald-200 font-semibold flex items-center gap-1.5">
+                          <Lock className="w-3.5 h-3.5 text-emerald-400" />
+                          Exact Schedule Locked
+                        </span>
+                        {onUnlockScheduleYear && (
+                          <button
+                            type="button"
+                            onClick={() => onUnlockScheduleYear(currentYearData.year)}
+                            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 rounded-lg text-[11px] font-semibold flex items-center gap-1 transition-colors"
+                          >
+                            <Unlock className="w-3 h-3" />
+                            Unlock {currentYearData.year}
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onApplyAutoFill(driverKey, currentYearData.year, val);
+                          setActiveNotification(
+                            `Auto-filled all remaining years for ${driver.title} using ${currentYearData.year} (${companyProfile.reportingCurrency} ${val.toLocaleString()}) as base reference.`
+                          );
+                        }}
+                        className={`w-full py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 shadow-sm ${
+                          isBaseYear
+                            ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                            : 'bg-slate-800 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-slate-700 hover:border-emerald-500'
+                        }`}
+                      >
+                        <Zap className="w-3.5 h-3.5" />
+                        {isBaseYear
+                          ? `Recalculate All Years from ${currentYearData.year} Base`
+                          : `Auto-Fill Remaining Years from ${currentYearData.year}`}
+                      </button>
+                    )}
 
                     <div className="flex items-center justify-between text-[10px] text-slate-400 px-0.5">
                       {isBaseYear ? (

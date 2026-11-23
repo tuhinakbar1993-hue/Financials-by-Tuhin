@@ -6,7 +6,7 @@
  * BBA, Heriot Watt University, UK · MBA, University of Chittagong
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { HeaderNav } from './components/HeaderNav';
 import { DeveloperFirstLookCard } from './components/DeveloperFirstLookCard';
 import { StatementsViewer } from './components/StatementsViewer';
@@ -35,7 +35,11 @@ import {
   buildPreviousFormatData,
   buildProjectedFormatData,
   validateFinancialModel,
+  calculateDebtServiceCoverage,
+  implementRepaymentScheduleIntoModel,
+  ImplementScheduleResult,
 } from './services/financialEngine';
+import { rebuildScheduleSummaries } from './services/repaymentScheduleParser';
 import {
   exportCompletePackageExcel,
   exportCompletePackageWord,
@@ -59,6 +63,8 @@ import {
   PrimaryDriverKey,
   AutoFillConfigs,
   StatementFormatMode,
+  ParsedRepaymentSchedule,
+  RepaymentScheduleSnapshot,
 } from './types/financial';
 
 export default function App() {
@@ -84,6 +90,13 @@ export default function App() {
   // Modals state
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isDeveloperModalOpen, setIsDeveloperModalOpen] = useState(false);
+
+  // Repayment Schedule Upload, Implementation & Pre-Schedule Snapshot State
+  const [parsedSchedule, setParsedSchedule] = useState<ParsedRepaymentSchedule | null>(null);
+  const [scheduleSnapshot, setScheduleSnapshot] = useState<RepaymentScheduleSnapshot | null>(null);
+  const [isScheduleImplemented, setIsScheduleImplemented] = useState<boolean>(false);
+  const [lastImplementationResult, setLastImplementationResult] = useState<ImplementScheduleResult | null>(null);
+  const [openScheduleStudio, setOpenScheduleStudio] = useState<boolean>(false);
 
   // Derived: Active Historical Years based on user's flexible individual year selection
   const activeHistoricalInputs = useMemo(() => {
@@ -190,6 +203,41 @@ export default function App() {
       fixedAssetsSchedule
     );
   }, [allYearsInputs, incomeStatements, balanceSheets, cashFlowStatements, equityStatements, fixedAssetsSchedule]);
+
+  // Debt Service Coverage & Repayment Capacity Analysis
+  const debtServiceCoverage = useMemo(() => {
+    return calculateDebtServiceCoverage(
+      allYearsInputs,
+      incomeStatements,
+      balanceSheets,
+      cashFlowStatements,
+      isScheduleImplemented ? parsedSchedule : null
+    );
+  }, [allYearsInputs, incomeStatements, balanceSheets, cashFlowStatements, isScheduleImplemented, parsedSchedule]);
+
+  // Synchronize parsed schedule year-wise aggregation when FY end or model years change
+  const modelYearsKey = useMemo(() => allYearsInputs.map(y => y.year).join(','), [allYearsInputs]);
+  useEffect(() => {
+    if (!parsedSchedule) return;
+    const modelYears = modelYearsKey ? modelYearsKey.split(',').map(Number) : [];
+    const rebuilt = rebuildScheduleSummaries(
+      parsedSchedule.rows,
+      parsedSchedule.metadata,
+      companyProfile.financialYearEnd,
+      modelYears
+    );
+    const prevKey = JSON.stringify({
+      sums: parsedSchedule.annualSummaries,
+      warns: parsedSchedule.validationWarnings,
+    });
+    const nextKey = JSON.stringify({
+      sums: rebuilt.annualSummaries,
+      warns: rebuilt.validationWarnings,
+    });
+    if (prevKey !== nextKey) {
+      setParsedSchedule(rebuilt);
+    }
+  }, [companyProfile.financialYearEnd, modelYearsKey, parsedSchedule]);
 
   // Unified Assumptions Updater (keeps Horizon slider & selectedProjectedYears synchronized)
   const handleUpdateAssumptions = (updated: ProjectionAssumptions) => {
@@ -353,23 +401,32 @@ export default function App() {
       assumptions
     );
 
-    // 3. Update both historical inputs store and custom projected overrides
+    // 3. Preserve schedule-locked years for financeCost / repaymentOfBorrowings
+    const guardedYears = updatedAllYears.map((y, idx) => {
+      const orig = allYearsInputs[idx];
+      if (orig?.isScheduleLocked && (driver === 'financeCost' || driver === 'repaymentOfBorrowings')) {
+        return orig;
+      }
+      return y;
+    });
+
+    // 4. Update both historical inputs store and custom projected overrides
     setHistoricalYearsStore(prev => {
       const nextStore = { ...prev };
-      updatedAllYears.filter(y => !y.isProjected).forEach(y => {
+      guardedYears.filter(y => !y.isProjected).forEach(y => {
         nextStore[y.year] = y;
       });
       return nextStore;
     });
     setCustomProjectedOverrides(prev => {
       const nextOverrides = { ...prev };
-      updatedAllYears.filter(y => y.isProjected).forEach(y => {
+      guardedYears.filter(y => y.isProjected).forEach(y => {
         nextOverrides[y.year] = y;
       });
       return nextOverrides;
     });
 
-    // 4. Save active Auto-Fill configuration for dynamic recalculation
+    // 5. Save active Auto-Fill configuration for dynamic recalculation
     setAutoFillConfigs(prev => ({
       ...prev,
       [driver]: {
@@ -402,6 +459,14 @@ export default function App() {
       driver === 'fixedAssetsGross'
     );
 
+    const yearIdx = allYearsInputs.findIndex(y => y.year === year);
+    if (yearIdx === -1) return;
+
+    const currentYearObj = allYearsInputs[yearIdx];
+    if (currentYearObj.isScheduleLocked && (driver === 'financeCost' || driver === 'repaymentOfBorrowings')) {
+      return;
+    }
+
     // Dynamic Recalculation when Auto-Fill anchor base year is changed
     if (isPrimaryDriver) {
       const driverKey = driver as PrimaryDriverKey;
@@ -412,10 +477,6 @@ export default function App() {
       }
     }
 
-    const yearIdx = allYearsInputs.findIndex(y => y.year === year);
-    if (yearIdx === -1) return;
-
-    const currentYearObj = allYearsInputs[yearIdx];
     const prevYearObj = yearIdx > 0 ? allYearsInputs[yearIdx - 1] : null;
 
     const updatedDrivers = {
@@ -442,6 +503,105 @@ export default function App() {
         [year]: recomputedYear,
       }));
     }
+  };
+
+  // Handler: Implement Uploaded Repayment Schedule & Optimize Financial Statements
+  const handleImplementRepaymentSchedule = (options: {
+    autoIncludeScheduleYears: boolean;
+    alignHistoricalScale: boolean;
+  }) => {
+    if (!parsedSchedule || !parsedSchedule.isValid) return;
+
+    if (!scheduleSnapshot) {
+      setScheduleSnapshot({
+        capturedAt: new Date().toISOString(),
+        historicalYearsStore: JSON.parse(JSON.stringify(historicalYearsStore)),
+        customProjectedOverrides: JSON.parse(JSON.stringify(customProjectedOverrides)),
+        assumptions: JSON.parse(JSON.stringify(assumptions)),
+        autoFillConfigs: JSON.parse(JSON.stringify(autoFillConfigs)),
+        companyProfile: JSON.parse(JSON.stringify(companyProfile)),
+        cellOverrides: JSON.parse(JSON.stringify(cellOverrides)),
+      });
+    }
+
+    const res = implementRepaymentScheduleIntoModel({
+      schedule: parsedSchedule,
+      historicalYearsStore,
+      customProjectedOverrides,
+      assumptions,
+      autoIncludeScheduleYears: options.autoIncludeScheduleYears,
+      alignHistoricalScale: options.alignHistoricalScale,
+    });
+
+    setHistoricalYearsStore(res.historicalYearsStore);
+    setCustomProjectedOverrides(res.customProjectedOverrides);
+    setAssumptions(res.assumptions);
+    setInputMode('automatic');
+
+    // Clear autoFillConfigs on schedule-driven metrics so schedule locks remain sovereign
+    setAutoFillConfigs(prev => {
+      const next = { ...prev };
+      delete next.financeCost;
+      delete next.repaymentOfBorrowings;
+      return next;
+    });
+
+    // Clear stale statement cellOverrides for years covered by the implemented schedule
+    const coveredSet = new Set(res.coveredYears);
+    setCellOverrides(prev => {
+      const next: StatementCellOverrides = {};
+      for (const [k, yrMap] of Object.entries(prev)) {
+        const filteredYrMap: Record<number, number> = {};
+        for (const [yrStr, val] of Object.entries(yrMap)) {
+          if (!coveredSet.has(Number(yrStr))) {
+            filteredYrMap[Number(yrStr)] = val;
+          }
+        }
+        if (Object.keys(filteredYrMap).length > 0) {
+          next[k] = filteredYrMap;
+        }
+      }
+      return next;
+    });
+
+    setIsScheduleImplemented(true);
+    setLastImplementationResult(res);
+  };
+
+  // Handler: Revert to Pre-Schedule Snapshot
+  const handleRevertScheduleSnapshot = () => {
+    if (!scheduleSnapshot) return;
+    setHistoricalYearsStore(scheduleSnapshot.historicalYearsStore);
+    setCustomProjectedOverrides(scheduleSnapshot.customProjectedOverrides);
+    setAssumptions(scheduleSnapshot.assumptions);
+    setAutoFillConfigs(scheduleSnapshot.autoFillConfigs);
+    setCompanyProfile(scheduleSnapshot.companyProfile);
+    setCellOverrides(scheduleSnapshot.cellOverrides);
+    setScheduleSnapshot(null);
+    setIsScheduleImplemented(false);
+    setLastImplementationResult(null);
+  };
+
+  // Handler: Explicitly Unlock Schedule Protection for a Single Financial Year
+  const handleUnlockScheduleYear = (year: number) => {
+    const target = allYearsInputs.find(y => y.year === year);
+    if (!target) return;
+    const unlocked: YearDataInput = {
+      ...target,
+      isScheduleLocked: false,
+      schedulePrincipalLocked: undefined,
+      scheduleFinanceCostLocked: undefined,
+    };
+    if (!target.isProjected) {
+      setHistoricalYearsStore(prev => ({ ...prev, [year]: { ...unlocked, isProjected: false } }));
+    } else {
+      setCustomProjectedOverrides(prev => ({ ...prev, [year]: unlocked }));
+    }
+  };
+
+  const handleJumpToRepaymentSchedule = () => {
+    setOpenScheduleStudio(true);
+    setActiveTab('data-entry');
   };
 
   // Handler: Reset custom projected overrides and generate automatic interconnected projection
@@ -494,6 +654,9 @@ export default function App() {
     if (targetField) {
       const yearObj = allYearsInputs.find(y => y.year === year);
       if (yearObj) {
+        if (yearObj.isScheduleLocked && (targetField === 'repaymentOfBorrowings' || targetField === 'financeCost')) {
+          return;
+        }
         const updatedYear: YearDataInput = {
           ...yearObj,
           [targetField]: field === 'purchasePPE' || field === 'dividendsPaid' ? Math.abs(val) : val,
@@ -543,7 +706,9 @@ export default function App() {
       cashFlowStatements,
       equityStatements,
       fixedAssetsSchedule,
-      effectiveNotes
+      effectiveNotes,
+      undefined,
+      isScheduleImplemented ? debtServiceCoverage : undefined
     );
   };
 
@@ -555,7 +720,9 @@ export default function App() {
       cashFlowStatements,
       equityStatements,
       fixedAssetsSchedule,
-      effectiveNotes
+      effectiveNotes,
+      undefined,
+      isScheduleImplemented ? debtServiceCoverage : undefined
     );
   };
 
@@ -567,7 +734,9 @@ export default function App() {
       cashFlowStatements,
       equityStatements,
       fixedAssetsSchedule,
-      effectiveNotes
+      effectiveNotes,
+      undefined,
+      isScheduleImplemented ? debtServiceCoverage : undefined
     );
   };
 
@@ -649,6 +818,10 @@ export default function App() {
             onSetHistoricalYears={handleSetHistoricalYears}
             onSetProjectedYears={handleSetProjectedYears}
             onUpdatePrimaryDriver={handleUpdatePrimaryDriver}
+            debtServiceCoverage={debtServiceCoverage}
+            isScheduleImplemented={isScheduleImplemented}
+            parsedSchedule={parsedSchedule}
+            onJumpToRepaymentSchedule={handleJumpToRepaymentSchedule}
           />
         )}
 
@@ -676,6 +849,16 @@ export default function App() {
             onToggleProjectedYear={handleToggleProjectedYear}
             onSetHistoricalYears={handleSetHistoricalYears}
             onSetProjectedYears={handleSetProjectedYears}
+            parsedSchedule={parsedSchedule}
+            onSetParsedSchedule={setParsedSchedule}
+            scheduleSnapshot={scheduleSnapshot}
+            isScheduleImplemented={isScheduleImplemented}
+            lastImplementationResult={lastImplementationResult}
+            debtServiceCoverage={debtServiceCoverage}
+            onImplementRepaymentSchedule={handleImplementRepaymentSchedule}
+            onRevertScheduleSnapshot={handleRevertScheduleSnapshot}
+            onUnlockScheduleYear={handleUnlockScheduleYear}
+            initialShowScheduleStudio={openScheduleStudio || isScheduleImplemented || parsedSchedule !== null}
           />
         )}
 
@@ -708,6 +891,10 @@ export default function App() {
             balanceSheetYears={balanceSheets}
             companyProfile={companyProfile}
             validationIssues={validationIssues}
+            debtServiceCoverage={debtServiceCoverage}
+            isScheduleImplemented={isScheduleImplemented}
+            parsedSchedule={parsedSchedule}
+            onJumpToRepaymentSchedule={handleJumpToRepaymentSchedule}
           />
         )}
       </main>
