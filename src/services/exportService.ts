@@ -232,7 +232,9 @@ function buildIncomeStatementSheet(
     });
   } else {
     customRev.forEach(ci => {
+      const cr = nextRow();
       rows.push([ci.label, ...data.map(d => nCell(getCustomItemYearValue(ci, d.year)))]);
+      gpInputs.push(cr);
     });
   }
 
@@ -269,7 +271,9 @@ function buildIncomeStatementSheet(
     });
   } else {
     customOpex.forEach(ci => {
+      const cr = nextRow();
       rows.push([ci.label, ...data.map(d => nCell(getCustomItemYearValue(ci, d.year)))]);
+      ebitInputs.push(cr);
     });
   }
 
@@ -306,7 +310,9 @@ function buildIncomeStatementSheet(
     });
   } else {
     customNonOp.forEach(ci => {
+      const cr = nextRow();
       rows.push([ci.label, ...data.map(d => nCell(getCustomItemYearValue(ci, d.year)))]);
+      pbtInputs.push(cr);
     });
   }
 
@@ -846,44 +852,44 @@ function buildEquityWorksheet(
   return ws;
 }
 
-function resolveFACategoriesForExport(
+export function resolveFACategoriesForExport(
   latest: ScheduleOfFixedAssetsYear,
   options?: ExportSyncOptions
 ) {
-  if (!options?.statementConfig || options.statementConfig.length === 0) {
-    return latest.categories;
-  }
-  if (latest.allCategories && latest.allCategories.length > 0) {
-    const visibleStd = latest.allCategories
-      .map((cat, idx) => {
-        const cfgId = FIXED_ASSET_CATEGORY_CONFIG_IDS[idx];
-        const cfgItem = cfgId ? options.statementConfig?.find(c => c.id === cfgId) : undefined;
-        return {
-          cat: cfgItem ? { ...cat, name: cfgItem.label } : cat,
-          visible: cfgId ? isVis(options, cfgId) : true,
-        };
-      })
-      .filter(entry => entry.visible)
-      .map(entry => entry.cat);
-    const customRows = getCustomRows(options, 'fixedAssets').map(ci => {
-      const val = getCustomItemYearValue(ci, latest.year);
+  const stdSource =
+    latest.allCategories && latest.allCategories.length > 0
+      ? latest.allCategories
+      : latest.categories;
+  const visibleStd = stdSource
+    .map((cat, idx) => {
+      const cfgId = FIXED_ASSET_CATEGORY_CONFIG_IDS[idx];
+      const name = resolveEffectiveLabel('fa', String(idx), cat.name, options?.labelOverrides, options?.statementConfig);
       return {
-        name: ci.label,
-        costOpening: val,
-        additions: 0,
-        disposals: 0,
-        costClosing: val,
-        depOpening: 0,
-        depCharge: 0,
-        depDisposals: 0,
-        depClosing: 0,
-        netBookValue: val,
-        depRate: 0,
+        cat: { ...cat, name },
+        visible: cfgId && options?.statementConfig ? isVis(options, cfgId) : true,
       };
-    });
-    return [...visibleStd, ...customRows];
-  }
-  return latest.categories;
+    })
+    .filter(entry => entry.visible)
+    .map(entry => entry.cat);
+  const customRows = getCustomRows(options, 'fixedAssets').map(ci => {
+    const val = getCustomItemYearValue(ci, latest.year);
+    return {
+      name: ci.label,
+      costOpening: val,
+      additions: 0,
+      disposals: 0,
+      costClosing: val,
+      depOpening: 0,
+      depCharge: 0,
+      depDisposals: 0,
+      depClosing: 0,
+      netBookValue: val,
+      depRate: 0,
+    };
+  });
+  return latest.allCategories && latest.allCategories.length > 0
+    ? [...visibleStd, ...customRows]
+    : visibleStd;
 }
 
 function buildFixedAssetsWorksheet(
@@ -1809,53 +1815,77 @@ function buildPreviousTextTables(
   prevData: PreviousFormatYearData[],
   options?: ExportSyncOptions
 ) {
+  const customBsCa = getCustomRows(options, 'balanceSheet', 'Current Assets');
+  const customBsNca = getCustomRows(options, 'balanceSheet', 'Non-Current Assets');
+  const customBsCl = getCustomRows(options, 'balanceSheet', 'Current Liabilities');
+  const customBsNcl = getCustomRows(options, 'balanceSheet', 'Non-Current Liabilities');
+  const customBsEq = getCustomRows(options, 'balanceSheet', 'Equity');
+
+  const customIncRev = getCustomRows(options, 'income', 'Revenue & Gross Margin');
+  const customIncOpex = getCustomRows(options, 'income', 'Operating Expenses');
+  const customIncNonOp = [...getCustomRows(options, 'income', 'Non-Operating & Tax'), ...getUnscopedCustomIncomeRows(options)];
+
+  const customCfOp = getCustomRows(options, 'cashFlow', 'Operating Activities');
+  const customCfInv = getCustomRows(options, 'cashFlow', 'Investing Activities');
+  const customCfFin = getCustomRows(options, 'cashFlow', 'Financing Activities');
+  const customEq = getCustomRows(options, 'equity');
+
   const bsRows: (string | number)[][] = [
     ['PROPERTIES & ASSETS', ...prevData.map(() => '')],
     ...(isVis(options, 'bs_propertyPlantEquipment')
-      ? [['Fixed Assets (at cost less depreciation)', ...prevData.map(d => d.fixedAssetsWDV)]]
+      ? [[lbl(options, 'bs', 'propertyPlantEquipment', 'Fixed Assets (at cost less depreciation)'), ...prevData.map(d => d.fixedAssetsWDV)]]
       : []),
+    ...customBsNca.map(ci => [ci.label, ...prevData.map(d => getCustomItemYearValue(ci, d.year))]),
     ['Current Assets', ...prevData.map(d => d.totalCurrentAssets)],
     ...(isVis(options, 'bs_otherReceivables')
-      ? [['Advances, Deposits & Pre-payments', ...prevData.map(d => d.advancesDepositsPrepayments)]]
+      ? [[lbl(options, 'bs', 'otherReceivables', 'Advances, Deposits & Pre-payments'), ...prevData.map(d => d.advancesDepositsPrepayments)]]
       : []),
     ...(isVis(options, 'bs_closingInventory')
-      ? [['Stock & Stores', ...prevData.map(d => d.stockAndStores)]]
+      ? [[lbl(options, 'bs', 'closingInventory', 'Stock & Stores'), ...prevData.map(d => d.stockAndStores)]]
       : []),
     ...(isVis(options, 'bs_tradeReceivables')
-      ? [['Bills Receivable', ...prevData.map(d => d.billsReceivable)]]
+      ? [[lbl(options, 'bs', 'tradeReceivables', 'Bills Receivable'), ...prevData.map(d => d.billsReceivable)]]
       : []),
     ...(isVis(options, 'bs_cashAndEquivalents')
       ? [[lbl(options, 'bs', 'cashAndEquivalents', 'Cash & Cash Equivalents'), ...prevData.map(d => d.cashAndCashEquivalents)]]
       : []),
+    ...customBsCa.map(ci => [ci.label, ...prevData.map(d => getCustomItemYearValue(ci, d.year))]),
     ['Taka', ...prevData.map(d => d.totalAssetsTaka)],
     ['CAPITAL & LIABILITIES', ...prevData.map(() => '')],
     ['Opening Capital', ...prevData.map(d => d.openingCapital)],
     ['Add. Net Profit for the year', ...prevData.map(d => d.netProfitForYear)],
     ['Subtotal', ...prevData.map(d => d.capitalSubtotal)],
     ...(isVis(options, 'eq_dividendsPaid')
-      ? [['Less: Drawings', ...prevData.map(d => d.drawings)]]
+      ? [[`Less: ${lbl(options, 'eq', 'dividendsPaid', 'Drawings')}`, ...prevData.map(d => d.drawings)]]
       : []),
     ['Capital after drawings', ...prevData.map(d => d.capitalAfterDrawings)],
+    ...customBsEq.map(ci => [ci.label, ...prevData.map(d => getCustomItemYearValue(ci, d.year))]),
+    ...customBsNcl.map(ci => [ci.label, ...prevData.map(d => getCustomItemYearValue(ci, d.year))]),
     ['Current Liabilities', ...prevData.map(d => d.totalCurrentLiabilities)],
     ...(isVis(options, 'bs_otherPayables')
-      ? [['For Expenses', ...prevData.map(d => d.forExpenses)]]
+      ? [[lbl(options, 'bs', 'otherPayables', 'For Expenses'), ...prevData.map(d => d.forExpenses)]]
       : []),
     ...(isVis(options, 'bs_tradePayables')
-      ? [['Accounts Payable', ...prevData.map(d => d.accountsPayable)]]
+      ? [[lbl(options, 'bs', 'tradePayables', 'Accounts Payable'), ...prevData.map(d => d.accountsPayable)]]
       : []),
     ...(isVis(options, 'bs_shortTermBorrowings')
-      ? [['Short Term Loan', ...prevData.map(d => d.shortTermLoan)]]
+      ? [[lbl(options, 'bs', 'shortTermBorrowings', 'Short Term Loan'), ...prevData.map(d => d.shortTermLoan)]]
       : []),
     ...(isVis(options, 'bs_currentTaxPayable')
-      ? [['Provision for Taxation', ...prevData.map(d => d.provisionForTaxation)]]
+      ? [[lbl(options, 'bs', 'currentTaxPayable', 'Provision for Taxation'), ...prevData.map(d => d.provisionForTaxation)]]
       : []),
+    ...customBsCl.map(ci => [ci.label, ...prevData.map(d => getCustomItemYearValue(ci, d.year))]),
     ['Total', ...prevData.map(d => d.totalCapitalAndLiabilities)],
   ];
 
   const isRows: (string | number)[][] = [
     ...(isVis(options, 'inc_revenue')
-      ? [[lbl(options, 'income', 'revenue', 'Sales'), ...prevData.map(d => d.sales)]]
+      ? [[
+          lbl(options, 'income', 'revenue', 'Sales'),
+          ...prevData.map(d => d.sales - customIncRev.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0)),
+        ]]
       : []),
+    ...customIncRev.map(ci => [ci.label, ...prevData.map(d => getCustomItemYearValue(ci, d.year))]),
     ...(isVis(options, 'inc_costOfSales')
       ? [[`Less- ${lbl(options, 'income', 'costOfSales', 'Cost of Goods Sold')}`, ...prevData.map(d => d.costOfGoodsSold)]]
       : []),
@@ -1877,19 +1907,24 @@ function buildPreviousTextTables(
           ['Selling Exp.', ...prevData.map(d => d.sellingExp)],
         ]
       : []),
+    ...customIncOpex.map(ci => [ci.label, ...prevData.map(d => -getCustomItemYearValue(ci, d.year))]),
     ...(isVis(options, 'inc_depreciationExpense')
-      ? [['Depreciation', ...prevData.map(d => d.depreciation)]]
+      ? [[lbl(options, 'income', 'depreciationExpense', 'Depreciation'), ...prevData.map(d => d.depreciation)]]
       : []),
     ['Net Operating Profit', ...prevData.map(d => d.netOperatingProfit)],
     ...(isVis(options, 'inc_interestIncome')
-      ? [['Add: Other Income', ...prevData.map(d => d.otherIncome)]]
+      ? [[
+          `Add: ${lbl(options, 'income', 'interestIncome', 'Other Income')}`,
+          ...prevData.map(d => d.otherIncome - customIncNonOp.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0)),
+        ]]
       : []),
+    ...customIncNonOp.map(ci => [ci.label, ...prevData.map(d => getCustomItemYearValue(ci, d.year))]),
     ['Subtotal', ...prevData.map(d => d.operatingSubtotal)],
     ...(isVis(options, 'inc_financeCost')
-      ? [['Less: Financial Exp.', ...prevData.map(d => d.financialExp)]]
+      ? [[`Less: ${lbl(options, 'income', 'financeCost', 'Financial Exp.')}`, ...prevData.map(d => d.financialExp)]]
       : []),
     ...(isVis(options, 'inc_taxExpense')
-      ? [['Less- Income Tax Provision', ...prevData.map(d => d.incomeTaxProvision)]]
+      ? [[`Less- ${lbl(options, 'income', 'taxExpense', 'Income Tax Provision')}`, ...prevData.map(d => d.incomeTaxProvision)]]
       : []),
     ['Net Profit After Income Tax', ...prevData.map(d => d.netProfitAfterIncomeTax)],
   ];
@@ -1897,31 +1932,34 @@ function buildPreviousTextTables(
   const cfRows: (string | number)[][] = [
     ['a) CASH FLOWS FROM OPERATING ACTIVITIES:', ...prevData.map(() => '')],
     ...(isVis(options, 'cf_pbt')
-      ? [['Net Income', ...prevData.map(d => d.cfNetIncome)]]
+      ? [[lbl(options, 'cf', 'profitBeforeTax', 'Net Income'), ...prevData.map(d => d.cfNetIncome)]]
       : []),
     ...(isVis(options, 'cf_dep')
-      ? [['Add: Depreciation of Tangible Fixed Assets', ...prevData.map(d => d.cfDepreciation)]]
+      ? [[lbl(options, 'cf', 'adjDepreciation', 'Add: Depreciation of Tangible Fixed Assets'), ...prevData.map(d => d.cfDepreciation)]]
       : []),
     ...(isVis(options, 'cf_wc_receivables')
-      ? [['Add: (Increase) or decrease in Current Assets', ...prevData.map(d => d.cfChangeInCurrentAssets)]]
+      ? [[lbl(options, 'cf', 'changeInReceivables', 'Add: (Increase) or decrease in Current Assets'), ...prevData.map(d => d.cfChangeInCurrentAssets)]]
       : []),
     ['Add: (Increase) or decrease in Construction Working Progress', ...prevData.map(d => d.cfChangeInCWIP)],
     ...(isVis(options, 'cf_wc_payables')
-      ? [['Add: Increase or (decrease) in Current Liabilities', ...prevData.map(d => d.cfChangeInCurrentLiabilities)]]
+      ? [[lbl(options, 'cf', 'changeInPayables', 'Add: Increase or (decrease) in Current Liabilities'), ...prevData.map(d => d.cfChangeInCurrentLiabilities)]]
       : []),
+    ...customCfOp.map(ci => [ci.label, ...prevData.map(d => getCustomItemYearValue(ci, d.year))]),
     ['Net Cash from operating activities', ...prevData.map(d => d.cfNetCashOperating)],
     ['b) CASH FLOWS FROM INVESTING ACTIVITIES:', ...prevData.map(() => '')],
     ...(isVis(options, 'cf_pur_ppe')
-      ? [['Acquisition of Tangible Fixed Assets', ...prevData.map(d => d.cfAcquisitionPPE)]]
+      ? [[lbl(options, 'cf', 'purchasePPE', 'Acquisition of Tangible Fixed Assets'), ...prevData.map(d => d.cfAcquisitionPPE)]]
       : []),
     ...(isVis(options, 'cf_pur_intangible')
-      ? [['Disposal of Intangible Assets', ...prevData.map(d => d.cfDisposalIntangible)]]
+      ? [[lbl(options, 'cf', 'purchaseIntangibles', 'Disposal of Intangible Assets'), ...prevData.map(d => d.cfDisposalIntangible)]]
       : []),
+    ...customCfInv.map(ci => [ci.label, ...prevData.map(d => getCustomItemYearValue(ci, d.year))]),
     ['Net Cash used in investing Activities', ...prevData.map(d => d.cfNetCashInvesting)],
     ['c) CASH FLOWS FROM FINANCING ACTIVITIES:', ...prevData.map(() => '')],
     ...(isVis(options, 'cf_dividends_paid')
-      ? [['Drawings', ...prevData.map(d => d.cfDrawings)]]
+      ? [[lbl(options, 'cf', 'financingDividendsPaid', 'Drawings'), ...prevData.map(d => d.cfDrawings)]]
       : []),
+    ...customCfFin.map(ci => [ci.label, ...prevData.map(d => getCustomItemYearValue(ci, d.year))]),
     ['Opening Balance', ...prevData.map(d => d.cfOpeningBalance)],
     ['Net Cash used in Financing Activities', ...prevData.map(d => d.cfNetCashFinancing)],
     ['d) Net Increase decrease in cash & cash equivalents (A+B+C)', ...prevData.map(d => d.cfNetIncreaseCash)],
@@ -1931,25 +1969,26 @@ function buildPreviousTextTables(
 
   const eqRows: (string | number)[][] = [
     ...(isVis(options, 'eq_openingShareCapital')
-      ? [['Opening Share Capital', ...prevData.map(d => d.eqOpeningShareCapital)]]
+      ? [[lbl(options, 'eq', 'openingShareCapital', 'Opening Share Capital'), ...prevData.map(d => d.eqOpeningShareCapital)]]
       : []),
     ...(isVis(options, 'eq_shareCapitalIssued')
-      ? [['Share Capital Issued', ...prevData.map(d => d.eqShareCapitalIssued)]]
+      ? [[lbl(options, 'eq', 'shareCapitalIssued', 'Share Capital Issued'), ...prevData.map(d => d.eqShareCapitalIssued)]]
       : []),
     ['Closing Share Capital', ...prevData.map(d => d.eqClosingShareCapital)],
     ...(isVis(options, 'eq_openingRetainedEarnings')
-      ? [['Opening Retained Earnings', ...prevData.map(d => d.eqOpeningRetainedEarnings)]]
+      ? [[lbl(options, 'eq', 'openingRetainedEarnings', 'Opening Retained Earnings'), ...prevData.map(d => d.eqOpeningRetainedEarnings)]]
       : []),
     ...(isVis(options, 'eq_netProfitForYear')
-      ? [['Net Profit for the Year', ...prevData.map(d => d.eqNetProfitForYear)]]
+      ? [[lbl(options, 'eq', 'netProfitForYear', 'Net Profit for the Year'), ...prevData.map(d => d.eqNetProfitForYear)]]
       : []),
     ...(isVis(options, 'eq_dividendsPaid')
-      ? [['Dividends Paid', ...prevData.map(d => -d.eqDividendsPaid)]]
+      ? [[lbl(options, 'eq', 'dividendsPaid', 'Dividends Paid'), ...prevData.map(d => -d.eqDividendsPaid)]]
       : []),
     ['Closing Retained Earnings', ...prevData.map(d => d.eqClosingRetainedEarnings)],
     ...(isVis(options, 'eq_openingReserves')
-      ? [['Closing Reserves', ...prevData.map(d => d.eqClosingReserves)]]
+      ? [[lbl(options, 'eq', 'openingReserves', 'Closing Reserves'), ...prevData.map(d => d.eqClosingReserves)]]
       : []),
+    ...customEq.map(ci => [ci.label, ...prevData.map(d => getCustomItemYearValue(ci, d.year))]),
     ['TOTAL CLOSING EQUITY', ...prevData.map(d => d.eqTotalClosingEquity)],
   ];
 
@@ -1975,6 +2014,21 @@ export function exportPreviousFinancialsExcel(
   const colHeaders = ['Particulars', ...prevData.map(d => d.dateLabel)];
   const widths = [46, ...prevData.map(() => 18)];
 
+  const customBsCa = getCustomRows(options, 'balanceSheet', 'Current Assets');
+  const customBsNca = getCustomRows(options, 'balanceSheet', 'Non-Current Assets');
+  const customBsCl = getCustomRows(options, 'balanceSheet', 'Current Liabilities');
+  const customBsNcl = getCustomRows(options, 'balanceSheet', 'Non-Current Liabilities');
+  const customBsEq = getCustomRows(options, 'balanceSheet', 'Equity');
+
+  const customIncRev = getCustomRows(options, 'income', 'Revenue & Gross Margin');
+  const customIncOpex = getCustomRows(options, 'income', 'Operating Expenses');
+  const customIncNonOp = [...getCustomRows(options, 'income', 'Non-Operating & Tax'), ...getUnscopedCustomIncomeRows(options)];
+
+  const customCfOp = getCustomRows(options, 'cashFlow', 'Operating Activities');
+  const customCfInv = getCustomRows(options, 'cashFlow', 'Investing Activities');
+  const customCfFin = getCustomRows(options, 'cashFlow', 'Financing Activities');
+  const customEq = getCustomRows(options, 'equity');
+
   // 1. STATEMENT OF FINANCIAL POSITION (dynamic Excel row tracking)
   const bsRows: ExcelCellValue[][] = [
     [company.companyName.toUpperCase()],
@@ -1986,39 +2040,47 @@ export function exportPreviousFinancialsExcel(
     ['PROPERTIES & ASSETS', ...prevData.map(() => '')],
   ];
   const nextBsRow = () => bsRows.length + 1;
-  let fixedAssetsExcelRow: number | null = null;
+  const assetInputs: number[] = [];
   if (isVis(options, 'bs_propertyPlantEquipment')) {
-    fixedAssetsExcelRow = nextBsRow();
-    bsRows.push(['Fixed Assets (at cost less depreciation)', ...prevData.map(d => nCell(d.fixedAssetsWDV))]);
+    assetInputs.push(nextBsRow());
+    bsRows.push([lbl(options, 'bs', 'propertyPlantEquipment', 'Fixed Assets (at cost less depreciation)'), ...prevData.map(d => nCell(d.fixedAssetsWDV))]);
   }
+  customBsNca.forEach(ci => {
+    assetInputs.push(nextBsRow());
+    bsRows.push([ci.label, ...prevData.map(d => nCell(getCustomItemYearValue(ci, d.year)))]);
+  });
   const caHeaderIdx = bsRows.length;
   const caExcelRow = caHeaderIdx + 1;
   bsRows.push(['Current Assets', ...prevData.map(d => nCell(d.totalCurrentAssets))]);
   const caChildRows: number[] = [];
   if (isVis(options, 'bs_otherReceivables')) {
     caChildRows.push(nextBsRow());
-    bsRows.push(['Advances, Deposits & Pre-payments', ...prevData.map(d => nCell(d.advancesDepositsPrepayments))]);
+    bsRows.push([lbl(options, 'bs', 'otherReceivables', 'Advances, Deposits & Pre-payments'), ...prevData.map(d => nCell(d.advancesDepositsPrepayments))]);
   }
   if (isVis(options, 'bs_closingInventory')) {
     caChildRows.push(nextBsRow());
-    bsRows.push(['Stock & Stores', ...prevData.map(d => nCell(d.stockAndStores))]);
+    bsRows.push([lbl(options, 'bs', 'closingInventory', 'Stock & Stores'), ...prevData.map(d => nCell(d.stockAndStores))]);
   }
   if (isVis(options, 'bs_tradeReceivables')) {
     caChildRows.push(nextBsRow());
-    bsRows.push(['Bills Receivable', ...prevData.map(d => nCell(d.billsReceivable))]);
+    bsRows.push([lbl(options, 'bs', 'tradeReceivables', 'Bills Receivable'), ...prevData.map(d => nCell(d.billsReceivable))]);
   }
   if (isVis(options, 'bs_cashAndEquivalents')) {
     caChildRows.push(nextBsRow());
     bsRows.push([lbl(options, 'bs', 'cashAndEquivalents', 'Cash & Cash Equivalents'), ...prevData.map(d => nCell(d.cashAndCashEquivalents))]);
   }
+  customBsCa.forEach(ci => {
+    caChildRows.push(nextBsRow());
+    bsRows.push([ci.label, ...prevData.map(d => nCell(getCustomItemYearValue(ci, d.year)))]);
+  });
   bsRows[caHeaderIdx] = [
     'Current Assets',
     ...prevData.map((d, i) => fCell(excelSumRows(colLetter(i + 1), caChildRows), d.totalCurrentAssets)),
   ];
-  const totalAssetsInputs = fixedAssetsExcelRow !== null ? [fixedAssetsExcelRow, caExcelRow] : [caExcelRow];
+  assetInputs.push(caExcelRow);
   bsRows.push([
     'Taka',
-    ...prevData.map((d, i) => fCell(excelSumRows(colLetter(i + 1), totalAssetsInputs), d.totalAssetsTaka)),
+    ...prevData.map((d, i) => fCell(excelSumRows(colLetter(i + 1), assetInputs), d.totalAssetsTaka)),
   ]);
 
   bsRows.push(['CAPITAL & LIABILITIES', ...prevData.map(() => '')]);
@@ -2034,7 +2096,7 @@ export function exportPreviousFinancialsExcel(
   let drawingsBsRow: number | null = null;
   if (isVis(options, 'eq_dividendsPaid')) {
     drawingsBsRow = nextBsRow();
-    bsRows.push(['Less: Drawings', ...prevData.map(d => nCell(d.drawings))]);
+    bsRows.push([`Less: ${lbl(options, 'eq', 'dividendsPaid', 'Drawings')}`, ...prevData.map(d => nCell(d.drawings))]);
   }
   const capAfterDrawRow = nextBsRow();
   bsRows.push([
@@ -2043,33 +2105,47 @@ export function exportPreviousFinancialsExcel(
       fCell(excelDiffExpr(colLetter(i + 1), [capSubRow], drawingsBsRow !== null ? [drawingsBsRow] : []), d.capitalAfterDrawings)
     ),
   ]);
+  const totalCapLiabInputs = [capAfterDrawRow];
+  customBsEq.forEach(ci => {
+    totalCapLiabInputs.push(nextBsRow());
+    bsRows.push([ci.label, ...prevData.map(d => nCell(getCustomItemYearValue(ci, d.year)))]);
+  });
+  customBsNcl.forEach(ci => {
+    totalCapLiabInputs.push(nextBsRow());
+    bsRows.push([ci.label, ...prevData.map(d => nCell(getCustomItemYearValue(ci, d.year)))]);
+  });
   const clHeaderIdx = bsRows.length;
   const clExcelRow = clHeaderIdx + 1;
   bsRows.push(['Current Liabilities', ...prevData.map(d => nCell(d.totalCurrentLiabilities))]);
   const clChildRows: number[] = [];
   if (isVis(options, 'bs_otherPayables')) {
     clChildRows.push(nextBsRow());
-    bsRows.push(['For Expenses', ...prevData.map(d => nCell(d.forExpenses))]);
+    bsRows.push([lbl(options, 'bs', 'otherPayables', 'For Expenses'), ...prevData.map(d => nCell(d.forExpenses))]);
   }
   if (isVis(options, 'bs_tradePayables')) {
     clChildRows.push(nextBsRow());
-    bsRows.push(['Accounts Payable', ...prevData.map(d => nCell(d.accountsPayable))]);
+    bsRows.push([lbl(options, 'bs', 'tradePayables', 'Accounts Payable'), ...prevData.map(d => nCell(d.accountsPayable))]);
   }
   if (isVis(options, 'bs_shortTermBorrowings')) {
     clChildRows.push(nextBsRow());
-    bsRows.push(['Short Term Loan', ...prevData.map(d => nCell(d.shortTermLoan))]);
+    bsRows.push([lbl(options, 'bs', 'shortTermBorrowings', 'Short Term Loan'), ...prevData.map(d => nCell(d.shortTermLoan))]);
   }
   if (isVis(options, 'bs_currentTaxPayable')) {
     clChildRows.push(nextBsRow());
-    bsRows.push(['Provision for Taxation', ...prevData.map(d => nCell(d.provisionForTaxation))]);
+    bsRows.push([lbl(options, 'bs', 'currentTaxPayable', 'Provision for Taxation'), ...prevData.map(d => nCell(d.provisionForTaxation))]);
   }
+  customBsCl.forEach(ci => {
+    clChildRows.push(nextBsRow());
+    bsRows.push([ci.label, ...prevData.map(d => nCell(getCustomItemYearValue(ci, d.year)))]);
+  });
   bsRows[clHeaderIdx] = [
     'Current Liabilities',
     ...prevData.map((d, i) => fCell(excelSumRows(colLetter(i + 1), clChildRows), d.totalCurrentLiabilities)),
   ];
+  totalCapLiabInputs.push(clExcelRow);
   bsRows.push([
     'Total',
-    ...prevData.map((d, i) => fCell(excelSumRows(colLetter(i + 1), [capAfterDrawRow, clExcelRow]), d.totalCapitalAndLiabilities)),
+    ...prevData.map((d, i) => fCell(excelSumRows(colLetter(i + 1), totalCapLiabInputs), d.totalCapitalAndLiabilities)),
   ]);
   const wsBS = XLSX.utils.aoa_to_sheet(bsRows);
   applyColumnWidths(wsBS, widths);
@@ -2085,11 +2161,18 @@ export function exportPreviousFinancialsExcel(
     colHeaders,
   ];
   const nextIsRow = () => isRows.length + 1;
-  let salesExcelRow: number | null = null;
+  const gpAddRows: number[] = [];
   if (isVis(options, 'inc_revenue')) {
-    salesExcelRow = nextIsRow();
-    isRows.push([lbl(options, 'income', 'revenue', 'Sales'), ...prevData.map(d => nCell(d.sales))]);
+    gpAddRows.push(nextIsRow());
+    isRows.push([
+      lbl(options, 'income', 'revenue', 'Sales'),
+      ...prevData.map(d => nCell(d.sales - customIncRev.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0))),
+    ]);
   }
+  customIncRev.forEach(ci => {
+    gpAddRows.push(nextIsRow());
+    isRows.push([ci.label, ...prevData.map(d => nCell(getCustomItemYearValue(ci, d.year)))]);
+  });
   let cogsExcelRow: number | null = null;
   if (isVis(options, 'inc_costOfSales')) {
     cogsExcelRow = nextIsRow();
@@ -2102,7 +2185,7 @@ export function exportPreviousFinancialsExcel(
       fCell(
         excelDiffExpr(
           colLetter(i + 1),
-          salesExcelRow !== null ? [salesExcelRow] : [],
+          gpAddRows,
           cogsExcelRow !== null ? [cogsExcelRow] : []
         ),
         d.grossProfit
@@ -2133,9 +2216,13 @@ export function exportPreviousFinancialsExcel(
       isRows.push([lineLabel, ...prevData.map(d => nCell(Number(d[field])))]);
     });
   }
+  customIncOpex.forEach(ci => {
+    adminChildRows.push(nextIsRow());
+    isRows.push([ci.label, ...prevData.map(d => nCell(-getCustomItemYearValue(ci, d.year)))]);
+  });
   if (isVis(options, 'inc_depreciationExpense')) {
     adminChildRows.push(nextIsRow());
-    isRows.push(['Depreciation', ...prevData.map(d => nCell(d.depreciation))]);
+    isRows.push([lbl(options, 'income', 'depreciationExpense', 'Depreciation'), ...prevData.map(d => nCell(d.depreciation))]);
   }
   isRows[adminHeaderIdx] = [
     'Less- Administrative & Selling Expenses',
@@ -2146,17 +2233,24 @@ export function exportPreviousFinancialsExcel(
     'Net Operating Profit',
     ...prevData.map((d, i) => fCell(excelDiffExpr(colLetter(i + 1), [gpExcelRow], [adminExcelRow]), d.netOperatingProfit)),
   ]);
-  let otherIncRow: number | null = null;
+  const opSubAddRows: number[] = [netOpProfitRow];
   if (isVis(options, 'inc_interestIncome')) {
-    otherIncRow = nextIsRow();
-    isRows.push(['Add: Other Income', ...prevData.map(d => nCell(d.otherIncome))]);
+    opSubAddRows.push(nextIsRow());
+    isRows.push([
+      `Add: ${lbl(options, 'income', 'interestIncome', 'Other Income')}`,
+      ...prevData.map(d => nCell(d.otherIncome - customIncNonOp.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0))),
+    ]);
   }
+  customIncNonOp.forEach(ci => {
+    opSubAddRows.push(nextIsRow());
+    isRows.push([ci.label, ...prevData.map(d => nCell(getCustomItemYearValue(ci, d.year)))]);
+  });
   const opSubRow = nextIsRow();
   isRows.push([
     'Subtotal',
     ...prevData.map((d, i) =>
       fCell(
-        excelSumRows(colLetter(i + 1), otherIncRow !== null ? [netOpProfitRow, otherIncRow] : [netOpProfitRow]),
+        excelSumRows(colLetter(i + 1), opSubAddRows),
         d.operatingSubtotal
       )
     ),
@@ -2164,11 +2258,11 @@ export function exportPreviousFinancialsExcel(
   const taxAndFinSubRows: number[] = [];
   if (isVis(options, 'inc_financeCost')) {
     taxAndFinSubRows.push(nextIsRow());
-    isRows.push(['Less: Financial Exp.', ...prevData.map(d => nCell(d.financialExp))]);
+    isRows.push([`Less: ${lbl(options, 'income', 'financeCost', 'Financial Exp.')}`, ...prevData.map(d => nCell(d.financialExp))]);
   }
   if (isVis(options, 'inc_taxExpense')) {
     taxAndFinSubRows.push(nextIsRow());
-    isRows.push(['Less- Income Tax Provision', ...prevData.map(d => nCell(d.incomeTaxProvision))]);
+    isRows.push([`Less- ${lbl(options, 'income', 'taxExpense', 'Income Tax Provision')}`, ...prevData.map(d => nCell(d.incomeTaxProvision))]);
   }
   isRows.push([
     'Net Profit After Income Tax',
@@ -2194,22 +2288,26 @@ export function exportPreviousFinancialsExcel(
   const cfOpChildRows: number[] = [];
   if (isVis(options, 'cf_pbt')) {
     cfOpChildRows.push(nextCfRow());
-    cfRows.push(['Net Income', ...prevData.map(d => nCell(d.cfNetIncome))]);
+    cfRows.push([lbl(options, 'cf', 'profitBeforeTax', 'Net Income'), ...prevData.map(d => nCell(d.cfNetIncome))]);
   }
   if (isVis(options, 'cf_dep')) {
     cfOpChildRows.push(nextCfRow());
-    cfRows.push(['Add: Depreciation of Tangible Fixed Assets', ...prevData.map(d => nCell(d.cfDepreciation))]);
+    cfRows.push([lbl(options, 'cf', 'adjDepreciation', 'Add: Depreciation of Tangible Fixed Assets'), ...prevData.map(d => nCell(d.cfDepreciation))]);
   }
   if (isVis(options, 'cf_wc_receivables')) {
     cfOpChildRows.push(nextCfRow());
-    cfRows.push(['Add: (Increase) or decrease in Current Assets', ...prevData.map(d => nCell(d.cfChangeInCurrentAssets))]);
+    cfRows.push([lbl(options, 'cf', 'changeInReceivables', 'Add: (Increase) or decrease in Current Assets'), ...prevData.map(d => nCell(d.cfChangeInCurrentAssets))]);
   }
   cfOpChildRows.push(nextCfRow());
   cfRows.push(['Add: (Increase) or decrease in Construction Working Progress', ...prevData.map(d => nCell(d.cfChangeInCWIP))]);
   if (isVis(options, 'cf_wc_payables')) {
     cfOpChildRows.push(nextCfRow());
-    cfRows.push(['Add: Increase or (decrease) in Current Liabilities', ...prevData.map(d => nCell(d.cfChangeInCurrentLiabilities))]);
+    cfRows.push([lbl(options, 'cf', 'changeInPayables', 'Add: Increase or (decrease) in Current Liabilities'), ...prevData.map(d => nCell(d.cfChangeInCurrentLiabilities))]);
   }
+  customCfOp.forEach(ci => {
+    cfOpChildRows.push(nextCfRow());
+    cfRows.push([ci.label, ...prevData.map(d => nCell(getCustomItemYearValue(ci, d.year)))]);
+  });
   const cfNetOpRow = nextCfRow();
   cfRows.push([
     'Net Cash from operating activities',
@@ -2220,12 +2318,16 @@ export function exportPreviousFinancialsExcel(
   const cfInvChildRows: number[] = [];
   if (isVis(options, 'cf_pur_ppe')) {
     cfInvChildRows.push(nextCfRow());
-    cfRows.push(['Acquisition of Tangible Fixed Assets', ...prevData.map(d => nCell(d.cfAcquisitionPPE))]);
+    cfRows.push([lbl(options, 'cf', 'purchasePPE', 'Acquisition of Tangible Fixed Assets'), ...prevData.map(d => nCell(d.cfAcquisitionPPE))]);
   }
   if (isVis(options, 'cf_pur_intangible')) {
     cfInvChildRows.push(nextCfRow());
-    cfRows.push(['Disposal of Intangible Assets', ...prevData.map(d => nCell(d.cfDisposalIntangible))]);
+    cfRows.push([lbl(options, 'cf', 'purchaseIntangibles', 'Disposal of Intangible Assets'), ...prevData.map(d => nCell(d.cfDisposalIntangible))]);
   }
+  customCfInv.forEach(ci => {
+    cfInvChildRows.push(nextCfRow());
+    cfRows.push([ci.label, ...prevData.map(d => nCell(getCustomItemYearValue(ci, d.year)))]);
+  });
   const cfNetInvRow = nextCfRow();
   cfRows.push([
     'Net Cash used in investing Activities',
@@ -2236,8 +2338,12 @@ export function exportPreviousFinancialsExcel(
   const cfFinChildRows: number[] = [];
   if (isVis(options, 'cf_dividends_paid')) {
     cfFinChildRows.push(nextCfRow());
-    cfRows.push(['Drawings', ...prevData.map(d => nCell(d.cfDrawings))]);
+    cfRows.push([lbl(options, 'cf', 'financingDividendsPaid', 'Drawings'), ...prevData.map(d => nCell(d.cfDrawings))]);
   }
+  customCfFin.forEach(ci => {
+    cfFinChildRows.push(nextCfRow());
+    cfRows.push([ci.label, ...prevData.map(d => nCell(getCustomItemYearValue(ci, d.year)))]);
+  });
   cfFinChildRows.push(nextCfRow());
   cfRows.push(['Opening Balance', ...prevData.map(d => nCell(d.cfOpeningBalance))]);
   const cfNetFinRow = nextCfRow();
@@ -2274,11 +2380,11 @@ export function exportPreviousFinancialsExcel(
   const scInputs: number[] = [];
   if (isVis(options, 'eq_openingShareCapital')) {
     scInputs.push(nextEqRow());
-    eqRows.push(['Opening Share Capital', ...prevData.map(d => nCell(d.eqOpeningShareCapital))]);
+    eqRows.push([lbl(options, 'eq', 'openingShareCapital', 'Opening Share Capital'), ...prevData.map(d => nCell(d.eqOpeningShareCapital))]);
   }
   if (isVis(options, 'eq_shareCapitalIssued')) {
     scInputs.push(nextEqRow());
-    eqRows.push(['Share Capital Issued', ...prevData.map(d => nCell(d.eqShareCapitalIssued))]);
+    eqRows.push([lbl(options, 'eq', 'shareCapitalIssued', 'Share Capital Issued'), ...prevData.map(d => nCell(d.eqShareCapitalIssued))]);
   }
   const closeScRow = nextEqRow();
   eqRows.push([
@@ -2288,15 +2394,15 @@ export function exportPreviousFinancialsExcel(
   const reInputs: number[] = [];
   if (isVis(options, 'eq_openingRetainedEarnings')) {
     reInputs.push(nextEqRow());
-    eqRows.push(['Opening Retained Earnings', ...prevData.map(d => nCell(d.eqOpeningRetainedEarnings))]);
+    eqRows.push([lbl(options, 'eq', 'openingRetainedEarnings', 'Opening Retained Earnings'), ...prevData.map(d => nCell(d.eqOpeningRetainedEarnings))]);
   }
   if (isVis(options, 'eq_netProfitForYear')) {
     reInputs.push(nextEqRow());
-    eqRows.push(['Net Profit for the Year', ...prevData.map(d => nCell(d.eqNetProfitForYear))]);
+    eqRows.push([lbl(options, 'eq', 'netProfitForYear', 'Net Profit for the Year'), ...prevData.map(d => nCell(d.eqNetProfitForYear))]);
   }
   if (isVis(options, 'eq_dividendsPaid')) {
     reInputs.push(nextEqRow());
-    eqRows.push(['Dividends Paid', ...prevData.map(d => nCell(-d.eqDividendsPaid))]);
+    eqRows.push([lbl(options, 'eq', 'dividendsPaid', 'Dividends Paid'), ...prevData.map(d => nCell(-d.eqDividendsPaid))]);
   }
   const closeReRow = nextEqRow();
   eqRows.push([
@@ -2306,8 +2412,12 @@ export function exportPreviousFinancialsExcel(
   const eqTotalInputs = [closeScRow, closeReRow];
   if (isVis(options, 'eq_openingReserves')) {
     eqTotalInputs.push(nextEqRow());
-    eqRows.push(['Closing Reserves', ...prevData.map(d => nCell(d.eqClosingReserves))]);
+    eqRows.push([lbl(options, 'eq', 'openingReserves', 'Closing Reserves'), ...prevData.map(d => nCell(d.eqClosingReserves))]);
   }
+  customEq.forEach(ci => {
+    eqTotalInputs.push(nextEqRow());
+    eqRows.push([ci.label, ...prevData.map(d => nCell(getCustomItemYearValue(ci, d.year)))]);
+  });
   eqRows.push([
     'TOTAL CLOSING EQUITY',
     ...prevData.map((d, i) => fCell(excelSumRows(colLetter(i + 1), eqTotalInputs), d.eqTotalClosingEquity)),
@@ -2718,27 +2828,60 @@ function buildProjectedTextTables(
   const opexLbl = lbl(options, 'income', 'operatingExpenses', 'Administrative & Selling Expenses');
   const trRecLbl = lbl(options, 'bs', 'tradeReceivables', 'Trade & Other Receivables');
   const cashLbl = lbl(options, 'bs', 'cashAndEquivalents', 'Cash & Cash Equivalents');
+  const invLbl = lbl(options, 'bs', 'closingInventory', 'Inventories');
+  const advLbl = lbl(options, 'bs', 'otherReceivables', 'Advance, Deposit & Prepayments');
+  const ppeLbl = lbl(options, 'bs', 'propertyPlantEquipment', 'Property Plant & Equiptments');
+  const ltLoanLbl = lbl(options, 'bs', 'longTermBorrowings', 'Long Term Loan');
+  const trPayLbl = lbl(options, 'bs', 'tradePayables', 'Trade & Other Payables');
+  const taxPayLbl = lbl(options, 'bs', 'currentTaxPayable', 'Provisions For Tax');
+  const stLoanLbl = lbl(options, 'bs', 'shortTermBorrowings', 'Short Term Loan');
+  const expLiabLbl = lbl(options, 'bs', 'otherPayables', 'Liabilities for exp.');
+  const otherIncLbl = `Add; ${lbl(options, 'income', 'interestIncome', 'Others Income')}`;
+  const finCostLbl = `Less: ${lbl(options, 'income', 'financeCost', 'Financial Expenses')}`;
+  const taxExpLbl = `Less: ${lbl(options, 'income', 'taxExpense', 'Provision For Income Tax')}`;
+
+  const customBsCa = getCustomRows(options, 'balanceSheet', 'Current Assets');
+  const customBsNca = getCustomRows(options, 'balanceSheet', 'Non-Current Assets');
+  const customBsCl = getCustomRows(options, 'balanceSheet', 'Current Liabilities');
+  const customBsNcl = getCustomRows(options, 'balanceSheet', 'Non-Current Liabilities');
+  const customBsEq = getCustomRows(options, 'balanceSheet', 'Equity');
+
+  const customIncRev = getCustomRows(options, 'income', 'Revenue & Gross Margin');
+  const customIncOpex = getCustomRows(options, 'income', 'Operating Expenses');
+  const customIncNonOp = [...getCustomRows(options, 'income', 'Non-Operating & Tax'), ...getUnscopedCustomIncomeRows(options)];
+
+  const customCfOp = getCustomRows(options, 'cashFlow', 'Operating Activities');
+  const customCfInv = getCustomRows(options, 'cashFlow', 'Investing Activities');
+  const customCfFin = getCustomRows(options, 'cashFlow', 'Financing Activities');
+
+  const showAdminOpexRow = isVis(options, 'inc_operatingExpenses') || isVis(options, 'inc_depreciationExpense');
 
   const bsRows: (string | number)[][] = [
     ['Assets', '', ...projData.map(() => '')],
     ['Non Current Assets', '', ...projData.map(() => '')],
     ...(isVis(options, 'bs_propertyPlantEquipment')
-      ? [['Property Plant & Equiptments', 'Schedule-A', ...projData.map(d => d.propertyPlantEquipments)]]
+      ? [[
+          ppeLbl,
+          'Schedule-A',
+          ...projData.map(d => d.propertyPlantEquipments - customBsNca.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0)),
+        ]]
       : []),
+    ...customBsNca.map(ci => [ci.label, '', ...projData.map(d => getCustomItemYearValue(ci, d.year))]),
     ['Total Non Current Assets', '', ...projData.map(d => d.propertyPlantEquipments)],
     ['Current Assets', '', ...projData.map(() => '')],
     ...(isVis(options, 'bs_closingInventory')
-      ? [['Inventories', '3.00', ...projData.map(d => d.inventories)]]
+      ? [[invLbl, '3.00', ...projData.map(d => d.inventories)]]
       : []),
     ...(isVis(options, 'bs_tradeReceivables')
       ? [[trRecLbl, '4.00', ...projData.map(d => d.tradeAndOtherReceivables)]]
       : []),
     ...(isVis(options, 'bs_otherReceivables')
-      ? [['Advance, Deposit & Prepayments', '5.00', ...projData.map(d => d.advanceDepositPrepayments)]]
+      ? [[advLbl, '5.00', ...projData.map(d => d.advanceDepositPrepayments)]]
       : []),
     ...(isVis(options, 'bs_cashAndEquivalents')
       ? [[cashLbl, '6.00', ...projData.map(d => d.cashAndCashEquivalents)]]
       : []),
+    ...customBsCa.map(ci => [ci.label, '', ...projData.map(d => getCustomItemYearValue(ci, d.year))]),
     ['Total Current Assets', '', ...projData.map(d => d.totalCurrentAssets)],
     ['Total Assets', '', ...projData.map(d => d.totalAssets)],
     ['Equity & Liabilities', '', ...projData.map(() => '')],
@@ -2747,76 +2890,107 @@ function buildProjectedTextTables(
     ['Profit during the year', '', ...projData.map(d => d.profitDuringYear)],
     ['Subtotal', '', ...projData.map(d => d.equitySubtotal)],
     ...(isVis(options, 'eq_dividendsPaid')
-      ? [['Drawings', '', ...projData.map(d => d.drawings)]]
+      ? [[lbl(options, 'eq', 'dividendsPaid', 'Drawings'), '', ...projData.map(d => d.drawings)]]
       : []),
     ['Closing Capital', '', ...projData.map(d => d.closingCapital)],
+    ...customBsEq.map(ci => [ci.label, '', ...projData.map(d => getCustomItemYearValue(ci, d.year))]),
     ['Non-Current Liabilities', '', ...projData.map(() => '')],
     ...(isVis(options, 'bs_longTermBorrowings')
-      ? [['Long Term Loan', '7.00', ...projData.map(d => d.longTermLoan)]]
+      ? [[
+          ltLoanLbl,
+          '7.00',
+          ...projData.map(d => d.longTermLoan - customBsNcl.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0)),
+        ]]
       : []),
+    ...customBsNcl.map(ci => [ci.label, '', ...projData.map(d => getCustomItemYearValue(ci, d.year))]),
     ['Current Liabilities', '', ...projData.map(() => '')],
     ...(isVis(options, 'bs_tradePayables')
-      ? [['Trade & Other Payables', '8.00', ...projData.map(d => d.tradeAndOtherPayables)]]
+      ? [[trPayLbl, '8.00', ...projData.map(d => d.tradeAndOtherPayables)]]
       : []),
     ...(isVis(options, 'bs_currentTaxPayable')
-      ? [['Provisions For Tax', '9.00', ...projData.map(d => d.provisionsForTax)]]
+      ? [[taxPayLbl, '9.00', ...projData.map(d => d.provisionsForTax)]]
       : []),
     ...(isVis(options, 'bs_shortTermBorrowings')
-      ? [['Short Term Loan', '10.00', ...projData.map(d => d.shortTermLoan)]]
+      ? [[stLoanLbl, '10.00', ...projData.map(d => d.shortTermLoan)]]
       : []),
     ...(isVis(options, 'bs_otherPayables')
-      ? [['Liabilities for exp.', '', ...projData.map(d => d.liabilitiesForExp)]]
+      ? [[expLiabLbl, '', ...projData.map(d => d.liabilitiesForExp)]]
       : []),
+    ...customBsCl.map(ci => [ci.label, '', ...projData.map(d => getCustomItemYearValue(ci, d.year))]),
     ['Total Current Liabilities', '', ...projData.map(d => d.totalCurrentLiabilities)],
     ['Total Equity & Liabilities', '', ...projData.map(d => d.totalEquityAndLiabilities)],
   ];
 
   const plRows: (string | number)[][] = [
-    ...(isVis(options, 'inc_revenue') ? [[salesLbl, '', ...projData.map(d => d.sales)]] : []),
+    ...(isVis(options, 'inc_revenue')
+      ? [[
+          salesLbl,
+          '',
+          ...projData.map(d => d.sales - customIncRev.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0)),
+        ]]
+      : []),
+    ...customIncRev.map(ci => [ci.label, '', ...projData.map(d => getCustomItemYearValue(ci, d.year))]),
     ...(isVis(options, 'inc_costOfSales') ? [[cogsLbl, '11.00', ...projData.map(d => d.costOfGoodsSold)]] : []),
     ['Gross Profit', '', ...projData.map(d => d.grossProfit)],
-    ...(isVis(options, 'inc_interestIncome') ? [['Add; Others Income', '', ...projData.map(d => d.othersIncome)]] : []),
+    ...(isVis(options, 'inc_interestIncome')
+      ? [[
+          otherIncLbl,
+          '',
+          ...projData.map(d => d.othersIncome - customIncNonOp.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0)),
+        ]]
+      : []),
+    ...customIncNonOp.map(ci => [ci.label, '', ...projData.map(d => getCustomItemYearValue(ci, d.year))]),
     ['Subtotal', '', ...projData.map(d => d.grossProfitWithOtherIncome)],
     ['Less: Operating Expenses:', '', ...projData.map(() => '')],
-    ...(isVis(options, 'inc_operatingExpenses') ? [[opexLbl, '12.00', ...projData.map(d => d.adminAndSellingExpenses)]] : []),
+    ...(showAdminOpexRow
+      ? [[
+          opexLbl,
+          '12.00',
+          ...projData.map(d => d.adminAndSellingExpenses + customIncOpex.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0)),
+        ]]
+      : []),
+    ...customIncOpex.map(ci => [ci.label, '', ...projData.map(d => -getCustomItemYearValue(ci, d.year))]),
     ['Total Operating Profit/(Loss)', '', ...projData.map(d => d.totalOperatingProfit)],
-    ...(isVis(options, 'inc_financeCost') ? [['Less: Financial Expenses', '13.00', ...projData.map(d => d.financialExpenses)]] : []),
+    ...(isVis(options, 'inc_financeCost') ? [[finCostLbl, '13.00', ...projData.map(d => d.financialExpenses)]] : []),
     ['Net Profit/(Loss) Before Income Tax', '', ...projData.map(d => d.netProfitBeforeTax)],
-    ...(isVis(options, 'inc_taxExpense') ? [['Less: Provision For Income Tax', '', ...projData.map(d => d.provisionForIncomeTax)]] : []),
+    ...(isVis(options, 'inc_taxExpense') ? [[taxExpLbl, '', ...projData.map(d => d.provisionForIncomeTax)]] : []),
     ['Net Profit/(Loss) After Income Tax', '', ...projData.map(d => d.netProfitAfterTax)],
   ];
 
   const cfRows: (string | number)[][] = [
-    ...(isVis(options, 'cf_pbt') ? [['Net Income', ...projData.map(d => d.cfNetIncome)]] : []),
-    ...(isVis(options, 'cf_wc_inventory') ? [['(Increase)/Decrease In Inventory', ...projData.map(d => d.cfChangeInventory)]] : []),
-    ...(isVis(options, 'cf_wc_receivables') ? [['(Increase)/Decrease In Trade & Other Receivables', ...projData.map(d => d.cfChangeReceivables)]] : []),
-    ...(isVis(options, 'cf_wc_other_rec') ? [['(Increase)/Decrease in Advance, Deposit & Prepayments', ...projData.map(d => d.cfChangeAdvanceDeposit)]] : []),
-    ...(isVis(options, 'cf_wc_other_ca') ? [['Increase/(Decrease) in Current Assets', ...projData.map(d => d.cfChangeCurrentAssets)]] : []),
+    ...(isVis(options, 'cf_pbt') ? [[lbl(options, 'cf', 'profitBeforeTax', 'Net Income'), ...projData.map(d => d.cfNetIncome)]] : []),
+    ...(isVis(options, 'cf_wc_inventory') ? [[lbl(options, 'cf', 'changeInInventory', '(Increase)/Decrease In Inventory'), ...projData.map(d => d.cfChangeInventory)]] : []),
+    ...(isVis(options, 'cf_wc_receivables') ? [[lbl(options, 'cf', 'changeInReceivables', '(Increase)/Decrease In Trade & Other Receivables'), ...projData.map(d => d.cfChangeReceivables)]] : []),
+    ...(isVis(options, 'cf_wc_other_rec') ? [[lbl(options, 'cf', 'changeInOtherReceivables', '(Increase)/Decrease in Advance, Deposit & Prepayments'), ...projData.map(d => d.cfChangeAdvanceDeposit)]] : []),
+    ...(isVis(options, 'cf_wc_other_ca') ? [[lbl(options, 'cf', 'changeInOtherCA', 'Increase/(Decrease) in Current Assets'), ...projData.map(d => d.cfChangeCurrentAssets)]] : []),
     ['Increase/(Decrease) in Current Liabilities', ...projData.map(d => d.cfChangeCurrentLiabilities)],
-    ...(isVis(options, 'cf_wc_payables') ? [['Increase/(Decrease) in Trade & Other Payables', ...projData.map(d => d.cfChangeTradePayables)]] : []),
-    ...(isVis(options, 'cf_tax_paid') ? [['Increase/(Decrease) In Provisions For Tax', ...projData.map(d => d.cfChangeProvisionsTax)]] : []),
-    ...(isVis(options, 'cf_wc_other_pay') ? [['Increase/(Decrease) Liabilities For Expense', ...projData.map(d => d.cfChangeLiabilitiesExp)]] : []),
-    ...(isVis(options, 'cf_dep') ? [['Depreciation', ...projData.map(d => d.cfDepreciation)]] : []),
+    ...(isVis(options, 'cf_wc_payables') ? [[lbl(options, 'cf', 'changeInPayables', 'Increase/(Decrease) in Trade & Other Payables'), ...projData.map(d => d.cfChangeTradePayables)]] : []),
+    ...(isVis(options, 'cf_tax_paid') ? [[lbl(options, 'cf', 'incomeTaxPaid', 'Increase/(Decrease) In Provisions For Tax'), ...projData.map(d => d.cfChangeProvisionsTax)]] : []),
+    ...(isVis(options, 'cf_wc_other_pay') ? [[lbl(options, 'cf', 'changeInOtherPayables', 'Increase/(Decrease) Liabilities For Expense'), ...projData.map(d => d.cfChangeLiabilitiesExp)]] : []),
+    ...(isVis(options, 'cf_dep') ? [[lbl(options, 'cf', 'adjDepreciation', 'Depreciation'), ...projData.map(d => d.cfDepreciation)]] : []),
+    ...customCfOp.map(ci => [ci.label, ...projData.map(d => getCustomItemYearValue(ci, d.year))]),
     ['Net Cash Used by Operating Activities', ...projData.map(d => d.cfNetCashOperating)],
     ['2. CASH FLOW FROM INVESTING ACTIVITIES:', ...projData.map(() => '')],
     ['Inflows:', ...projData.map(() => '')],
-    ...(isVis(options, 'cf_sale_ppe') ? [['Sale Of Property, Plant & Equipment', ...projData.map(d => d.cfSalePPE)]] : []),
+    ...(isVis(options, 'cf_sale_ppe') ? [[lbl(options, 'cf', 'salePPE', 'Sale Of Property, Plant & Equipment'), ...projData.map(d => d.cfSalePPE)]] : []),
     ['Capital', ...projData.map(d => d.cfInvestingCapitalInflow)],
     ['Outflows:', ...projData.map(() => '')],
     ['Preliminary Expenses', ...projData.map(d => d.cfPreliminaryExpenses)],
-    ...(isVis(options, 'cf_pur_ppe') ? [['Purchase Property, Plant & Equipment', ...projData.map(d => d.cfPurchasePPE)]] : []),
+    ...(isVis(options, 'cf_pur_ppe') ? [[lbl(options, 'cf', 'purchasePPE', 'Purchase Property, Plant & Equipment'), ...projData.map(d => d.cfPurchasePPE)]] : []),
     ['Purchase Investment In Debt Or Securities', ...projData.map(d => d.cfPurchaseInvestment)],
+    ...customCfInv.map(ci => [ci.label, ...projData.map(d => getCustomItemYearValue(ci, d.year))]),
     ['Net Cash Used by Investing Activities', ...projData.map(d => d.cfNetCashInvesting)],
     ['3. CASH FLOW FROM FINANCIAL ACTIVITIES:', ...projData.map(() => '')],
     ['Inflows:', ...projData.map(() => '')],
-    ...(isVis(options, 'cf_borrow_proceeds') ? [['Loan Received', ...projData.map(d => d.cfLoanReceived)]] : []),
+    ...(isVis(options, 'cf_borrow_proceeds') ? [[lbl(options, 'cf', 'financingProceedsBorrowings', 'Loan Received'), ...projData.map(d => d.cfLoanReceived)]] : []),
     ['Additional Capital', ...projData.map(d => d.cfAdditionalCapital)],
     ['Issuance Of Debt (Bond & Notes)', ...projData.map(d => d.cfIssuanceOfDebt)],
     ['Outflows:', ...projData.map(() => '')],
     ...(isVis(options, 'cf_dividends_paid') ? [['To Stockholders as Dividend', ...projData.map(d => d.cfDividendsToStockholders)]] : []),
-    ['Drawings / Dividend', ...projData.map(d => d.cfDrawingsOutflow)],
-    ...(isVis(options, 'cf_borrow_repay') ? [['To Redeem Long Term Debt (Treasury Stock)', ...projData.map(d => d.cfRedeemLongTermDebt)]] : []),
+    ...(isVis(options, 'cf_dividends_paid') ? [[lbl(options, 'cf', 'financingDividendsPaid', 'Drawings / Dividend'), ...projData.map(d => d.cfDrawingsOutflow)]] : []),
+    ...(isVis(options, 'cf_borrow_repay') ? [[lbl(options, 'cf', 'repaymentOfBorrowings', 'To Redeem Long Term Debt (Treasury Stock)'), ...projData.map(d => d.cfRedeemLongTermDebt)]] : []),
     ['Issuance Of Bonds Payable', ...projData.map(d => d.cfIssuanceBondsPayable)],
+    ...customCfFin.map(ci => [ci.label, ...projData.map(d => getCustomItemYearValue(ci, d.year))]),
     ['Net Cash Provided by Financial Activities', ...projData.map(d => d.cfNetCashFinancing)],
     ['Net Cash Increase', ...projData.map(d => d.cfNetCashIncrease)],
     ['Opening Cash & Bank Balance', ...projData.map(d => d.cfOpeningCash)],
@@ -2824,35 +2998,35 @@ function buildProjectedTextTables(
   ];
 
   const quantNotesRows: (string | number)[][] = [
-    ['3.00', 'Inventories', ...projData.map(d => d.inventories)],
+    ['3.00', invLbl, ...projData.map(d => d.inventories)],
     ['4.00', trRecLbl, ...projData.map(() => '')],
     ['', 'As Per Last Year', ...projData.map(d => d.note4ReceivablesOpening)],
     ['', 'Add: Credit Sales During the Year', ...projData.map(d => d.note4ReceivablesAdded)],
     ['', 'Subtotal', ...projData.map(d => d.note4ReceivablesOpening + d.note4ReceivablesAdded)],
     ['', 'Less: Received During the Year', ...projData.map(d => d.note4ReceivablesReceived)],
     ['', `Closing ${trRecLbl}`, ...projData.map(d => d.tradeAndOtherReceivables)],
-    ['5.00', 'Advance, Deposit & Prepayments', ...projData.map(() => '')],
+    ['5.00', advLbl, ...projData.map(() => '')],
     ['', 'As Per Last Year', ...projData.map(d => d.note5AdvanceOpening)],
     ['', 'Add: During the Year', ...projData.map(d => d.note5AdvanceAdded)],
     ['', 'Subtotal', ...projData.map(d => d.note5AdvanceOpening + d.note5AdvanceAdded)],
     ['', 'Less: Adjustment', ...projData.map(d => d.note5AdvanceAdjusted)],
-    ['', 'Closing Advance, Deposit & Prepayments', ...projData.map(d => d.advanceDepositPrepayments)],
+    ['', `Closing ${advLbl}`, ...projData.map(d => d.advanceDepositPrepayments)],
     ['6.00', cashLbl, ...projData.map(() => '')],
     ['', 'Cash In Hand & Bank', ...projData.map(d => d.cashAndCashEquivalents)],
-    ['7.00', 'Long Term Loan', ...projData.map(d => d.longTermLoan)],
-    ['8.00', 'Trade & Other Payables', ...projData.map(() => '')],
+    ['7.00', ltLoanLbl, ...projData.map(d => d.longTermLoan)],
+    ['8.00', trPayLbl, ...projData.map(() => '')],
     ['', 'As Per Last Year', ...projData.map(d => d.note8PayablesOpening)],
     ['', 'Add: During the Year', ...projData.map(d => d.note8PayablesAdded)],
     ['', 'Subtotal', ...projData.map(d => d.note8PayablesOpening + d.note8PayablesAdded)],
     ['', 'Less: Payment During the Year', ...projData.map(d => d.note8PayablesPaid)],
-    ['', 'Closing Trade & Other Payables', ...projData.map(d => d.tradeAndOtherPayables)],
-    ['9.00', 'Provisions For Tax', ...projData.map(() => '')],
+    ['', `Closing ${trPayLbl}`, ...projData.map(d => d.tradeAndOtherPayables)],
+    ['9.00', taxPayLbl, ...projData.map(() => '')],
     ['', 'As Per Last Year', ...projData.map(d => d.note9TaxOpening)],
     ['', 'Add: During the Year', ...projData.map(d => d.note9TaxAdded)],
     ['', 'Subtotal', ...projData.map(d => d.note9TaxOpening + d.note9TaxAdded)],
     ['', 'Less: Adjustment', ...projData.map(d => d.note9TaxAdjusted)],
-    ['', 'Closing Provisions For Tax', ...projData.map(d => d.provisionsForTax)],
-    ['10.00', 'Short Term Loan', ...projData.map(() => '')],
+    ['', `Closing ${taxPayLbl}`, ...projData.map(d => d.provisionsForTax)],
+    ['10.00', stLoanLbl, ...projData.map(() => '')],
     ['', 'Bank Loan', ...projData.map(d => d.shortTermLoan)],
     ['11.00', lbl(options, 'income', 'costOfSales', 'Cost of Goods Sold'), ...projData.map(() => '')],
     ['', 'Opening Stock', ...projData.map(d => d.note11OpeningStock)],
@@ -2866,9 +3040,9 @@ function buildProjectedTextTables(
     ['', 'Carriage Inward', ...projData.map(d => d.note11CarriageInward)],
     ['', 'Other Direct Expenses', ...projData.map(d => d.note11OtherDirectExpenses)],
     ['', 'Total Direct Expenses', ...projData.map(d => d.note11DirectExpensesTotal)],
-    ['', 'Cost of Goods Sold', ...projData.map(d => d.costOfGoodsSold)],
+    ['', lbl(options, 'income', 'costOfSales', 'Cost of Goods Sold'), ...projData.map(d => d.costOfGoodsSold)],
     ['12.00', opexLbl, ...projData.map(d => d.adminAndSellingExpenses)],
-    ['13.00', 'Financial Expenses', ...projData.map(() => '')],
+    ['13.00', lbl(options, 'income', 'financeCost', 'Financial Expenses'), ...projData.map(() => '')],
     ['', 'Bank Charges & Interest', ...projData.map(d => d.financialExpenses)],
   ];
 
@@ -2898,6 +3072,33 @@ export function exportProjectedFinancialsExcel(
   const opexLbl = lbl(options, 'income', 'operatingExpenses', 'Administrative & Selling Expenses');
   const trRecLbl = lbl(options, 'bs', 'tradeReceivables', 'Trade & Other Receivables');
   const cashLbl = lbl(options, 'bs', 'cashAndEquivalents', 'Cash & Cash Equivalents');
+  const invLbl = lbl(options, 'bs', 'closingInventory', 'Inventories');
+  const advLbl = lbl(options, 'bs', 'otherReceivables', 'Advance, Deposit & Prepayments');
+  const ppeLbl = lbl(options, 'bs', 'propertyPlantEquipment', 'Property Plant & Equiptments');
+  const ltLoanLbl = lbl(options, 'bs', 'longTermBorrowings', 'Long Term Loan');
+  const trPayLbl = lbl(options, 'bs', 'tradePayables', 'Trade & Other Payables');
+  const taxPayLbl = lbl(options, 'bs', 'currentTaxPayable', 'Provisions For Tax');
+  const stLoanLbl = lbl(options, 'bs', 'shortTermBorrowings', 'Short Term Loan');
+  const expLiabLbl = lbl(options, 'bs', 'otherPayables', 'Liabilities for exp.');
+  const otherIncLbl = `Add; ${lbl(options, 'income', 'interestIncome', 'Others Income')}`;
+  const finCostLbl = `Less: ${lbl(options, 'income', 'financeCost', 'Financial Expenses')}`;
+  const taxExpLbl = `Less: ${lbl(options, 'income', 'taxExpense', 'Provision For Income Tax')}`;
+
+  const customBsCa = getCustomRows(options, 'balanceSheet', 'Current Assets');
+  const customBsNca = getCustomRows(options, 'balanceSheet', 'Non-Current Assets');
+  const customBsCl = getCustomRows(options, 'balanceSheet', 'Current Liabilities');
+  const customBsNcl = getCustomRows(options, 'balanceSheet', 'Non-Current Liabilities');
+  const customBsEq = getCustomRows(options, 'balanceSheet', 'Equity');
+
+  const customIncRev = getCustomRows(options, 'income', 'Revenue & Gross Margin');
+  const customIncOpex = getCustomRows(options, 'income', 'Operating Expenses');
+  const customIncNonOp = [...getCustomRows(options, 'income', 'Non-Operating & Tax'), ...getUnscopedCustomIncomeRows(options)];
+
+  const customCfOp = getCustomRows(options, 'cashFlow', 'Operating Activities');
+  const customCfInv = getCustomRows(options, 'cashFlow', 'Investing Activities');
+  const customCfFin = getCustomRows(options, 'cashFlow', 'Financing Activities');
+
+  const showAdminOpexRow = isVis(options, 'inc_operatingExpenses') || isVis(options, 'inc_depreciationExpense');
 
   // 1. Statement of Financial Position (dynamic Excel row tracking)
   const bsRows: ExcelCellValue[][] = [
@@ -2912,24 +3113,32 @@ export function exportProjectedFinancialsExcel(
     ['Non Current Assets', '', ...projData.map(() => '')],
   ];
   const nextBsRow = () => bsRows.length + 1;
-  let ppeRow: number | null = null;
+  const ncaRows: number[] = [];
   if (isVis(options, 'bs_propertyPlantEquipment')) {
-    ppeRow = nextBsRow();
-    bsRows.push(['Property Plant & Equiptments', 'Schedule-A', ...projData.map(d => nCell(d.propertyPlantEquipments))]);
+    ncaRows.push(nextBsRow());
+    bsRows.push([
+      ppeLbl,
+      'Schedule-A',
+      ...projData.map(d => nCell(d.propertyPlantEquipments - customBsNca.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0))),
+    ]);
   }
+  customBsNca.forEach(ci => {
+    ncaRows.push(nextBsRow());
+    bsRows.push([ci.label, '', ...projData.map(d => nCell(getCustomItemYearValue(ci, d.year)))]);
+  });
   const totalNcaRow = nextBsRow();
   bsRows.push([
     'Total Non Current Assets',
     '',
     ...projData.map((d, i) =>
-      fCell(excelSumRows(colLetter(yearStartColIdx + i), ppeRow !== null ? [ppeRow] : []), d.propertyPlantEquipments)
+      fCell(excelSumRows(colLetter(yearStartColIdx + i), ncaRows), d.propertyPlantEquipments)
     ),
   ]);
   bsRows.push(['Current Assets', '', ...projData.map(() => '')]);
   const caRows: number[] = [];
   if (isVis(options, 'bs_closingInventory')) {
     caRows.push(nextBsRow());
-    bsRows.push(['Inventories', '3.00', ...projData.map(d => nCell(d.inventories))]);
+    bsRows.push([invLbl, '3.00', ...projData.map(d => nCell(d.inventories))]);
   }
   if (isVis(options, 'bs_tradeReceivables')) {
     caRows.push(nextBsRow());
@@ -2937,12 +3146,16 @@ export function exportProjectedFinancialsExcel(
   }
   if (isVis(options, 'bs_otherReceivables')) {
     caRows.push(nextBsRow());
-    bsRows.push(['Advance, Deposit & Prepayments', '5.00', ...projData.map(d => nCell(d.advanceDepositPrepayments))]);
+    bsRows.push([advLbl, '5.00', ...projData.map(d => nCell(d.advanceDepositPrepayments))]);
   }
   if (isVis(options, 'bs_cashAndEquivalents')) {
     caRows.push(nextBsRow());
     bsRows.push([cashLbl, '6.00', ...projData.map(d => nCell(d.cashAndCashEquivalents))]);
   }
+  customBsCa.forEach(ci => {
+    caRows.push(nextBsRow());
+    bsRows.push([ci.label, '', ...projData.map(d => nCell(getCustomItemYearValue(ci, d.year)))]);
+  });
   const totalCaRow = nextBsRow();
   bsRows.push([
     'Total Current Assets',
@@ -2970,7 +3183,7 @@ export function exportProjectedFinancialsExcel(
   let drawRow: number | null = null;
   if (isVis(options, 'eq_dividendsPaid')) {
     drawRow = nextBsRow();
-    bsRows.push(['Drawings', '', ...projData.map(d => nCell(d.drawings))]);
+    bsRows.push([lbl(options, 'eq', 'dividendsPaid', 'Drawings'), '', ...projData.map(d => nCell(d.drawings))]);
   }
   const closingCapRow = nextBsRow();
   bsRows.push([
@@ -2980,37 +3193,54 @@ export function exportProjectedFinancialsExcel(
       fCell(excelDiffExpr(colLetter(yearStartColIdx + i), [eqSubRow], drawRow !== null ? [drawRow] : []), d.closingCapital)
     ),
   ]);
+  const eqExtraRows: number[] = [];
+  customBsEq.forEach(ci => {
+    eqExtraRows.push(nextBsRow());
+    bsRows.push([ci.label, '', ...projData.map(d => nCell(getCustomItemYearValue(ci, d.year)))]);
+  });
   bsRows.push(['Non-Current Liabilities', '', ...projData.map(() => '')]);
-  let ltLoanRow: number | null = null;
+  const nclRows: number[] = [];
   if (isVis(options, 'bs_longTermBorrowings')) {
-    ltLoanRow = nextBsRow();
-    bsRows.push(['Long Term Loan', '7.00', ...projData.map(d => nCell(d.longTermLoan))]);
+    nclRows.push(nextBsRow());
+    bsRows.push([
+      ltLoanLbl,
+      '7.00',
+      ...projData.map(d => nCell(d.longTermLoan - customBsNcl.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0))),
+    ]);
   }
+  customBsNcl.forEach(ci => {
+    nclRows.push(nextBsRow());
+    bsRows.push([ci.label, '', ...projData.map(d => nCell(getCustomItemYearValue(ci, d.year)))]);
+  });
   bsRows.push(['Current Liabilities', '', ...projData.map(() => '')]);
   const clRows: number[] = [];
   if (isVis(options, 'bs_tradePayables')) {
     clRows.push(nextBsRow());
-    bsRows.push(['Trade & Other Payables', '8.00', ...projData.map(d => nCell(d.tradeAndOtherPayables))]);
+    bsRows.push([trPayLbl, '8.00', ...projData.map(d => nCell(d.tradeAndOtherPayables))]);
   }
   if (isVis(options, 'bs_currentTaxPayable')) {
     clRows.push(nextBsRow());
-    bsRows.push(['Provisions For Tax', '9.00', ...projData.map(d => nCell(d.provisionsForTax))]);
+    bsRows.push([taxPayLbl, '9.00', ...projData.map(d => nCell(d.provisionsForTax))]);
   }
   if (isVis(options, 'bs_shortTermBorrowings')) {
     clRows.push(nextBsRow());
-    bsRows.push(['Short Term Loan', '10.00', ...projData.map(d => nCell(d.shortTermLoan))]);
+    bsRows.push([stLoanLbl, '10.00', ...projData.map(d => nCell(d.shortTermLoan))]);
   }
   if (isVis(options, 'bs_otherPayables')) {
     clRows.push(nextBsRow());
-    bsRows.push(['Liabilities for exp.', '', ...projData.map(d => nCell(d.liabilitiesForExp))]);
+    bsRows.push([expLiabLbl, '', ...projData.map(d => nCell(d.liabilitiesForExp))]);
   }
+  customBsCl.forEach(ci => {
+    clRows.push(nextBsRow());
+    bsRows.push([ci.label, '', ...projData.map(d => nCell(getCustomItemYearValue(ci, d.year)))]);
+  });
   const totalClRow = nextBsRow();
   bsRows.push([
     'Total Current Liabilities',
     '',
     ...projData.map((d, i) => fCell(excelSumRows(colLetter(yearStartColIdx + i), clRows), d.totalCurrentLiabilities)),
   ]);
-  const totalEqLiabInputs = ltLoanRow !== null ? [closingCapRow, ltLoanRow, totalClRow] : [closingCapRow, totalClRow];
+  const totalEqLiabInputs = [closingCapRow, ...eqExtraRows, ...nclRows, totalClRow];
   bsRows.push([
     'Total Equity & Liabilities',
     '',
@@ -3033,11 +3263,19 @@ export function exportProjectedFinancialsExcel(
     [],
   ];
   const nextPlRow = () => plRows.length + 1;
-  let plSalesRow: number | null = null;
+  const plGpAddRows: number[] = [];
   if (isVis(options, 'inc_revenue')) {
-    plSalesRow = nextPlRow();
-    plRows.push([salesLbl, '', ...projData.map(d => nCell(d.sales))]);
+    plGpAddRows.push(nextPlRow());
+    plRows.push([
+      salesLbl,
+      '',
+      ...projData.map(d => nCell(d.sales - customIncRev.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0))),
+    ]);
   }
+  customIncRev.forEach(ci => {
+    plGpAddRows.push(nextPlRow());
+    plRows.push([ci.label, '', ...projData.map(d => nCell(getCustomItemYearValue(ci, d.year)))]);
+  });
   let plCogsRow: number | null = null;
   if (isVis(options, 'inc_costOfSales')) {
     plCogsRow = nextPlRow();
@@ -3051,42 +3289,58 @@ export function exportProjectedFinancialsExcel(
       fCell(
         excelDiffExpr(
           colLetter(yearStartColIdx + i),
-          plSalesRow !== null ? [plSalesRow] : [],
+          plGpAddRows,
           plCogsRow !== null ? [plCogsRow] : []
         ),
         d.grossProfit
       )
     ),
   ]);
-  let plOtherIncRow: number | null = null;
+  const plSubAddRows: number[] = [plGpRow];
   if (isVis(options, 'inc_interestIncome')) {
-    plOtherIncRow = nextPlRow();
-    plRows.push(['Add; Others Income', '', ...projData.map(d => nCell(d.othersIncome))]);
+    plSubAddRows.push(nextPlRow());
+    plRows.push([
+      otherIncLbl,
+      '',
+      ...projData.map(d => nCell(d.othersIncome - customIncNonOp.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0))),
+    ]);
   }
+  customIncNonOp.forEach(ci => {
+    plSubAddRows.push(nextPlRow());
+    plRows.push([ci.label, '', ...projData.map(d => nCell(getCustomItemYearValue(ci, d.year)))]);
+  });
   const plSubRow = nextPlRow();
   plRows.push([
     'Subtotal',
     '',
     ...projData.map((d, i) =>
       fCell(
-        excelSumRows(colLetter(yearStartColIdx + i), plOtherIncRow !== null ? [plGpRow, plOtherIncRow] : [plGpRow]),
+        excelSumRows(colLetter(yearStartColIdx + i), plSubAddRows),
         d.grossProfitWithOtherIncome
       )
     ),
   ]);
   plRows.push(['Less: Operating Expenses:', '', ...projData.map(() => '')]);
-  let plOpexRow: number | null = null;
-  if (isVis(options, 'inc_operatingExpenses')) {
-    plOpexRow = nextPlRow();
-    plRows.push([opexLbl, '12.00', ...projData.map(d => nCell(d.adminAndSellingExpenses))]);
+  const plOpexRows: number[] = [];
+  if (showAdminOpexRow) {
+    plOpexRows.push(nextPlRow());
+    plRows.push([
+      opexLbl,
+      '12.00',
+      ...projData.map(d => nCell(d.adminAndSellingExpenses + customIncOpex.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0))),
+    ]);
   }
+  customIncOpex.forEach(ci => {
+    plOpexRows.push(nextPlRow());
+    plRows.push([ci.label, '', ...projData.map(d => nCell(-getCustomItemYearValue(ci, d.year)))]);
+  });
   const plOpProfitRow = nextPlRow();
   plRows.push([
     'Total Operating Profit/(Loss)',
     '',
     ...projData.map((d, i) =>
       fCell(
-        excelDiffExpr(colLetter(yearStartColIdx + i), [plSubRow], plOpexRow !== null ? [plOpexRow] : []),
+        excelDiffExpr(colLetter(yearStartColIdx + i), [plSubRow], plOpexRows),
         d.totalOperatingProfit
       )
     ),
@@ -3094,7 +3348,7 @@ export function exportProjectedFinancialsExcel(
   let plFinRow: number | null = null;
   if (isVis(options, 'inc_financeCost')) {
     plFinRow = nextPlRow();
-    plRows.push(['Less: Financial Expenses', '13.00', ...projData.map(d => nCell(d.financialExpenses))]);
+    plRows.push([finCostLbl, '13.00', ...projData.map(d => nCell(d.financialExpenses))]);
   }
   const plPbtRow = nextPlRow();
   plRows.push([
@@ -3110,7 +3364,7 @@ export function exportProjectedFinancialsExcel(
   let plTaxRow: number | null = null;
   if (isVis(options, 'inc_taxExpense')) {
     plTaxRow = nextPlRow();
-    plRows.push(['Less: Provision For Income Tax', '', ...projData.map(d => nCell(d.provisionForIncomeTax))]);
+    plRows.push([taxExpLbl, '', ...projData.map(d => nCell(d.provisionForIncomeTax))]);
   }
   plRows.push([
     'Net Profit/(Loss) After Income Tax',
@@ -3141,42 +3395,46 @@ export function exportProjectedFinancialsExcel(
   const cfOpRows: number[] = [];
   if (isVis(options, 'cf_pbt')) {
     cfOpRows.push(nextCfRow());
-    cfRows.push(['Net Income', ...projData.map(d => nCell(d.cfNetIncome))]);
+    cfRows.push([lbl(options, 'cf', 'profitBeforeTax', 'Net Income'), ...projData.map(d => nCell(d.cfNetIncome))]);
   }
   if (isVis(options, 'cf_wc_inventory')) {
     cfOpRows.push(nextCfRow());
-    cfRows.push(['(Increase)/Decrease In Inventory', ...projData.map(d => nCell(d.cfChangeInventory))]);
+    cfRows.push([lbl(options, 'cf', 'changeInInventory', '(Increase)/Decrease In Inventory'), ...projData.map(d => nCell(d.cfChangeInventory))]);
   }
   if (isVis(options, 'cf_wc_receivables')) {
     cfOpRows.push(nextCfRow());
-    cfRows.push(['(Increase)/Decrease In Trade & Other Receivables', ...projData.map(d => nCell(d.cfChangeReceivables))]);
+    cfRows.push([lbl(options, 'cf', 'changeInReceivables', '(Increase)/Decrease In Trade & Other Receivables'), ...projData.map(d => nCell(d.cfChangeReceivables))]);
   }
   if (isVis(options, 'cf_wc_other_rec')) {
     cfOpRows.push(nextCfRow());
-    cfRows.push(['(Increase)/Decrease in Advance, Deposit & Prepayments', ...projData.map(d => nCell(d.cfChangeAdvanceDeposit))]);
+    cfRows.push([lbl(options, 'cf', 'changeInOtherReceivables', '(Increase)/Decrease in Advance, Deposit & Prepayments'), ...projData.map(d => nCell(d.cfChangeAdvanceDeposit))]);
   }
   if (isVis(options, 'cf_wc_other_ca')) {
     cfOpRows.push(nextCfRow());
-    cfRows.push(['Increase/(Decrease) in Current Assets', ...projData.map(d => nCell(d.cfChangeCurrentAssets))]);
+    cfRows.push([lbl(options, 'cf', 'changeInOtherCA', 'Increase/(Decrease) in Current Assets'), ...projData.map(d => nCell(d.cfChangeCurrentAssets))]);
   }
   cfOpRows.push(nextCfRow());
   cfRows.push(['Increase/(Decrease) in Current Liabilities', ...projData.map(d => nCell(d.cfChangeCurrentLiabilities))]);
   if (isVis(options, 'cf_wc_payables')) {
     cfOpRows.push(nextCfRow());
-    cfRows.push(['Increase/(Decrease) in Trade & Other Payables', ...projData.map(d => nCell(d.cfChangeTradePayables))]);
+    cfRows.push([lbl(options, 'cf', 'changeInPayables', 'Increase/(Decrease) in Trade & Other Payables'), ...projData.map(d => nCell(d.cfChangeTradePayables))]);
   }
   if (isVis(options, 'cf_tax_paid')) {
     cfOpRows.push(nextCfRow());
-    cfRows.push(['Increase/(Decrease) In Provisions For Tax', ...projData.map(d => nCell(d.cfChangeProvisionsTax))]);
+    cfRows.push([lbl(options, 'cf', 'incomeTaxPaid', 'Increase/(Decrease) In Provisions For Tax'), ...projData.map(d => nCell(d.cfChangeProvisionsTax))]);
   }
   if (isVis(options, 'cf_wc_other_pay')) {
     cfOpRows.push(nextCfRow());
-    cfRows.push(['Increase/(Decrease) Liabilities For Expense', ...projData.map(d => nCell(d.cfChangeLiabilitiesExp))]);
+    cfRows.push([lbl(options, 'cf', 'changeInOtherPayables', 'Increase/(Decrease) Liabilities For Expense'), ...projData.map(d => nCell(d.cfChangeLiabilitiesExp))]);
   }
   if (isVis(options, 'cf_dep')) {
     cfOpRows.push(nextCfRow());
-    cfRows.push(['Depreciation', ...projData.map(d => nCell(d.cfDepreciation))]);
+    cfRows.push([lbl(options, 'cf', 'adjDepreciation', 'Depreciation'), ...projData.map(d => nCell(d.cfDepreciation))]);
   }
+  customCfOp.forEach(ci => {
+    cfOpRows.push(nextCfRow());
+    cfRows.push([ci.label, ...projData.map(d => nCell(getCustomItemYearValue(ci, d.year)))]);
+  });
   const cfNetOpRow = nextCfRow();
   cfRows.push([
     'Net Cash Used by Operating Activities',
@@ -3188,7 +3446,7 @@ export function exportProjectedFinancialsExcel(
   const cfInvRows: number[] = [];
   if (isVis(options, 'cf_sale_ppe')) {
     cfInvRows.push(nextCfRow());
-    cfRows.push(['Sale Of Property, Plant & Equipment', ...projData.map(d => nCell(d.cfSalePPE))]);
+    cfRows.push([lbl(options, 'cf', 'salePPE', 'Sale Of Property, Plant & Equipment'), ...projData.map(d => nCell(d.cfSalePPE))]);
   }
   cfInvRows.push(nextCfRow());
   cfRows.push(['Capital', ...projData.map(d => nCell(d.cfInvestingCapitalInflow))]);
@@ -3197,10 +3455,14 @@ export function exportProjectedFinancialsExcel(
   cfRows.push(['Preliminary Expenses', ...projData.map(d => nCell(d.cfPreliminaryExpenses))]);
   if (isVis(options, 'cf_pur_ppe')) {
     cfInvRows.push(nextCfRow());
-    cfRows.push(['Purchase Property, Plant & Equipment', ...projData.map(d => nCell(d.cfPurchasePPE))]);
+    cfRows.push([lbl(options, 'cf', 'purchasePPE', 'Purchase Property, Plant & Equipment'), ...projData.map(d => nCell(d.cfPurchasePPE))]);
   }
   cfInvRows.push(nextCfRow());
   cfRows.push(['Purchase Investment In Debt Or Securities', ...projData.map(d => nCell(d.cfPurchaseInvestment))]);
+  customCfInv.forEach(ci => {
+    cfInvRows.push(nextCfRow());
+    cfRows.push([ci.label, ...projData.map(d => nCell(getCustomItemYearValue(ci, d.year)))]);
+  });
   const cfNetInvRow = nextCfRow();
   cfRows.push([
     'Net Cash Used by Investing Activities',
@@ -3212,7 +3474,7 @@ export function exportProjectedFinancialsExcel(
   const cfFinRows: number[] = [];
   if (isVis(options, 'cf_borrow_proceeds')) {
     cfFinRows.push(nextCfRow());
-    cfRows.push(['Loan Received', ...projData.map(d => nCell(d.cfLoanReceived))]);
+    cfRows.push([lbl(options, 'cf', 'financingProceedsBorrowings', 'Loan Received'), ...projData.map(d => nCell(d.cfLoanReceived))]);
   }
   cfFinRows.push(nextCfRow());
   cfRows.push(['Additional Capital', ...projData.map(d => nCell(d.cfAdditionalCapital))]);
@@ -3222,15 +3484,19 @@ export function exportProjectedFinancialsExcel(
   if (isVis(options, 'cf_dividends_paid')) {
     cfFinRows.push(nextCfRow());
     cfRows.push(['To Stockholders as Dividend', ...projData.map(d => nCell(d.cfDividendsToStockholders))]);
+    cfFinRows.push(nextCfRow());
+    cfRows.push([lbl(options, 'cf', 'financingDividendsPaid', 'Drawings / Dividend'), ...projData.map(d => nCell(d.cfDrawingsOutflow))]);
   }
-  cfFinRows.push(nextCfRow());
-  cfRows.push(['Drawings / Dividend', ...projData.map(d => nCell(d.cfDrawingsOutflow))]);
   if (isVis(options, 'cf_borrow_repay')) {
     cfFinRows.push(nextCfRow());
-    cfRows.push(['To Redeem Long Term Debt (Treasury Stock)', ...projData.map(d => nCell(d.cfRedeemLongTermDebt))]);
+    cfRows.push([lbl(options, 'cf', 'repaymentOfBorrowings', 'To Redeem Long Term Debt (Treasury Stock)'), ...projData.map(d => nCell(d.cfRedeemLongTermDebt))]);
   }
   cfFinRows.push(nextCfRow());
   cfRows.push(['Issuance Of Bonds Payable', ...projData.map(d => nCell(d.cfIssuanceBondsPayable))]);
+  customCfFin.forEach(ci => {
+    cfFinRows.push(nextCfRow());
+    cfRows.push([ci.label, ...projData.map(d => nCell(getCustomItemYearValue(ci, d.year)))]);
+  });
   const cfNetFinRow = nextCfRow();
   cfRows.push([
     'Net Cash Provided by Financial Activities',

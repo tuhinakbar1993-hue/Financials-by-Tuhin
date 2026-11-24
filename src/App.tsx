@@ -183,9 +183,10 @@ export default function App() {
       incomeStatements,
       balanceSheets,
       cashFlowStatements,
-      fixedAssetsSchedule
+      fixedAssetsSchedule,
+      { statementConfig, labelOverrides }
     );
-  }, [companyProfile, allYearsInputs, incomeStatements, balanceSheets, cashFlowStatements, fixedAssetsSchedule]);
+  }, [companyProfile, allYearsInputs, incomeStatements, balanceSheets, cashFlowStatements, fixedAssetsSchedule, statementConfig, labelOverrides]);
 
   const effectiveNotes = customNotes || defaultNotes;
 
@@ -216,7 +217,8 @@ export default function App() {
       cashFlowStatements,
       fixedAssetsSchedule,
       effectiveNotes,
-      defaultNotes
+      defaultNotes,
+      { statementConfig, labelOverrides }
     );
   }, [
     companyProfile,
@@ -227,6 +229,8 @@ export default function App() {
     fixedAssetsSchedule,
     effectiveNotes,
     defaultNotes,
+    statementConfig,
+    labelOverrides,
   ]);
 
   const projectedFormatData = useMemo(() => {
@@ -860,6 +864,18 @@ export default function App() {
           if (item.label !== defItem.label) {
             next[overrideKey] = item.label;
           } else if (next[overrideKey] && next[overrideKey] === defItem.label) {
+            delete next[overrideKey];
+          }
+          return;
+        }
+        const faIdx = FIXED_ASSET_CATEGORY_CONFIG_IDS.indexOf(
+          item.id as (typeof FIXED_ASSET_CATEGORY_CONFIG_IDS)[number]
+        );
+        if (faIdx !== -1 && defItem) {
+          const overrideKey = `fa_${faIdx}`;
+          if (item.label !== defItem.label) {
+            next[overrideKey] = item.label;
+          } else if (next[overrideKey]) {
             delete next[overrideKey];
           }
         }

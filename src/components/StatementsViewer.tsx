@@ -60,6 +60,7 @@ import {
   exportProjectedFinancialsExcel,
   exportProjectedFinancialsWord,
   exportProjectedFinancialsPdf,
+  resolveFACategoriesForExport,
 } from '../services/exportService';
 import { getCustomItemYearValue, FIXED_ASSET_CATEGORY_CONFIG_IDS } from '../services/financialEngine';
 import { PreviousFormatSuiteView, ProjectedFormatSuiteView } from './FormatStatementsViews';
@@ -309,10 +310,26 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
     switch (stmt) {
       case 'income': {
         const rows: (string | number)[][] = [];
+        const stdIncomeSections = ['Revenue & Gross Margin', 'Operating Expenses', 'Non-Operating & Tax'];
+        const visCustRev = getCustomItems('income', 'Revenue & Gross Margin').filter(c => c.isVisible);
+        const visCustOpex = getCustomItems('income', 'Operating Expenses').filter(c => c.isVisible);
+        const visCustNonOp = statementConfig.filter(
+          c =>
+            c.isCustom &&
+            c.isVisible &&
+            c.statement === 'income' &&
+            (c.section === 'Non-Operating & Tax' || !stdIncomeSections.includes(c.section))
+        );
         if (isElemVisible('inc_revenue')) {
-          rows.push([getLbl('income', 'revenue', 'Sales Revenue', 'inc_revenue'), ...filteredIncome.map(d => getVal('income', 'revenue', d.year, d.revenue))]);
+          rows.push([
+            getLbl('income', 'revenue', 'Sales Revenue', 'inc_revenue'),
+            ...filteredIncome.map(d => {
+              const custSum = visCustRev.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0);
+              return getVal('income', 'revenue', d.year, Math.round((d.revenue - custSum) * 100) / 100);
+            }),
+          ]);
         }
-        getCustomItems('income', 'Revenue & Gross Margin').filter(c => c.isVisible).forEach(ci => {
+        visCustRev.forEach(ci => {
           rows.push([ci.label, ...filteredIncome.map(d => getCustomItemYearValue(ci, d.year))]);
         });
         if (isElemVisible('inc_costOfSales')) {
@@ -320,9 +337,15 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         }
         rows.push([getLbl('income', 'grossProfit', 'Gross Profit'), ...filteredIncome.map(d => getVal('income', 'grossProfit', d.year, d.grossProfit))]);
         if (isElemVisible('inc_operatingExpenses')) {
-          rows.push([getLbl('income', 'operatingExpenses', 'Operating Expenses', 'inc_operatingExpenses'), ...filteredIncome.map(d => -getVal('income', 'operatingExpenses', d.year, d.operatingExpenses))]);
+          rows.push([
+            getLbl('income', 'operatingExpenses', 'Operating Expenses', 'inc_operatingExpenses'),
+            ...filteredIncome.map(d => {
+              const custSum = visCustOpex.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0);
+              return -getVal('income', 'operatingExpenses', d.year, Math.round((d.operatingExpenses + custSum) * 100) / 100);
+            }),
+          ]);
         }
-        getCustomItems('income', 'Operating Expenses').filter(c => c.isVisible).forEach(ci => {
+        visCustOpex.forEach(ci => {
           rows.push([ci.label, ...filteredIncome.map(d => getCustomItemYearValue(ci, d.year))]);
         });
         if (isElemVisible('inc_depreciationExpense')) {
@@ -330,12 +353,18 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         }
         rows.push([getLbl('income', 'operatingProfit', 'Operating Profit (EBIT)'), ...filteredIncome.map(d => getVal('income', 'operatingProfit', d.year, d.operatingProfit))]);
         if (isElemVisible('inc_interestIncome')) {
-          rows.push([getLbl('income', 'interestIncome', 'Interest & Investment Income', 'inc_interestIncome'), ...filteredIncome.map(d => getVal('income', 'interestIncome', d.year, d.interestIncome))]);
+          rows.push([
+            getLbl('income', 'interestIncome', 'Interest & Investment Income', 'inc_interestIncome'),
+            ...filteredIncome.map(d => {
+              const custSum = visCustNonOp.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0);
+              return getVal('income', 'interestIncome', d.year, Math.round((d.interestIncome - custSum) * 100) / 100);
+            }),
+          ]);
         }
         if (isElemVisible('inc_financeCost')) {
           rows.push([getLbl('income', 'financeCost', 'Finance Cost', 'inc_financeCost'), ...filteredIncome.map(d => -getVal('income', 'financeCost', d.year, d.financeCost))]);
         }
-        getCustomItems('income', 'Non-Operating & Tax').filter(c => c.isVisible).forEach(ci => {
+        visCustNonOp.forEach(ci => {
           rows.push([ci.label, ...filteredIncome.map(d => getCustomItemYearValue(ci, d.year))]);
         });
         rows.push([getLbl('income', 'profitBeforeTax', 'Profit Before Tax'), ...filteredIncome.map(d => getVal('income', 'profitBeforeTax', d.year, d.profitBeforeTax))]);
@@ -424,11 +453,12 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         if (!latest) {
           return { title: 'Schedule of Fixed Assets', headers: ['Asset Class'], rows: [] };
         }
+        const cats = resolveFACategoriesForExport(latest, exportSyncOptions);
         return {
           title: `Schedule of Fixed Assets — FY ${latest.year}`,
           headers: ['Asset Class', 'Dep %', 'Opening Cost', 'Additions', 'Disposals', 'Closing Cost', 'Opening Dep', 'Charge', 'Closing Dep', 'Net Book Value'],
           rows: [
-            ...latest.categories.map(c => [
+            ...cats.map(c => [
               c.name,
               `${c.depRate}%`,
               c.costOpening,
@@ -1788,9 +1818,20 @@ function IncomeStatementTable({
     );
   };
 
-  const renderCustomRows = (section: string) =>
+  const stdIncomeSections = ['Revenue & Gross Margin', 'Operating Expenses', 'Non-Operating & Tax'];
+  const visCustRev = customItems.filter(ci => ci.isVisible && ci.section === 'Revenue & Gross Margin');
+  const visCustOpex = customItems.filter(ci => ci.isVisible && ci.section === 'Operating Expenses');
+  const visCustNonOp = customItems.filter(
+    ci => ci.isVisible && (ci.section === 'Non-Operating & Tax' || !stdIncomeSections.includes(ci.section))
+  );
+
+  const renderCustomRows = (section: string, includeUnscoped = false) =>
     customItems
-      .filter(ci => ci.section === section && (ci.isVisible || isCustomizeMode))
+      .filter(
+        ci =>
+          (ci.section === section || (includeUnscoped && !stdIncomeSections.includes(ci.section))) &&
+          (ci.isVisible || isCustomizeMode)
+      )
       .map(ci => (
         <tr key={ci.id} className={!ci.isVisible ? 'opacity-45 bg-slate-50/90' : 'bg-indigo-50/35 hover:bg-indigo-50/60'}>
           <td className="py-2 px-4 font-sans text-indigo-900 pl-6">
@@ -1856,7 +1897,10 @@ function IncomeStatementTable({
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200/70 tabular-nums">
-            {renderIncomeRow('inc_revenue', 'revenue', 'Sales Revenue', d => d.revenue, {
+            {renderIncomeRow('inc_revenue', 'revenue', 'Sales Revenue', d => {
+              const custSum = visCustRev.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0);
+              return Math.round((d.revenue - custSum) * 100) / 100;
+            }, {
               rowClass: 'font-semibold text-slate-900 hover:bg-slate-50/70',
               cellClass: 'text-emerald-700 font-bold',
             })}
@@ -1886,7 +1930,10 @@ function IncomeStatementTable({
               ))}
             </tr>
 
-            {renderIncomeRow('inc_operatingExpenses', 'operatingExpenses', 'Operating Expenses (Admin & Selling)', d => d.operatingExpenses, {
+            {renderIncomeRow('inc_operatingExpenses', 'operatingExpenses', 'Operating Expenses (Admin & Selling)', d => {
+              const custSum = visCustOpex.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0);
+              return Math.round((d.operatingExpenses + custSum) * 100) / 100;
+            }, {
               indent: true,
               isNegative: true,
               cellClass: 'text-rose-700',
@@ -1917,7 +1964,10 @@ function IncomeStatementTable({
               ))}
             </tr>
 
-            {renderIncomeRow('inc_interestIncome', 'interestIncome', 'Interest & Investment Income', d => d.interestIncome, {
+            {renderIncomeRow('inc_interestIncome', 'interestIncome', 'Interest & Investment Income', d => {
+              const custSum = visCustNonOp.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0);
+              return Math.round((d.interestIncome - custSum) * 100) / 100;
+            }, {
               indent: true,
               cellClass: 'text-emerald-700',
             })}
@@ -1927,7 +1977,7 @@ function IncomeStatementTable({
               rowClass: 'bg-amber-50/75 font-semibold',
               cellClass: 'text-amber-800',
             })}
-            {renderCustomRows('Non-Operating & Tax')}
+            {renderCustomRows('Non-Operating & Tax', true)}
 
             <tr className="font-bold text-slate-900 hover:bg-slate-50/70">
               <td className="py-2.5 px-4 font-sans">

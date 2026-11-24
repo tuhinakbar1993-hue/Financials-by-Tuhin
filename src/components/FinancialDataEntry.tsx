@@ -1095,9 +1095,9 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
                           <span>Cost of Sales (CoS)</span>
                           <Lock className="w-3 h-3 text-slate-400" />
                         </td>
-                        {yearsData.map(y => (
+                        {yearsData.map((y, idx) => (
                           <td key={y.year} className="py-2 px-3 text-right text-rose-700">
-                            ({y.costOfSales.toLocaleString()})
+                            ({(incomeStatements[idx]?.costOfSales ?? y.costOfSales).toLocaleString()})
                           </td>
                         ))}
                       </tr>
@@ -1107,7 +1107,7 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
                         </td>
                         {yearsData.map((y, idx) => (
                           <td key={y.year} className="py-2 px-3 text-right text-emerald-700 font-bold">
-                            {(incomeStatements[idx]?.grossProfit || (y.salesRevenue - y.costOfSales)).toLocaleString()}
+                            {(incomeStatements[idx]?.grossProfit ?? (y.salesRevenue - y.costOfSales)).toLocaleString()}
                           </td>
                         ))}
                       </tr>
@@ -1116,9 +1116,9 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
                           <span>Operating Expenses (OpEx)</span>
                           <Lock className="w-3 h-3 text-slate-400" />
                         </td>
-                        {yearsData.map(y => (
+                        {yearsData.map((y, idx) => (
                           <td key={y.year} className="py-2 px-3 text-right text-slate-600">
-                            ({y.operatingExpenses.toLocaleString()})
+                            ({(incomeStatements[idx]?.operatingExpenses ?? y.operatingExpenses).toLocaleString()})
                           </td>
                         ))}
                       </tr>
@@ -1179,9 +1179,9 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
                           <span>Trade Receivables (DSO Derived)</span>
                           <Lock className="w-3 h-3 text-slate-400" />
                         </td>
-                        {yearsData.map(y => (
+                        {yearsData.map((y, idx) => (
                           <td key={y.year} className="py-2 px-3 text-right text-sky-800">
-                            {y.tradeReceivables.toLocaleString()}
+                            {(balanceSheets[idx]?.tradeReceivables ?? y.tradeReceivables).toLocaleString()}
                           </td>
                         ))}
                       </tr>
@@ -1190,9 +1190,9 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
                           <span>Trade Payables (DPO Derived)</span>
                           <Lock className="w-3 h-3 text-slate-400" />
                         </td>
-                        {yearsData.map(y => (
+                        {yearsData.map((y, idx) => (
                           <td key={y.year} className="py-2 px-3 text-right text-slate-700">
-                            {y.tradePayables.toLocaleString()}
+                            {(balanceSheets[idx]?.tradePayables ?? y.tradePayables).toLocaleString()}
                           </td>
                         ))}
                       </tr>
