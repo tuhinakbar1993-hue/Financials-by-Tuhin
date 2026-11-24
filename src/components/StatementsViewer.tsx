@@ -16,6 +16,7 @@ import {
   Calendar,
   CalendarCheck2,
   ArrowUpRight,
+  CheckSquare,
 } from 'lucide-react';
 import {
   CompanyProfile,
@@ -60,6 +61,7 @@ import {
   exportProjectedFinancialsWord,
   exportProjectedFinancialsPdf,
 } from '../services/exportService';
+import { getCustomItemYearValue, FIXED_ASSET_CATEGORY_CONFIG_IDS } from '../services/financialEngine';
 import { PreviousFormatSuiteView, ProjectedFormatSuiteView } from './FormatStatementsViews';
 import { YearSelectorControl } from './YearSelectorControl';
 
@@ -72,6 +74,8 @@ interface StatementsViewerProps {
   fixedAssetsData: ScheduleOfFixedAssetsYear[];
   notes: FinancialNoteItem[];
   statementConfig: StatementConfigItem[];
+  onUpdateStatementConfig?: (items: StatementConfigItem[]) => void;
+  onResetStatementConfig?: () => void;
   assumptions?: ProjectionAssumptions;
   onUpdateAssumptions?: (updated: ProjectionAssumptions) => void;
   cellOverrides?: StatementCellOverrides;
@@ -80,7 +84,7 @@ interface StatementsViewerProps {
   onUpdateStatementLabel?: (statement: string, field: string, newLabel: string) => void;
   onResetOverrides?: () => void;
   onUpdateNotes?: (updatedNotes: FinancialNoteItem[]) => void;
-  onUpdateFixedAssetsCategory?: (catIndex: number, field: string, val: number | string) => void;
+  onUpdateFixedAssetsCategory?: (year: number, catIndex: number, field: string, val: number) => void;
   previousFormatData?: PreviousFormatYearData[];
   previousComparativePairs?: PreviousComparativePair[];
   getPairScopedNotes?: (pairData: PreviousFormatYearData[]) => FinancialNoteItem[];
@@ -109,6 +113,9 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
   equityData,
   fixedAssetsData,
   notes,
+  statementConfig = [],
+  onUpdateStatementConfig,
+  onResetStatementConfig,
   assumptions,
   onUpdateAssumptions,
   cellOverrides = {},
@@ -140,11 +147,33 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
   const [activeStatement, setActiveStatement] = useState<string>('cashFlow');
   const [yearViewMode, setYearViewMode] = useState<'all' | 'historical' | 'projected' | 'comparative5'>('all');
   const [isEditMode, setIsEditMode] = useState<boolean>(false);
+  const [isCustomizeMode, setIsCustomizeMode] = useState<boolean>(false);
   const [internalFormatMode, setInternalFormatMode] = useState<StatementFormatMode>('section76');
   const [showYearSelector, setShowYearSelector] = useState<boolean>(false);
 
   const formatMode = controlledFormatMode ?? internalFormatMode;
   const setFormatMode = onChangeFormatMode ?? setInternalFormatMode;
+
+  const isElemVisible = (id: string): boolean => {
+    const found = statementConfig.find(c => c.id === id);
+    return found ? found.isVisible : true;
+  };
+
+  const toggleConfigElement = (id: string) => {
+    if (!onUpdateStatementConfig) return;
+    onUpdateStatementConfig(
+      statementConfig.map(c => (c.id === id ? { ...c, isVisible: !c.isVisible } : c))
+    );
+  };
+
+  const getCustomItems = (stmt: StatementConfigItem['statement'], section?: string) =>
+    statementConfig.filter(
+      c => c.isCustom && c.statement === stmt && (!section || c.section === section)
+    );
+
+  const exportSyncOptions = { statementConfig, labelOverrides };
+  const totalConfigCount = statementConfig.length;
+  const selectedConfigCount = statementConfig.filter(c => c.isVisible).length;
 
   const histCount = incomeData.filter(d => !d.isProjected).length;
   const projCount = incomeData.filter(d => d.isProjected).length;
@@ -185,32 +214,36 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
     return fallback;
   };
 
-  // Helper to get effective label (checks labelOverrides first, falls back to default)
-  const getLbl = (stmt: string, field: string, defaultLabel: string): string => {
+  // Helper to get effective label (checks labelOverrides first, then statementConfig custom labels, falls back to default)
+  const getLbl = (stmt: string, field: string, defaultLabel: string, configId?: string): string => {
     const key = `${stmt}_${field}`;
     if (labelOverrides[key] !== undefined) {
       return labelOverrides[key];
     }
+    if (configId) {
+      const cfg = statementConfig.find(c => c.id === configId);
+      if (cfg && cfg.label) return cfg.label;
+    }
     return defaultLabel;
   };
 
-  // Individual Export Handlers (exports updated values & labels!)
+  // Individual Export Handlers (exports updated values, visible selections & labels!)
   const handleExportExcel = () => {
     switch (activeStatement) {
       case 'income':
-        exportIncomeStatementExcel(companyProfile, filteredIncome);
+        exportIncomeStatementExcel(companyProfile, filteredIncome, exportSyncOptions);
         break;
       case 'balanceSheet':
-        exportBalanceSheetExcel(companyProfile, filteredBalance);
+        exportBalanceSheetExcel(companyProfile, filteredBalance, exportSyncOptions);
         break;
       case 'cashFlow':
-        exportCashFlowExcel(companyProfile, filteredCashFlow);
+        exportCashFlowExcel(companyProfile, filteredCashFlow, exportSyncOptions);
         break;
       case 'equity':
-        exportEquityStatementExcel(companyProfile, filteredEquity);
+        exportEquityStatementExcel(companyProfile, filteredEquity, exportSyncOptions);
         break;
       case 'fixedAssets':
-        exportFixedAssetsExcel(companyProfile, filteredFixedAssets);
+        exportFixedAssetsExcel(companyProfile, filteredFixedAssets, exportSyncOptions);
         break;
       case 'notes':
         exportNotesExcel(companyProfile, notes);
@@ -225,7 +258,8 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
           filteredFixedAssets,
           notes,
           undefined,
-          isScheduleImplemented ? debtServiceCoverage : undefined
+          isScheduleImplemented ? debtServiceCoverage : undefined,
+          exportSyncOptions
         );
         break;
     }
@@ -242,7 +276,8 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         filteredFixedAssets,
         notes,
         undefined,
-        isScheduleImplemented ? debtServiceCoverage : undefined
+        isScheduleImplemented ? debtServiceCoverage : undefined,
+        exportSyncOptions
       );
       return;
     }
@@ -261,7 +296,8 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         filteredFixedAssets,
         notes,
         undefined,
-        isScheduleImplemented ? debtServiceCoverage : undefined
+        isScheduleImplemented ? debtServiceCoverage : undefined,
+        exportSyncOptions
       );
       return;
     }
@@ -271,63 +307,212 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
 
   function getTableDataForExport(stmt: string): { title: string; headers: string[]; rows: (string | number)[][] } {
     switch (stmt) {
-      case 'income':
+      case 'income': {
+        const rows: (string | number)[][] = [];
+        if (isElemVisible('inc_revenue')) {
+          rows.push([getLbl('income', 'revenue', 'Sales Revenue', 'inc_revenue'), ...filteredIncome.map(d => getVal('income', 'revenue', d.year, d.revenue))]);
+        }
+        getCustomItems('income', 'Revenue & Gross Margin').filter(c => c.isVisible).forEach(ci => {
+          rows.push([ci.label, ...filteredIncome.map(d => getCustomItemYearValue(ci, d.year))]);
+        });
+        if (isElemVisible('inc_costOfSales')) {
+          rows.push([getLbl('income', 'costOfSales', 'Cost of Sales', 'inc_costOfSales'), ...filteredIncome.map(d => -getVal('income', 'costOfSales', d.year, d.costOfSales))]);
+        }
+        rows.push([getLbl('income', 'grossProfit', 'Gross Profit'), ...filteredIncome.map(d => getVal('income', 'grossProfit', d.year, d.grossProfit))]);
+        if (isElemVisible('inc_operatingExpenses')) {
+          rows.push([getLbl('income', 'operatingExpenses', 'Operating Expenses', 'inc_operatingExpenses'), ...filteredIncome.map(d => -getVal('income', 'operatingExpenses', d.year, d.operatingExpenses))]);
+        }
+        getCustomItems('income', 'Operating Expenses').filter(c => c.isVisible).forEach(ci => {
+          rows.push([ci.label, ...filteredIncome.map(d => getCustomItemYearValue(ci, d.year))]);
+        });
+        if (isElemVisible('inc_depreciationExpense')) {
+          rows.push([getLbl('income', 'depreciationExpense', 'Depreciation Expense', 'inc_depreciationExpense'), ...filteredIncome.map(d => -getVal('income', 'depreciationExpense', d.year, d.depreciationExpense))]);
+        }
+        rows.push([getLbl('income', 'operatingProfit', 'Operating Profit (EBIT)'), ...filteredIncome.map(d => getVal('income', 'operatingProfit', d.year, d.operatingProfit))]);
+        if (isElemVisible('inc_interestIncome')) {
+          rows.push([getLbl('income', 'interestIncome', 'Interest & Investment Income', 'inc_interestIncome'), ...filteredIncome.map(d => getVal('income', 'interestIncome', d.year, d.interestIncome))]);
+        }
+        if (isElemVisible('inc_financeCost')) {
+          rows.push([getLbl('income', 'financeCost', 'Finance Cost', 'inc_financeCost'), ...filteredIncome.map(d => -getVal('income', 'financeCost', d.year, d.financeCost))]);
+        }
+        getCustomItems('income', 'Non-Operating & Tax').filter(c => c.isVisible).forEach(ci => {
+          rows.push([ci.label, ...filteredIncome.map(d => getCustomItemYearValue(ci, d.year))]);
+        });
+        rows.push([getLbl('income', 'profitBeforeTax', 'Profit Before Tax'), ...filteredIncome.map(d => getVal('income', 'profitBeforeTax', d.year, d.profitBeforeTax))]);
+        if (isElemVisible('inc_taxExpense')) {
+          rows.push([getLbl('income', 'taxExpense', 'Income Tax Expense', 'inc_taxExpense'), ...filteredIncome.map(d => -getVal('income', 'taxExpense', d.year, d.taxExpense))]);
+        }
+        rows.push([getLbl('income', 'netProfit', 'Net Profit After Tax'), ...filteredIncome.map(d => getVal('income', 'netProfit', d.year, d.netProfit))]);
         return {
           title: 'Statement of Comprehensive Income',
           headers: ['Metric', ...filteredIncome.map(d => `${d.year}${d.isProjected ? ' (P)' : ''}`)],
-          rows: [
-            [getLbl('income', 'revenue', 'Sales Revenue'), ...filteredIncome.map(d => getVal('income', 'revenue', d.year, d.revenue))],
-            [getLbl('income', 'costOfSales', 'Cost of Sales'), ...filteredIncome.map(d => -getVal('income', 'costOfSales', d.year, d.costOfSales))],
-            [getLbl('income', 'grossProfit', 'Gross Profit'), ...filteredIncome.map(d => getVal('income', 'grossProfit', d.year, d.grossProfit))],
-            [getLbl('income', 'operatingExpenses', 'Operating Expenses'), ...filteredIncome.map(d => -getVal('income', 'operatingExpenses', d.year, d.operatingExpenses))],
-            [getLbl('income', 'depreciationExpense', 'Depreciation Expense'), ...filteredIncome.map(d => -getVal('income', 'depreciationExpense', d.year, d.depreciationExpense))],
-            [getLbl('income', 'operatingProfit', 'Operating Profit (EBIT)'), ...filteredIncome.map(d => getVal('income', 'operatingProfit', d.year, d.operatingProfit))],
-            [getLbl('income', 'financeCost', 'Finance Cost'), ...filteredIncome.map(d => -getVal('income', 'financeCost', d.year, d.financeCost))],
-            [getLbl('income', 'profitBeforeTax', 'Profit Before Tax'), ...filteredIncome.map(d => getVal('income', 'profitBeforeTax', d.year, d.profitBeforeTax))],
-            [getLbl('income', 'netProfit', 'Net Profit After Tax'), ...filteredIncome.map(d => getVal('income', 'netProfit', d.year, d.netProfit))],
-          ],
+          rows,
         };
-      case 'balanceSheet':
+      }
+      case 'balanceSheet': {
+        const rows: (string | number)[][] = [];
+        if (isElemVisible('bs_cashAndEquivalents')) rows.push([getLbl('bs', 'cashAndEquivalents', 'Cash and Cash Equivalents', 'bs_cashAndEquivalents'), ...filteredBalance.map(d => getVal('bs', 'cashAndEquivalents', d.year, d.cashAndEquivalents))]);
+        if (isElemVisible('bs_tradeReceivables')) rows.push([getLbl('bs', 'tradeReceivables', 'Trade Receivables', 'bs_tradeReceivables'), ...filteredBalance.map(d => getVal('bs', 'tradeReceivables', d.year, d.tradeReceivables))]);
+        if (isElemVisible('bs_otherReceivables')) rows.push([getLbl('bs', 'otherReceivables', 'Other Receivables & Prepayments', 'bs_otherReceivables'), ...filteredBalance.map(d => getVal('bs', 'otherReceivables', d.year, d.otherReceivables))]);
+        if (isElemVisible('bs_closingInventory')) rows.push([getLbl('bs', 'closingInventory', 'Closing Inventory', 'bs_closingInventory'), ...filteredBalance.map(d => getVal('bs', 'closingInventory', d.year, d.closingInventory))]);
+        if (isElemVisible('bs_otherCurrentAssets')) rows.push([getLbl('bs', 'otherCurrentAssets', 'Other Current Assets', 'bs_otherCurrentAssets'), ...filteredBalance.map(d => getVal('bs', 'otherCurrentAssets', d.year, d.otherCurrentAssets))]);
+        getCustomItems('balanceSheet', 'Current Assets').filter(c => c.isVisible).forEach(ci => {
+          rows.push([ci.label, ...filteredBalance.map(d => getCustomItemYearValue(ci, d.year))]);
+        });
+        rows.push([getLbl('bs', 'totalCurrentAssets', 'Total Current Assets'), ...filteredBalance.map(d => getVal('bs', 'totalCurrentAssets', d.year, d.totalCurrentAssets))]);
+        if (isElemVisible('bs_propertyPlantEquipment')) rows.push([getLbl('bs', 'propertyPlantEquipment', 'Property, Plant & Equipment (NBV)', 'bs_propertyPlantEquipment'), ...filteredBalance.map(d => getVal('bs', 'propertyPlantEquipment', d.year, d.propertyPlantEquipment))]);
+        if (isElemVisible('bs_intangibleAssets')) rows.push([getLbl('bs', 'intangibleAssets', 'Intangible Assets', 'bs_intangibleAssets'), ...filteredBalance.map(d => getVal('bs', 'intangibleAssets', d.year, d.intangibleAssets))]);
+        if (isElemVisible('bs_otherNonCurrentAssets')) rows.push([getLbl('bs', 'otherNonCurrentAssets', 'Other Non-Current Assets', 'bs_otherNonCurrentAssets'), ...filteredBalance.map(d => getVal('bs', 'otherNonCurrentAssets', d.year, d.otherNonCurrentAssets))]);
+        getCustomItems('balanceSheet', 'Non-Current Assets').filter(c => c.isVisible).forEach(ci => {
+          rows.push([ci.label, ...filteredBalance.map(d => getCustomItemYearValue(ci, d.year))]);
+        });
+        rows.push([getLbl('bs', 'totalNonCurrentAssets', 'Total Non-Current Assets'), ...filteredBalance.map(d => getVal('bs', 'totalNonCurrentAssets', d.year, d.totalNonCurrentAssets))]);
+        rows.push([getLbl('bs', 'totalAssets', 'TOTAL ASSETS'), ...filteredBalance.map(d => getVal('bs', 'totalAssets', d.year, d.totalAssets))]);
+        if (isElemVisible('bs_tradePayables')) rows.push([getLbl('bs', 'tradePayables', 'Trade Payables', 'bs_tradePayables'), ...filteredBalance.map(d => getVal('bs', 'tradePayables', d.year, d.tradePayables))]);
+        if (isElemVisible('bs_otherPayables')) rows.push([getLbl('bs', 'otherPayables', 'Other Payables & Accruals', 'bs_otherPayables'), ...filteredBalance.map(d => getVal('bs', 'otherPayables', d.year, d.otherPayables))]);
+        if (isElemVisible('bs_shortTermBorrowings')) rows.push([getLbl('bs', 'shortTermBorrowings', 'Short-Term Borrowings', 'bs_shortTermBorrowings'), ...filteredBalance.map(d => getVal('bs', 'shortTermBorrowings', d.year, d.shortTermBorrowings))]);
+        if (isElemVisible('bs_currentTaxPayable')) rows.push([getLbl('bs', 'currentTaxPayable', 'Current Tax Payable', 'bs_currentTaxPayable'), ...filteredBalance.map(d => getVal('bs', 'currentTaxPayable', d.year, d.currentTaxPayable))]);
+        getCustomItems('balanceSheet', 'Current Liabilities').filter(c => c.isVisible).forEach(ci => {
+          rows.push([ci.label, ...filteredBalance.map(d => getCustomItemYearValue(ci, d.year))]);
+        });
+        rows.push([getLbl('bs', 'totalCurrentLiabilities', 'Total Current Liabilities'), ...filteredBalance.map(d => getVal('bs', 'totalCurrentLiabilities', d.year, d.totalCurrentLiabilities))]);
+        if (isElemVisible('bs_longTermBorrowings')) rows.push([getLbl('bs', 'longTermBorrowings', 'Long-Term Borrowings', 'bs_longTermBorrowings'), ...filteredBalance.map(d => getVal('bs', 'longTermBorrowings', d.year, d.longTermBorrowings))]);
+        if (isElemVisible('bs_otherNonCurrentLiabilities')) rows.push([getLbl('bs', 'otherNonCurrentLiabilities', 'Other Non-Current Liabilities', 'bs_otherNonCurrentLiabilities'), ...filteredBalance.map(d => getVal('bs', 'otherNonCurrentLiabilities', d.year, d.otherNonCurrentLiabilities))]);
+        getCustomItems('balanceSheet', 'Non-Current Liabilities').filter(c => c.isVisible).forEach(ci => {
+          rows.push([ci.label, ...filteredBalance.map(d => getCustomItemYearValue(ci, d.year))]);
+        });
+        rows.push([getLbl('bs', 'totalNonCurrentLiabilities', 'Total Non-Current Liabilities'), ...filteredBalance.map(d => getVal('bs', 'totalNonCurrentLiabilities', d.year, d.totalNonCurrentLiabilities))]);
+        rows.push([getLbl('bs', 'totalLiabilities', 'TOTAL LIABILITIES'), ...filteredBalance.map(d => getVal('bs', 'totalLiabilities', d.year, d.totalLiabilities))]);
+        if (isElemVisible('bs_shareCapital')) rows.push([getLbl('bs', 'shareCapital', 'Share Capital', 'bs_shareCapital'), ...filteredBalance.map(d => getVal('bs', 'shareCapital', d.year, d.shareCapital))]);
+        if (isElemVisible('bs_retainedEarnings')) rows.push([getLbl('bs', 'retainedEarnings', 'Retained Earnings', 'bs_retainedEarnings'), ...filteredBalance.map(d => getVal('bs', 'retainedEarnings', d.year, d.retainedEarnings))]);
+        if (isElemVisible('bs_reserves')) rows.push([getLbl('bs', 'reserves', 'Reserves & Surplus', 'bs_reserves'), ...filteredBalance.map(d => getVal('bs', 'reserves', d.year, d.reserves))]);
+        getCustomItems('balanceSheet', 'Equity').filter(c => c.isVisible).forEach(ci => {
+          rows.push([ci.label, ...filteredBalance.map(d => getCustomItemYearValue(ci, d.year))]);
+        });
+        rows.push([getLbl('bs', 'totalEquity', 'TOTAL EQUITY'), ...filteredBalance.map(d => getVal('bs', 'totalEquity', d.year, d.totalEquity))]);
+        rows.push([getLbl('bs', 'totalLiabilitiesAndEquity', 'TOTAL LIABILITIES & EQUITY'), ...filteredBalance.map(d => getVal('bs', 'totalLiabilitiesAndEquity', d.year, d.totalLiabilitiesAndEquity))]);
         return {
           title: 'Statement of Financial Position',
           headers: ['Line Item', ...filteredBalance.map(d => `${d.year}${d.isProjected ? ' (P)' : ''}`)],
+          rows,
+        };
+      }
+      case 'equity': {
+        const rows: (string | number)[][] = [];
+        if (isElemVisible('eq_openingShareCapital')) rows.push([getLbl('eq', 'openingShareCapital', 'Opening Share Capital', 'eq_openingShareCapital'), ...filteredEquity.map(d => getVal('eq', 'openingShareCapital', d.year, d.openingShareCapital))]);
+        if (isElemVisible('eq_shareCapitalIssued')) rows.push([getLbl('eq', 'shareCapitalIssued', 'Share Capital Issued during Year', 'eq_shareCapitalIssued'), ...filteredEquity.map(d => getVal('eq', 'shareCapitalIssued', d.year, d.shareCapitalIssued))]);
+        rows.push([getLbl('eq', 'closingShareCapital', 'Closing Share Capital'), ...filteredEquity.map(d => getVal('eq', 'closingShareCapital', d.year, d.closingShareCapital))]);
+        if (isElemVisible('eq_openingRetainedEarnings')) rows.push([getLbl('eq', 'openingRetainedEarnings', 'Opening Retained Earnings', 'eq_openingRetainedEarnings'), ...filteredEquity.map(d => getVal('eq', 'openingRetainedEarnings', d.year, d.openingRetainedEarnings))]);
+        if (isElemVisible('eq_netProfitForYear')) rows.push([getLbl('eq', 'netProfitForYear', 'Net Profit for the Year', 'eq_netProfitForYear'), ...filteredEquity.map(d => getVal('eq', 'netProfitForYear', d.year, d.netProfitForYear))]);
+        if (isElemVisible('eq_dividendsPaid')) rows.push([getLbl('eq', 'dividendsPaid', 'Dividends Paid to Shareholders', 'eq_dividendsPaid'), ...filteredEquity.map(d => -getVal('eq', 'dividendsPaid', d.year, d.dividendsPaid))]);
+        rows.push([getLbl('eq', 'closingRetainedEarnings', 'Closing Retained Earnings'), ...filteredEquity.map(d => getVal('eq', 'closingRetainedEarnings', d.year, d.closingRetainedEarnings))]);
+        if (isElemVisible('eq_openingReserves')) rows.push([getLbl('eq', 'openingReserves', 'Opening Reserves', 'eq_openingReserves'), ...filteredEquity.map(d => getVal('eq', 'openingReserves', d.year, d.openingReserves))]);
+        if (isElemVisible('eq_otherComprehensiveIncome')) rows.push([getLbl('eq', 'otherComprehensiveIncome', 'Other Comprehensive Income', 'eq_otherComprehensiveIncome'), ...filteredEquity.map(d => getVal('eq', 'otherComprehensiveIncome', d.year, d.otherComprehensiveIncome))]);
+        rows.push([getLbl('eq', 'closingReserves', 'Closing Reserves'), ...filteredEquity.map(d => getVal('eq', 'closingReserves', d.year, d.closingReserves))]);
+        getCustomItems('equity').filter(c => c.isVisible).forEach(ci => {
+          rows.push([ci.label, ...filteredEquity.map(d => getCustomItemYearValue(ci, d.year))]);
+        });
+        rows.push([getLbl('eq', 'totalClosingEquity', 'TOTAL CLOSING SHAREHOLDERS EQUITY'), ...filteredEquity.map(d => getVal('eq', 'totalClosingEquity', d.year, d.totalClosingEquity))]);
+        return {
+          title: 'Statement of Changes in Equity',
+          headers: ['Equity Component', ...filteredEquity.map(d => `${d.year}${d.isProjected ? ' (P)' : ''}`)],
+          rows,
+        };
+      }
+      case 'fixedAssets': {
+        const latest = filteredFixedAssets[filteredFixedAssets.length - 1];
+        if (!latest) {
+          return { title: 'Schedule of Fixed Assets', headers: ['Asset Class'], rows: [] };
+        }
+        return {
+          title: `Schedule of Fixed Assets — FY ${latest.year}`,
+          headers: ['Asset Class', 'Dep %', 'Opening Cost', 'Additions', 'Disposals', 'Closing Cost', 'Opening Dep', 'Charge', 'Closing Dep', 'Net Book Value'],
           rows: [
-            [getLbl('bs', 'cashAndEquivalents', 'Cash and Cash Equivalents'), ...filteredBalance.map(d => getVal('bs', 'cashAndEquivalents', d.year, d.cashAndEquivalents))],
-            [getLbl('bs', 'tradeReceivables', 'Trade Receivables'), ...filteredBalance.map(d => getVal('bs', 'tradeReceivables', d.year, d.tradeReceivables))],
-            [getLbl('bs', 'closingInventory', 'Closing Inventory'), ...filteredBalance.map(d => getVal('bs', 'closingInventory', d.year, d.closingInventory))],
-            [getLbl('bs', 'totalCurrentAssets', 'Total Current Assets'), ...filteredBalance.map(d => getVal('bs', 'totalCurrentAssets', d.year, d.totalCurrentAssets))],
-            [getLbl('bs', 'propertyPlantEquipment', 'Property, Plant & Equipment (NBV)'), ...filteredBalance.map(d => getVal('bs', 'propertyPlantEquipment', d.year, d.propertyPlantEquipment))],
-            [getLbl('bs', 'totalAssets', 'TOTAL ASSETS'), ...filteredBalance.map(d => getVal('bs', 'totalAssets', d.year, d.totalAssets))],
-            [getLbl('bs', 'totalCurrentLiabilities', 'Total Current Liabilities'), ...filteredBalance.map(d => getVal('bs', 'totalCurrentLiabilities', d.year, d.totalCurrentLiabilities))],
-            [getLbl('bs', 'longTermBorrowings', 'Long-Term Borrowings'), ...filteredBalance.map(d => getVal('bs', 'longTermBorrowings', d.year, d.longTermBorrowings))],
-            [getLbl('bs', 'totalLiabilities', 'TOTAL LIABILITIES'), ...filteredBalance.map(d => getVal('bs', 'totalLiabilities', d.year, d.totalLiabilities))],
-            [getLbl('bs', 'totalEquity', 'TOTAL EQUITY'), ...filteredBalance.map(d => getVal('bs', 'totalEquity', d.year, d.totalEquity))],
-            [getLbl('bs', 'totalLiabilitiesAndEquity', 'TOTAL LIABILITIES & EQUITY'), ...filteredBalance.map(d => getVal('bs', 'totalLiabilitiesAndEquity', d.year, d.totalLiabilitiesAndEquity))],
+            ...latest.categories.map(c => [
+              c.name,
+              `${c.depRate}%`,
+              c.costOpening,
+              c.additions,
+              c.disposals,
+              c.costClosing,
+              c.depOpening,
+              c.depCharge,
+              c.depClosing,
+              c.netBookValue,
+            ]),
+            [
+              'TOTAL PROPERTY, PLANT & EQUIPMENT',
+              '-',
+              latest.totalCostOpening,
+              latest.totalAdditions,
+              latest.totalDisposals,
+              latest.totalCostClosing,
+              latest.totalDepOpening,
+              latest.totalDepCharge,
+              latest.totalDepClosing,
+              latest.totalNetBookValue,
+            ],
           ],
         };
+      }
+      case 'notes': {
+        return {
+          title: 'Notes to the Financial Statements (Notes 1 to 12)',
+          headers: ['Note #', 'Title', 'Category', 'Disclosure Summary'],
+          rows: notes.map(n => [`Note ${n.noteNumber}`, n.title, n.category, n.textDescription]),
+        };
+      }
       case 'cashFlow':
-      default:
+      default: {
+        const rows: (string | number)[][] = [];
+        if (isElemVisible('cf_pbt')) rows.push([getLbl('cf', 'profitBeforeTax', 'Net Profit Before Tax', 'cf_pbt'), ...filteredCashFlow.map(d => getVal('cf', 'profitBeforeTax', d.year, d.profitBeforeTax))]);
+        if (isElemVisible('cf_dep')) rows.push([getLbl('cf', 'adjDepreciation', 'Adjustments for Depreciation', 'cf_dep'), ...filteredCashFlow.map(d => getVal('cf', 'adjDepreciation', d.year, d.adjDepreciation))]);
+        if (isElemVisible('cf_amort')) rows.push([getLbl('cf', 'adjAmortization', 'Adjustments for Amortization', 'cf_amort'), ...filteredCashFlow.map(d => getVal('cf', 'adjAmortization', d.year, d.adjAmortization))]);
+        if (isElemVisible('cf_finance')) rows.push([getLbl('cf', 'adjFinanceCost', 'Finance Cost Adjustment', 'cf_finance'), ...filteredCashFlow.map(d => getVal('cf', 'adjFinanceCost', d.year, d.adjFinanceCost))]);
+        if (isElemVisible('cf_interest_inc')) rows.push([getLbl('cf', 'adjInterestIncome', 'Interest & Investment Income', 'cf_interest_inc'), ...filteredCashFlow.map(d => getVal('cf', 'adjInterestIncome', d.year, d.adjInterestIncome))]);
+        if (isElemVisible('cf_disposal_gain_loss')) rows.push([getLbl('cf', 'adjLossGainDisposal', 'Loss / (Gain) on Disposal of Fixed Assets', 'cf_disposal_gain_loss'), ...filteredCashFlow.map(d => getVal('cf', 'adjLossGainDisposal', d.year, d.adjLossGainDisposal))]);
+        rows.push([getLbl('cf', 'operatingProfitBeforeWC', 'Operating Profit Before Working Capital'), ...filteredCashFlow.map(d => getVal('cf', 'operatingProfitBeforeWC', d.year, d.operatingProfitBeforeWC))]);
+        if (isElemVisible('cf_wc_inventory')) rows.push([getLbl('cf', 'changeInInventory', '(Increase) / Decrease in Inventory', 'cf_wc_inventory'), ...filteredCashFlow.map(d => getVal('cf', 'changeInInventory', d.year, d.changeInInventory))]);
+        if (isElemVisible('cf_wc_receivables')) rows.push([getLbl('cf', 'changeInReceivables', '(Increase) / Decrease in Trade Receivables', 'cf_wc_receivables'), ...filteredCashFlow.map(d => getVal('cf', 'changeInReceivables', d.year, d.changeInReceivables))]);
+        if (isElemVisible('cf_wc_other_rec')) rows.push([getLbl('cf', 'changeInOtherReceivables', '(Increase) / Decrease in Other Receivables', 'cf_wc_other_rec'), ...filteredCashFlow.map(d => getVal('cf', 'changeInOtherReceivables', d.year, d.changeInOtherReceivables))]);
+        if (isElemVisible('cf_wc_other_ca')) rows.push([getLbl('cf', 'changeInOtherCA', '(Increase) / Decrease in Other Current Assets', 'cf_wc_other_ca'), ...filteredCashFlow.map(d => getVal('cf', 'changeInOtherCA', d.year, d.changeInOtherCA ?? 0))]);
+        if (isElemVisible('cf_wc_payables')) rows.push([getLbl('cf', 'changeInPayables', 'Increase / (Decrease) in Trade Payables', 'cf_wc_payables'), ...filteredCashFlow.map(d => getVal('cf', 'changeInPayables', d.year, d.changeInPayables))]);
+        if (isElemVisible('cf_wc_other_pay')) rows.push([getLbl('cf', 'changeInOtherPayables', 'Increase / (Decrease) in Other Payables', 'cf_wc_other_pay'), ...filteredCashFlow.map(d => getVal('cf', 'changeInOtherPayables', d.year, d.changeInOtherPayables))]);
+        getCustomItems('cashFlow', 'Operating Activities').filter(c => c.isVisible).forEach(ci => {
+          rows.push([ci.label, ...filteredCashFlow.map(d => getCustomItemYearValue(ci, d.year))]);
+        });
+        rows.push([getLbl('cf', 'cashGeneratedFromOperations', 'Cash Generated from Operations'), ...filteredCashFlow.map(d => getVal('cf', 'cashGeneratedFromOperations', d.year, d.cashGeneratedFromOperations))]);
+        if (isElemVisible('cf_tax_paid')) rows.push([getLbl('cf', 'incomeTaxPaid', 'Income Tax Paid', 'cf_tax_paid'), ...filteredCashFlow.map(d => getVal('cf', 'incomeTaxPaid', d.year, d.incomeTaxPaid))]);
+        if (isElemVisible('cf_finance_paid')) rows.push([getLbl('cf', 'financeCostPaid', 'Finance Cost Paid', 'cf_finance_paid'), ...filteredCashFlow.map(d => getVal('cf', 'financeCostPaid', d.year, d.financeCostPaid))]);
+        rows.push([getLbl('cf', 'netCashFromOperating', 'NET CASH FROM OPERATING ACTIVITIES'), ...filteredCashFlow.map(d => getVal('cf', 'netCashFromOperating', d.year, d.netCashFromOperating))]);
+        if (isElemVisible('cf_pur_ppe')) rows.push([getLbl('cf', 'purchasePPE', 'Purchase of PPE (Capex)', 'cf_pur_ppe'), ...filteredCashFlow.map(d => getVal('cf', 'purchasePPE', d.year, d.purchasePPE))]);
+        if (isElemVisible('cf_sale_ppe')) rows.push([getLbl('cf', 'salePPE', 'Proceeds from Sale of Fixed Assets', 'cf_sale_ppe'), ...filteredCashFlow.map(d => getVal('cf', 'salePPE', d.year, d.salePPE))]);
+        if (isElemVisible('cf_pur_intangible')) rows.push([getLbl('cf', 'purchaseIntangibles', 'Purchase of Intangible Assets', 'cf_pur_intangible'), ...filteredCashFlow.map(d => getVal('cf', 'purchaseIntangibles', d.year, d.purchaseIntangibles))]);
+        if (isElemVisible('cf_interest_rec')) rows.push([getLbl('cf', 'interestReceived', 'Interest Received', 'cf_interest_rec'), ...filteredCashFlow.map(d => getVal('cf', 'interestReceived', d.year, d.interestReceived))]);
+        if (isElemVisible('cf_dividends_rec')) rows.push([getLbl('cf', 'dividendsReceived', 'Dividends Received', 'cf_dividends_rec'), ...filteredCashFlow.map(d => getVal('cf', 'dividendsReceived', d.year, d.dividendsReceived))]);
+        getCustomItems('cashFlow', 'Investing Activities').filter(c => c.isVisible).forEach(ci => {
+          rows.push([ci.label, ...filteredCashFlow.map(d => getCustomItemYearValue(ci, d.year))]);
+        });
+        rows.push([getLbl('cf', 'netCashFromInvesting', 'NET CASH FROM / (USED IN) INVESTING'), ...filteredCashFlow.map(d => getVal('cf', 'netCashFromInvesting', d.year, d.netCashFromInvesting))]);
+        if (isElemVisible('cf_shares_issue')) rows.push([getLbl('cf', 'financingProceedsShares', 'Proceeds from Issue of Share Capital', 'cf_shares_issue'), ...filteredCashFlow.map(d => getVal('cf', 'financingProceedsShares', d.year, d.financingProceedsShares))]);
+        if (isElemVisible('cf_borrow_proceeds')) rows.push([getLbl('cf', 'financingProceedsBorrowings', 'Proceeds from Borrowings & Financing', 'cf_borrow_proceeds'), ...filteredCashFlow.map(d => getVal('cf', 'financingProceedsBorrowings', d.year, d.financingProceedsBorrowings))]);
+        if (isElemVisible('cf_borrow_repay')) rows.push([getLbl('cf', 'repaymentOfBorrowings', 'Repayment of Borrowings & Financing', 'cf_borrow_repay'), ...filteredCashFlow.map(d => -getVal('cf', 'repaymentOfBorrowings', d.year, d.repaymentOfBorrowings || Math.abs(d.financingRepaymentBorrowings)))]);
+        if (isElemVisible('cf_dividends_paid')) rows.push([getLbl('cf', 'financingDividendsPaid', 'Dividends Paid to Shareholders', 'cf_dividends_paid'), ...filteredCashFlow.map(d => getVal('cf', 'financingDividendsPaid', d.year, d.financingDividendsPaid))]);
+        getCustomItems('cashFlow', 'Financing Activities').filter(c => c.isVisible).forEach(ci => {
+          rows.push([ci.label, ...filteredCashFlow.map(d => getCustomItemYearValue(ci, d.year))]);
+        });
+        if (isElemVisible('cf_direct_financing')) rows.push([getLbl('cf', 'directlyEnteredFinancingCashFlow', 'Directly Entered Financing Cash Flow', 'cf_direct_financing'), ...filteredCashFlow.map(d => getVal('cf', 'directlyEnteredFinancingCashFlow', d.year, d.directlyEnteredFinancingCashFlow))]);
+        rows.push([getLbl('cf', 'netCashFromFinancing', 'NET CASH FROM / (USED IN) FINANCING'), ...filteredCashFlow.map(d => getVal('cf', 'netCashFromFinancing', d.year, d.netCashFromFinancing))]);
+        rows.push([getLbl('cf', 'netChangeInCash', 'Net Increase / (Decrease) in Cash'), ...filteredCashFlow.map(d => getVal('cf', 'netChangeInCash', d.year, d.netChangeInCash))]);
+        rows.push([getLbl('cf', 'openingCash', 'Opening Cash and Cash Equivalents'), ...filteredCashFlow.map(d => getVal('cf', 'openingCash', d.year, d.openingCash))]);
+        rows.push([getLbl('cf', 'closingCashCalculated', 'Closing Cash & Cash Equivalents (Calculated)'), ...filteredCashFlow.map(d => getVal('cf', 'closingCashCalculated', d.year, d.closingCashCalculated))]);
+        rows.push([getLbl('cf', 'balanceSheetCash', 'Stated Cash in Balance Sheet'), ...filteredCashFlow.map(d => getVal('cf', 'balanceSheetCash', d.year, d.balanceSheetCash))]);
         return {
           title: 'Statement of Cash Flows (Indirect Method)',
           headers: ['Cash Flow Item', ...filteredCashFlow.map(d => `${d.year}${d.isProjected ? ' (P)' : ''}`)],
-          rows: [
-            [getLbl('cf', 'profitBeforeTax', 'Net Profit Before Tax'), ...filteredCashFlow.map(d => getVal('cf', 'profitBeforeTax', d.year, d.profitBeforeTax))],
-            [getLbl('cf', 'adjDepreciation', 'Depreciation Adjustment'), ...filteredCashFlow.map(d => getVal('cf', 'adjDepreciation', d.year, d.adjDepreciation))],
-            [getLbl('cf', 'adjFinanceCost', 'Finance Cost Adjustment'), ...filteredCashFlow.map(d => getVal('cf', 'adjFinanceCost', d.year, d.adjFinanceCost))],
-            [getLbl('cf', 'operatingProfitBeforeWC', 'Operating Profit Before Working Capital'), ...filteredCashFlow.map(d => getVal('cf', 'operatingProfitBeforeWC', d.year, d.operatingProfitBeforeWC))],
-            [getLbl('cf', 'netCashFromOperating', 'NET CASH FROM OPERATING ACTIVITIES'), ...filteredCashFlow.map(d => getVal('cf', 'netCashFromOperating', d.year, d.netCashFromOperating))],
-            [getLbl('cf', 'purchasePPE', 'Purchase of PPE (Capex)'), ...filteredCashFlow.map(d => getVal('cf', 'purchasePPE', d.year, d.purchasePPE))],
-            [getLbl('cf', 'netCashFromInvesting', 'NET CASH FROM / (USED IN) INVESTING'), ...filteredCashFlow.map(d => getVal('cf', 'netCashFromInvesting', d.year, d.netCashFromInvesting))],
-            [getLbl('cf', 'financingProceedsBorrowings', 'Proceeds from Borrowings & Financing'), ...filteredCashFlow.map(d => getVal('cf', 'financingProceedsBorrowings', d.year, d.financingProceedsBorrowings))],
-            [getLbl('cf', 'repaymentOfBorrowings', 'Repayment of Borrowings & Financing'), ...filteredCashFlow.map(d => -getVal('cf', 'repaymentOfBorrowings', d.year, d.repaymentOfBorrowings || Math.abs(d.financingRepaymentBorrowings)))],
-            [getLbl('cf', 'financingDividendsPaid', 'Dividends Paid to Shareholders'), ...filteredCashFlow.map(d => getVal('cf', 'financingDividendsPaid', d.year, d.financingDividendsPaid))],
-            [getLbl('cf', 'directlyEnteredFinancingCashFlow', 'Directly Entered Financing Cash Flow (Total)'), ...filteredCashFlow.map(d => getVal('cf', 'directlyEnteredFinancingCashFlow', d.year, d.directlyEnteredFinancingCashFlow))],
-            [getLbl('cf', 'netCashFromFinancing', 'NET CASH FROM / (USED IN) FINANCING'), ...filteredCashFlow.map(d => getVal('cf', 'netCashFromFinancing', d.year, d.netCashFromFinancing))],
-            [getLbl('cf', 'netChangeInCash', 'Net Increase / (Decrease) in Cash'), ...filteredCashFlow.map(d => getVal('cf', 'netChangeInCash', d.year, d.netChangeInCash))],
-            [getLbl('cf', 'closingCashCalculated', 'Closing Cash & Cash Equivalents (Calculated)'), ...filteredCashFlow.map(d => getVal('cf', 'closingCashCalculated', d.year, d.closingCashCalculated))],
-            [getLbl('cf', 'balanceSheetCash', 'Stated Cash in Balance Sheet'), ...filteredCashFlow.map(d => getVal('cf', 'balanceSheetCash', d.year, d.balanceSheetCash))],
-          ],
+          rows,
         };
+      }
     }
   }
 
@@ -343,9 +528,9 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
 
   const handleDownloadPair = (pair: PreviousComparativePair, fmt: 'xlsx' | 'docx' | 'pdf') => {
     const scoped = getPairScopedNotes ? getPairScopedNotes(pair.data) : notes;
-    if (fmt === 'xlsx') exportPreviousFinancialsExcel(companyProfile, pair.data, scoped);
-    else if (fmt === 'docx') void exportPreviousFinancialsWord(companyProfile, pair.data, scoped);
-    else exportPreviousFinancialsPdf(companyProfile, pair.data, scoped);
+    if (fmt === 'xlsx') exportPreviousFinancialsExcel(companyProfile, pair.data, scoped, exportSyncOptions);
+    else if (fmt === 'docx') void exportPreviousFinancialsWord(companyProfile, pair.data, scoped, exportSyncOptions);
+    else exportPreviousFinancialsPdf(companyProfile, pair.data, scoped, exportSyncOptions);
   };
 
   return (
@@ -410,6 +595,39 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
               >
                 <Calendar className="w-3.5 h-3.5" />
                 <span>Years ({histCount}H + {projCount}P)</span>
+              </button>
+            )}
+
+            {/* Customize Statement Elements Button */}
+            {formatMode === 'section76' && onUpdateStatementConfig && (
+              <button
+                type="button"
+                onClick={() => setIsCustomizeMode(!isCustomizeMode)}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all flex items-center gap-1.5 shadow-sm whitespace-nowrap shrink-0 ${
+                  isCustomizeMode
+                    ? 'bg-indigo-600 text-white border-indigo-600 ring-2 ring-indigo-400/30'
+                    : 'bg-white hover:bg-indigo-50 text-indigo-700 border-slate-300 hover:border-indigo-400'
+                }`}
+                title="Select or deselect individual financial statement elements and auto-recalculate"
+              >
+                <CheckSquare className="w-3.5 h-3.5" />
+                <span>
+                  {isCustomizeMode
+                    ? `Done Selecting (${selectedConfigCount}/${totalConfigCount})`
+                    : `Customize Elements (${selectedConfigCount}/${totalConfigCount})`}
+                </span>
+              </button>
+            )}
+
+            {isCustomizeMode && formatMode === 'section76' && onResetStatementConfig && (
+              <button
+                type="button"
+                onClick={onResetStatementConfig}
+                className="px-2.5 py-1.5 text-xs font-medium text-indigo-700 hover:text-indigo-900 bg-white hover:bg-indigo-50 rounded-lg border border-slate-300 transition-colors flex items-center gap-1 whitespace-nowrap shrink-0"
+                title="Re-select all default financial statement elements"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                Select All
               </button>
             )}
 
@@ -524,7 +742,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
               <div className="flex items-center gap-1">
                 <button
                   type="button"
-                  onClick={() => exportAllPreviousComparativePairsExcel(companyProfile, previousComparativePairs, pairData => (getPairScopedNotes ? getPairScopedNotes(pairData) : notes))}
+                  onClick={() => exportAllPreviousComparativePairsExcel(companyProfile, previousComparativePairs, pairData => (getPairScopedNotes ? getPairScopedNotes(pairData) : notes), exportSyncOptions)}
                   className="px-2 py-1 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-semibold transition-colors whitespace-nowrap shrink-0"
                   title="Download all Previous Comparative sets as Excel workbooks"
                 >
@@ -532,7 +750,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => exportAllPreviousComparativePairsWord(companyProfile, previousComparativePairs, pairData => (getPairScopedNotes ? getPairScopedNotes(pairData) : notes))}
+                  onClick={() => exportAllPreviousComparativePairsWord(companyProfile, previousComparativePairs, pairData => (getPairScopedNotes ? getPairScopedNotes(pairData) : notes), exportSyncOptions)}
                   className="px-2 py-1 rounded-md bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-semibold transition-colors whitespace-nowrap shrink-0"
                   title="Download all Previous Comparative sets as Word documents"
                 >
@@ -540,7 +758,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => exportAllPreviousComparativePairsPdf(companyProfile, previousComparativePairs, pairData => (getPairScopedNotes ? getPairScopedNotes(pairData) : notes))}
+                  onClick={() => exportAllPreviousComparativePairsPdf(companyProfile, previousComparativePairs, pairData => (getPairScopedNotes ? getPairScopedNotes(pairData) : notes), exportSyncOptions)}
                   className="px-2 py-1 rounded-md bg-rose-600 hover:bg-rose-700 text-white text-[10px] font-semibold transition-colors whitespace-nowrap shrink-0"
                   title="Download all Previous Comparative sets as PDF statements"
                 >
@@ -596,7 +814,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
             <div className="flex items-center gap-1.5 shrink-0">
               <button
                 type="button"
-                onClick={() => exportProjectedFinancialsExcel(companyProfile, projectedFormatData)}
+                onClick={() => exportProjectedFinancialsExcel(companyProfile, projectedFormatData, exportSyncOptions)}
                 className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-semibold flex items-center gap-1 shadow-xs transition-colors whitespace-nowrap shrink-0"
               >
                 <FileSpreadsheet className="w-3 h-3" />
@@ -604,7 +822,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => exportProjectedFinancialsWord(companyProfile, projectedFormatData)}
+                onClick={() => exportProjectedFinancialsWord(companyProfile, projectedFormatData, exportSyncOptions)}
                 className="px-2.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-semibold flex items-center gap-1 shadow-xs transition-colors whitespace-nowrap shrink-0"
               >
                 <FileText className="w-3 h-3" />
@@ -612,7 +830,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => exportProjectedFinancialsPdf(companyProfile, projectedFormatData)}
+                onClick={() => exportProjectedFinancialsPdf(companyProfile, projectedFormatData, exportSyncOptions)}
                 className="px-2.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-semibold flex items-center gap-1 shadow-xs transition-colors whitespace-nowrap shrink-0"
               >
                 <Download className="w-3 h-3" />
@@ -663,6 +881,10 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
           notes={notes}
           isEditMode={isEditMode}
           onUpdatePrimaryDriver={onUpdatePrimaryDriver}
+          statementConfig={statementConfig}
+          onUpdateStatementConfig={onUpdateStatementConfig}
+          onResetStatementConfig={onResetStatementConfig}
+          labelOverrides={labelOverrides}
         />
       )}
 
@@ -672,6 +894,10 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
           projData={projectedFormatData}
           isEditMode={isEditMode}
           onUpdatePrimaryDriver={onUpdatePrimaryDriver}
+          statementConfig={statementConfig}
+          onUpdateStatementConfig={onUpdateStatementConfig}
+          onResetStatementConfig={onResetStatementConfig}
+          labelOverrides={labelOverrides}
         />
       )}
 
@@ -759,6 +985,25 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
             )}
           </div>
 
+          {/* Element Selection Info Banner */}
+          {isCustomizeMode && (
+            <div className="p-3.5 bg-indigo-50/95 border border-indigo-300 rounded-xl text-xs text-indigo-950 flex items-center justify-between gap-3 shadow-xs">
+              <div className="flex items-center gap-2">
+                <CheckSquare className="w-4 h-4 text-indigo-600 shrink-0" />
+                <span>
+                  <strong>Element Selection Mode:</strong> Use checkboxes on any statement row below to include or exclude line items. All subtotals, linked statements, ratios, previews, and exports recalculate automatically.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCustomizeMode(false)}
+                className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-medium text-[11px] shrink-0"
+              >
+                Done Selecting
+              </button>
+            </div>
+          )}
+
           {/* Render Statement Body */}
           {activeStatement === 'cashFlow' && (
             <div className="space-y-6">
@@ -767,6 +1012,10 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
                 currency={companyProfile.reportingCurrency}
                 companyProfile={companyProfile}
                 isEditMode={isEditMode}
+                isCustomizeMode={isCustomizeMode}
+                isElemVisible={isElemVisible}
+                onToggleElem={toggleConfigElement}
+                customItems={getCustomItems('cashFlow')}
                 getVal={getVal}
                 getLbl={getLbl}
                 onUpdateValue={onUpdateStatementValue}
@@ -789,6 +1038,10 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
               currency={companyProfile.reportingCurrency}
               companyProfile={companyProfile}
               isEditMode={isEditMode}
+              isCustomizeMode={isCustomizeMode}
+              isElemVisible={isElemVisible}
+              onToggleElem={toggleConfigElement}
+              customItems={getCustomItems('income')}
               getVal={getVal}
               getLbl={getLbl}
               onUpdateValue={onUpdateStatementValue}
@@ -802,6 +1055,10 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
               currency={companyProfile.reportingCurrency}
               companyProfile={companyProfile}
               isEditMode={isEditMode}
+              isCustomizeMode={isCustomizeMode}
+              isElemVisible={isElemVisible}
+              onToggleElem={toggleConfigElement}
+              customItems={getCustomItems('balanceSheet')}
               getVal={getVal}
               getLbl={getLbl}
               onUpdateValue={onUpdateStatementValue}
@@ -815,6 +1072,10 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
               currency={companyProfile.reportingCurrency}
               companyProfile={companyProfile}
               isEditMode={isEditMode}
+              isCustomizeMode={isCustomizeMode}
+              isElemVisible={isElemVisible}
+              onToggleElem={toggleConfigElement}
+              customItems={getCustomItems('equity')}
               getVal={getVal}
               getLbl={getLbl}
               onUpdateValue={onUpdateStatementValue}
@@ -828,7 +1089,14 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
               currency={companyProfile.reportingCurrency}
               companyProfile={companyProfile}
               isEditMode={isEditMode}
+              isCustomizeMode={isCustomizeMode}
+              isElemVisible={isElemVisible}
+              onToggleElem={toggleConfigElement}
+              customItems={getCustomItems('fixedAssets')}
+              getLbl={getLbl}
               onUpdateCategory={onUpdateFixedAssetsCategory}
+              onUpdateValue={onUpdateStatementValue}
+              onUpdateLabel={onUpdateStatementLabel}
             />
           )}
 
@@ -1034,6 +1302,10 @@ function StatementOfCashFlowsTable({
   currency,
   companyProfile,
   isEditMode,
+  isCustomizeMode,
+  isElemVisible,
+  onToggleElem,
+  customItems,
   getVal,
   getLbl,
   onUpdateValue,
@@ -1043,11 +1315,115 @@ function StatementOfCashFlowsTable({
   currency: string;
   companyProfile?: CompanyProfile;
   isEditMode: boolean;
+  isCustomizeMode: boolean;
+  isElemVisible: (id: string) => boolean;
+  onToggleElem: (id: string) => void;
+  customItems: StatementConfigItem[];
   getVal: (stmt: string, field: string, year: number, fallback: number) => number;
-  getLbl: (stmt: string, field: string, defaultLabel: string) => string;
+  getLbl: (stmt: string, field: string, defaultLabel: string, configId?: string) => string;
   onUpdateValue: (stmt: string, field: string, year: number, val: number) => void;
   onUpdateLabel: (stmt: string, field: string, newLabel: string) => void;
 }) {
+  const renderToggle = (configId: string) =>
+    isCustomizeMode ? (
+      <input
+        type="checkbox"
+        checked={isElemVisible(configId)}
+        onChange={() => onToggleElem(configId)}
+        title="Include or exclude this element from calculation and exports"
+        className="w-3.5 h-3.5 accent-indigo-600 rounded cursor-pointer shrink-0"
+      />
+    ) : null;
+
+  const renderStandardRow = (
+    configId: string,
+    field: string,
+    defaultLabel: string,
+    getFallback: (d: CashFlowStatementYear) => number,
+    opts?: {
+      indent?: boolean;
+      isNegative?: boolean;
+      highlightClass?: string;
+      cellTextClass?: string;
+      badge?: string;
+    }
+  ) => {
+    const visible = isElemVisible(configId);
+    if (!visible && !isCustomizeMode) return null;
+    const indentClass = opts?.indent ? 'pl-6' : '';
+    const rowBg = !visible
+      ? 'opacity-45 bg-slate-50/90'
+      : opts?.highlightClass || 'hover:bg-slate-50/70';
+
+    return (
+      <tr key={configId} className={rowBg}>
+        <td className={`py-2 px-4 font-sans ${indentClass} ${opts?.badge ? 'flex items-center gap-1.5 text-rose-800' : 'text-slate-700'}`}>
+          <div className="flex items-center gap-2">
+            {renderToggle(configId)}
+            <EditableLabel
+              label={getLbl('cf', field, defaultLabel, configId)}
+              isEditMode={isEditMode}
+              onSave={(lbl) => onUpdateLabel('cf', field, lbl)}
+            />
+            {opts?.badge && (
+              <span className="text-[10px] bg-rose-100 text-rose-800 border border-rose-300 px-1.5 py-0.2 rounded font-semibold shrink-0">
+                {opts.badge}
+              </span>
+            )}
+          </div>
+        </td>
+        {cashFlowData.map(d => (
+          <td key={d.year} className={`py-2 px-3 text-right ${opts?.cellTextClass || 'text-slate-700'}`}>
+            <EditableCell
+              val={getVal('cf', field, d.year, getFallback(d))}
+              isEditMode={isEditMode}
+              onSave={(val) => onUpdateValue('cf', field, d.year, val)}
+              isNegative={opts?.isNegative}
+            />
+          </td>
+        ))}
+      </tr>
+    );
+  };
+
+  const renderCustomRows = (section: string) =>
+    customItems
+      .filter(ci => ci.section === section && (ci.isVisible || isCustomizeMode))
+      .map(ci => (
+        <tr key={ci.id} className={!ci.isVisible ? 'opacity-45 bg-slate-50/90' : 'bg-indigo-50/35 hover:bg-indigo-50/60'}>
+          <td className="py-2 px-4 font-sans text-indigo-900 pl-6">
+            <div className="flex items-center gap-2">
+              {isCustomizeMode && (
+                <input
+                  type="checkbox"
+                  checked={ci.isVisible}
+                  onChange={() => onToggleElem(ci.id)}
+                  className="w-3.5 h-3.5 accent-indigo-600 rounded cursor-pointer shrink-0"
+                />
+              )}
+              <EditableLabel
+                label={ci.label}
+                isEditMode={isEditMode}
+                onSave={(lbl) => onUpdateLabel('custom', ci.id, lbl)}
+              />
+              <span className="text-[9px] font-mono uppercase bg-indigo-100 text-indigo-800 border border-indigo-200 px-1.5 py-0.5 rounded shrink-0">
+                Custom
+              </span>
+            </div>
+          </td>
+          {cashFlowData.map(d => (
+            <td key={d.year} className={`py-2 px-3 text-right ${ci.sign === 'negative' ? 'text-rose-700' : 'text-indigo-800'}`}>
+              <EditableCell
+                val={getCustomItemYearValue(ci, d.year)}
+                isEditMode={isEditMode}
+                onSave={(val) => onUpdateValue('custom', ci.id, d.year, val)}
+                isNegative={ci.sign === 'negative'}
+              />
+            </td>
+          ))}
+        </tr>
+      ));
+
   return (
     <div className="bg-white/92 backdrop-blur-md border border-slate-200/90 rounded-2xl overflow-hidden shadow-sm">
       <StatementMasthead
@@ -1086,100 +1462,12 @@ function StatementOfCashFlowsTable({
               </td>
             </tr>
 
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-800 font-medium">
-                <EditableLabel
-                  label={getLbl('cf', 'profitBeforeTax', 'Net Profit Before Tax')}
-                  isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('cf', 'profitBeforeTax', lbl)}
-                />
-              </td>
-              {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-800">
-                  <EditableCell
-                    val={getVal('cf', 'profitBeforeTax', d.year, d.profitBeforeTax)}
-                    isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('cf', 'profitBeforeTax', d.year, val)}
-                  />
-                </td>
-              ))}
-            </tr>
-
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
-                <EditableLabel
-                  label={getLbl('cf', 'adjDepreciation', 'Adjustments for Depreciation')}
-                  isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('cf', 'adjDepreciation', lbl)}
-                />
-              </td>
-              {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
-                  <EditableCell
-                    val={getVal('cf', 'adjDepreciation', d.year, d.adjDepreciation)}
-                    isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('cf', 'adjDepreciation', d.year, val)}
-                  />
-                </td>
-              ))}
-            </tr>
-
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
-                <EditableLabel
-                  label={getLbl('cf', 'adjAmortization', 'Adjustments for Amortization')}
-                  isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('cf', 'adjAmortization', lbl)}
-                />
-              </td>
-              {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
-                  <EditableCell
-                    val={getVal('cf', 'adjAmortization', d.year, d.adjAmortization)}
-                    isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('cf', 'adjAmortization', d.year, val)}
-                  />
-                </td>
-              ))}
-            </tr>
-
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
-                <EditableLabel
-                  label={getLbl('cf', 'adjFinanceCost', 'Finance Cost Adjustment')}
-                  isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('cf', 'adjFinanceCost', lbl)}
-                />
-              </td>
-              {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
-                  <EditableCell
-                    val={getVal('cf', 'adjFinanceCost', d.year, d.adjFinanceCost)}
-                    isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('cf', 'adjFinanceCost', d.year, val)}
-                  />
-                </td>
-              ))}
-            </tr>
-
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
-                <EditableLabel
-                  label={getLbl('cf', 'adjInterestIncome', 'Interest & Investment Income')}
-                  isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('cf', 'adjInterestIncome', lbl)}
-                />
-              </td>
-              {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
-                  <EditableCell
-                    val={getVal('cf', 'adjInterestIncome', d.year, d.adjInterestIncome)}
-                    isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('cf', 'adjInterestIncome', d.year, val)}
-                  />
-                </td>
-              ))}
-            </tr>
+            {renderStandardRow('cf_pbt', 'profitBeforeTax', 'Net Profit Before Tax', d => d.profitBeforeTax, { cellTextClass: 'text-slate-800 font-medium' })}
+            {renderStandardRow('cf_dep', 'adjDepreciation', 'Adjustments for Depreciation', d => d.adjDepreciation, { indent: true })}
+            {renderStandardRow('cf_amort', 'adjAmortization', 'Adjustments for Amortization', d => d.adjAmortization, { indent: true })}
+            {renderStandardRow('cf_finance', 'adjFinanceCost', 'Finance Cost Adjustment', d => d.adjFinanceCost, { indent: true })}
+            {renderStandardRow('cf_interest_inc', 'adjInterestIncome', 'Interest & Investment Income', d => d.adjInterestIncome, { indent: true })}
+            {renderStandardRow('cf_disposal_gain_loss', 'adjLossGainDisposal', 'Loss / (Gain) on Disposal of Fixed Assets', d => d.adjLossGainDisposal, { indent: true })}
 
             <tr className="bg-slate-100/80 font-semibold text-slate-800">
               <td className="py-2 px-4 font-sans">
@@ -1200,82 +1488,35 @@ function StatementOfCashFlowsTable({
               ))}
             </tr>
 
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
+            {renderStandardRow('cf_wc_inventory', 'changeInInventory', '(Increase) / Decrease in Inventory', d => d.changeInInventory, { indent: true })}
+            {renderStandardRow('cf_wc_receivables', 'changeInReceivables', '(Increase) / Decrease in Trade Receivables', d => d.changeInReceivables, { indent: true })}
+            {renderStandardRow('cf_wc_other_rec', 'changeInOtherReceivables', '(Increase) / Decrease in Other Receivables', d => d.changeInOtherReceivables, { indent: true })}
+            {renderStandardRow('cf_wc_other_ca', 'changeInOtherCA', '(Increase) / Decrease in Other Current Assets', d => d.changeInOtherCA ?? 0, { indent: true })}
+            {renderStandardRow('cf_wc_payables', 'changeInPayables', 'Increase / (Decrease) in Trade Payables', d => d.changeInPayables, { indent: true })}
+            {renderStandardRow('cf_wc_other_pay', 'changeInOtherPayables', 'Increase / (Decrease) in Other Payables', d => d.changeInOtherPayables, { indent: true })}
+            {renderCustomRows('Operating Activities')}
+
+            <tr className="bg-slate-50/90 font-semibold text-slate-800">
+              <td className="py-2 px-4 font-sans">
                 <EditableLabel
-                  label={getLbl('cf', 'changeInInventory', '(Increase) / Decrease in Inventory')}
+                  label={getLbl('cf', 'cashGeneratedFromOperations', 'Cash Generated from Operations')}
                   isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('cf', 'changeInInventory', lbl)}
+                  onSave={(lbl) => onUpdateLabel('cf', 'cashGeneratedFromOperations', lbl)}
                 />
               </td>
               {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
+                <td key={d.year} className="py-2 px-3 text-right text-slate-900 font-semibold">
                   <EditableCell
-                    val={getVal('cf', 'changeInInventory', d.year, d.changeInInventory)}
+                    val={getVal('cf', 'cashGeneratedFromOperations', d.year, d.cashGeneratedFromOperations)}
                     isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('cf', 'changeInInventory', d.year, val)}
+                    onSave={(val) => onUpdateValue('cf', 'cashGeneratedFromOperations', d.year, val)}
                   />
                 </td>
               ))}
             </tr>
 
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
-                <EditableLabel
-                  label={getLbl('cf', 'changeInReceivables', '(Increase) / Decrease in Trade Receivables')}
-                  isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('cf', 'changeInReceivables', lbl)}
-                />
-              </td>
-              {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
-                  <EditableCell
-                    val={getVal('cf', 'changeInReceivables', d.year, d.changeInReceivables)}
-                    isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('cf', 'changeInReceivables', d.year, val)}
-                  />
-                </td>
-              ))}
-            </tr>
-
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
-                <EditableLabel
-                  label={getLbl('cf', 'changeInPayables', 'Increase / (Decrease) in Trade Payables')}
-                  isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('cf', 'changeInPayables', lbl)}
-                />
-              </td>
-              {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
-                  <EditableCell
-                    val={getVal('cf', 'changeInPayables', d.year, d.changeInPayables)}
-                    isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('cf', 'changeInPayables', d.year, val)}
-                  />
-                </td>
-              ))}
-            </tr>
-
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
-                <EditableLabel
-                  label={getLbl('cf', 'incomeTaxPaid', 'Income Tax Paid')}
-                  isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('cf', 'incomeTaxPaid', lbl)}
-                />
-              </td>
-              {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-rose-700">
-                  <EditableCell
-                    val={getVal('cf', 'incomeTaxPaid', d.year, d.incomeTaxPaid)}
-                    isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('cf', 'incomeTaxPaid', d.year, val)}
-                    isNegative
-                  />
-                </td>
-              ))}
-            </tr>
+            {renderStandardRow('cf_tax_paid', 'incomeTaxPaid', 'Income Tax Paid', d => d.incomeTaxPaid, { indent: true, isNegative: true, cellTextClass: 'text-rose-700' })}
+            {renderStandardRow('cf_finance_paid', 'financeCostPaid', 'Finance Cost Paid', d => d.financeCostPaid, { indent: true, isNegative: true, cellTextClass: 'text-rose-700' })}
 
             <tr className="bg-emerald-50/60 font-bold border-t border-emerald-200">
               <td className="py-2.5 px-4 font-sans text-emerald-800">
@@ -1303,44 +1544,12 @@ function StatementOfCashFlowsTable({
               </td>
             </tr>
 
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
-                <EditableLabel
-                  label={getLbl('cf', 'purchasePPE', 'Purchase of Property, Plant & Equipment (Capex)')}
-                  isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('cf', 'purchasePPE', lbl)}
-                />
-              </td>
-              {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-rose-700">
-                  <EditableCell
-                    val={getVal('cf', 'purchasePPE', d.year, d.purchasePPE)}
-                    isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('cf', 'purchasePPE', d.year, val)}
-                    isNegative
-                  />
-                </td>
-              ))}
-            </tr>
-
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
-                <EditableLabel
-                  label={getLbl('cf', 'salePPE', 'Proceeds from Sale of Fixed Assets')}
-                  isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('cf', 'salePPE', lbl)}
-                />
-              </td>
-              {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
-                  <EditableCell
-                    val={getVal('cf', 'salePPE', d.year, d.salePPE)}
-                    isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('cf', 'salePPE', d.year, val)}
-                  />
-                </td>
-              ))}
-            </tr>
+            {renderStandardRow('cf_pur_ppe', 'purchasePPE', 'Purchase of Property, Plant & Equipment (Capex)', d => d.purchasePPE, { indent: true, isNegative: true, cellTextClass: 'text-rose-700' })}
+            {renderStandardRow('cf_sale_ppe', 'salePPE', 'Proceeds from Sale of Fixed Assets', d => d.salePPE, { indent: true })}
+            {renderStandardRow('cf_pur_intangible', 'purchaseIntangibles', 'Purchase of Intangible Assets', d => d.purchaseIntangibles, { indent: true, isNegative: true, cellTextClass: 'text-rose-700' })}
+            {renderStandardRow('cf_interest_rec', 'interestReceived', 'Interest Received', d => d.interestReceived, { indent: true })}
+            {renderStandardRow('cf_dividends_rec', 'dividendsReceived', 'Dividends Received', d => d.dividendsReceived, { indent: true })}
+            {renderCustomRows('Investing Activities')}
 
             <tr className="bg-sky-50/60 font-bold border-t border-sky-200">
               <td className="py-2.5 px-4 font-sans text-sky-800">
@@ -1363,97 +1572,45 @@ function StatementOfCashFlowsTable({
 
             {/* C. Financing Activities */}
             <tr className="bg-amber-50/85 font-sans font-bold text-amber-900">
-              <td colSpan={cashFlowData.length + 1} className="py-2.5 px-4 text-xs tracking-wider uppercase flex items-center justify-between">
-                <span>C. Cash Flows from Financing Activities</span>
-                <span className="text-[10px] font-semibold normal-case text-amber-900 bg-amber-100 px-2 py-0.5 rounded border border-amber-300">
-                  Mandatory Direct User Input
-                </span>
+              <td colSpan={cashFlowData.length + 1} className="py-2.5 px-4 text-xs tracking-wider uppercase">
+                <div className="flex items-center justify-between">
+                  <span>C. Cash Flows from Financing Activities</span>
+                  <span className="text-[10px] font-semibold normal-case text-amber-900 bg-amber-100 px-2 py-0.5 rounded border border-amber-300">
+                    Mandatory Direct User Input
+                  </span>
+                </div>
               </td>
             </tr>
 
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-700 pl-6">
-                <EditableLabel
-                  label={getLbl('cf', 'financingProceedsBorrowings', 'Proceeds from Borrowings & Financing')}
-                  isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('cf', 'financingProceedsBorrowings', lbl)}
-                />
-              </td>
-              {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-800">
-                  <EditableCell
-                    val={getVal('cf', 'financingProceedsBorrowings', d.year, d.financingProceedsBorrowings)}
-                    isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('cf', 'financingProceedsBorrowings', d.year, val)}
-                  />
-                </td>
-              ))}
-            </tr>
+            {renderStandardRow('cf_shares_issue', 'financingProceedsShares', 'Proceeds from Issue of Share Capital', d => d.financingProceedsShares, { indent: true, cellTextClass: 'text-slate-800' })}
+            {renderStandardRow('cf_borrow_proceeds', 'financingProceedsBorrowings', 'Proceeds from Borrowings & Financing', d => d.financingProceedsBorrowings, { indent: true, cellTextClass: 'text-slate-800' })}
+            {renderStandardRow('cf_borrow_repay', 'repaymentOfBorrowings', 'Repayment of Borrowings & Financing (Outflow) *', d => d.repaymentOfBorrowings || Math.abs(d.financingRepaymentBorrowings), { indent: true, isNegative: true, highlightClass: 'bg-rose-50/65 font-medium', cellTextClass: 'text-rose-700 font-bold', badge: 'User Input' })}
+            {renderStandardRow('cf_dividends_paid', 'financingDividendsPaid', 'Dividends Paid to Shareholders', d => d.financingDividendsPaid, { indent: true, isNegative: true, cellTextClass: 'text-rose-700' })}
+            {renderCustomRows('Financing Activities')}
 
-            <tr className="bg-rose-50/65 font-medium">
-              <td className="py-2.5 px-4 font-sans text-rose-800 pl-6 flex items-center gap-1.5">
-                <EditableLabel
-                  label={getLbl('cf', 'repaymentOfBorrowings', 'Repayment of Borrowings & Financing (Outflow) *')}
-                  isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('cf', 'repaymentOfBorrowings', lbl)}
-                />
-                <span className="text-[10px] bg-rose-100 text-rose-800 border border-rose-300 px-1.5 py-0.2 rounded font-semibold">
-                  User Input
-                </span>
-              </td>
-              {cashFlowData.map(d => {
-                const repVal = getVal('cf', 'repaymentOfBorrowings', d.year, d.repaymentOfBorrowings || Math.abs(d.financingRepaymentBorrowings));
-                return (
-                  <td key={d.year} className="py-2.5 px-3 text-right text-rose-700 font-bold">
-                    <EditableCell
-                      val={repVal}
+            {(isElemVisible('cf_direct_financing') || isCustomizeMode) && (
+              <tr className={!isElemVisible('cf_direct_financing') ? 'opacity-45 bg-slate-50/90' : 'bg-amber-50/75 font-semibold border-t border-amber-200'}>
+                <td className="py-2 px-4 font-sans text-amber-900">
+                  <div className="flex items-center gap-2">
+                    {renderToggle('cf_direct_financing')}
+                    <EditableLabel
+                      label={getLbl('cf', 'directlyEnteredFinancingCashFlow', 'Directly Entered Cash Flow from Financing Activities *', 'cf_direct_financing')}
                       isEditMode={isEditMode}
-                      onSave={(val) => onUpdateValue('cf', 'repaymentOfBorrowings', d.year, val)}
-                      isNegative
+                      onSave={(lbl) => onUpdateLabel('cf', 'directlyEnteredFinancingCashFlow', lbl)}
+                    />
+                  </div>
+                </td>
+                {cashFlowData.map(d => (
+                  <td key={d.year} className="py-2 px-3 text-right text-amber-800 font-bold">
+                    <EditableCell
+                      val={getVal('cf', 'directlyEnteredFinancingCashFlow', d.year, d.directlyEnteredFinancingCashFlow)}
+                      isEditMode={isEditMode}
+                      onSave={(val) => onUpdateValue('cf', 'directlyEnteredFinancingCashFlow', d.year, val)}
                     />
                   </td>
-                );
-              })}
-            </tr>
-
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-700 pl-6">
-                <EditableLabel
-                  label={getLbl('cf', 'financingDividendsPaid', 'Dividends Paid to Shareholders')}
-                  isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('cf', 'financingDividendsPaid', lbl)}
-                />
-              </td>
-              {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-rose-700">
-                  <EditableCell
-                    val={getVal('cf', 'financingDividendsPaid', d.year, d.financingDividendsPaid)}
-                    isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('cf', 'financingDividendsPaid', d.year, val)}
-                    isNegative
-                  />
-                </td>
-              ))}
-            </tr>
-
-            <tr className="bg-amber-50/75 font-semibold border-t border-amber-200">
-              <td className="py-2 px-4 font-sans text-amber-900">
-                <EditableLabel
-                  label={getLbl('cf', 'directlyEnteredFinancingCashFlow', 'Directly Entered Cash Flow from Financing Activities *')}
-                  isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('cf', 'directlyEnteredFinancingCashFlow', lbl)}
-                />
-              </td>
-              {cashFlowData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-amber-800 font-bold">
-                  <EditableCell
-                    val={getVal('cf', 'directlyEnteredFinancingCashFlow', d.year, d.directlyEnteredFinancingCashFlow)}
-                    isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('cf', 'directlyEnteredFinancingCashFlow', d.year, val)}
-                  />
-                </td>
-              ))}
-            </tr>
+                ))}
+              </tr>
+            )}
 
             <tr className="bg-amber-50/90 font-bold border-t border-amber-200">
               <td className="py-2.5 px-4 font-sans text-amber-900">
@@ -1563,6 +1720,10 @@ function IncomeStatementTable({
   currency,
   companyProfile,
   isEditMode,
+  isCustomizeMode,
+  isElemVisible,
+  onToggleElem,
+  customItems,
   getVal,
   getLbl,
   onUpdateValue,
@@ -1572,11 +1733,99 @@ function IncomeStatementTable({
   currency: string;
   companyProfile?: CompanyProfile;
   isEditMode: boolean;
+  isCustomizeMode: boolean;
+  isElemVisible: (id: string) => boolean;
+  onToggleElem: (id: string) => void;
+  customItems: StatementConfigItem[];
   getVal: (stmt: string, field: string, year: number, fallback: number) => number;
-  getLbl: (stmt: string, field: string, defaultLabel: string) => string;
+  getLbl: (stmt: string, field: string, defaultLabel: string, configId?: string) => string;
   onUpdateValue: (stmt: string, field: string, year: number, val: number) => void;
   onUpdateLabel: (stmt: string, field: string, newLabel: string) => void;
 }) {
+  const renderToggle = (configId: string) =>
+    isCustomizeMode ? (
+      <input
+        type="checkbox"
+        checked={isElemVisible(configId)}
+        onChange={() => onToggleElem(configId)}
+        title="Include or exclude this element from calculation and exports"
+        className="w-3.5 h-3.5 accent-indigo-600 rounded cursor-pointer shrink-0"
+      />
+    ) : null;
+
+  const renderIncomeRow = (
+    configId: string,
+    field: string,
+    defaultLabel: string,
+    getFallback: (d: IncomeStatementYear) => number,
+    opts?: { indent?: boolean; isNegative?: boolean; rowClass?: string; cellClass?: string }
+  ) => {
+    const visible = isElemVisible(configId);
+    if (!visible && !isCustomizeMode) return null;
+    return (
+      <tr key={configId} className={!visible ? 'opacity-45 bg-slate-50/90' : opts?.rowClass || 'hover:bg-slate-50/70'}>
+        <td className={`py-2 px-4 font-sans ${opts?.indent ? 'pl-6 text-slate-600' : 'text-slate-900'}`}>
+          <div className="flex items-center gap-2">
+            {renderToggle(configId)}
+            <EditableLabel
+              label={getLbl('income', field, defaultLabel, configId)}
+              isEditMode={isEditMode}
+              onSave={(lbl) => onUpdateLabel('income', field, lbl)}
+            />
+          </div>
+        </td>
+        {incomeData.map(d => (
+          <td key={d.year} className={`py-2 px-3 text-right ${opts?.cellClass || 'text-rose-700'}`}>
+            <EditableCell
+              val={getVal('income', field, d.year, getFallback(d))}
+              isEditMode={isEditMode}
+              onSave={(val) => onUpdateValue('income', field, d.year, val)}
+              isNegative={opts?.isNegative}
+            />
+          </td>
+        ))}
+      </tr>
+    );
+  };
+
+  const renderCustomRows = (section: string) =>
+    customItems
+      .filter(ci => ci.section === section && (ci.isVisible || isCustomizeMode))
+      .map(ci => (
+        <tr key={ci.id} className={!ci.isVisible ? 'opacity-45 bg-slate-50/90' : 'bg-indigo-50/35 hover:bg-indigo-50/60'}>
+          <td className="py-2 px-4 font-sans text-indigo-900 pl-6">
+            <div className="flex items-center gap-2">
+              {isCustomizeMode && (
+                <input
+                  type="checkbox"
+                  checked={ci.isVisible}
+                  onChange={() => onToggleElem(ci.id)}
+                  className="w-3.5 h-3.5 accent-indigo-600 rounded cursor-pointer shrink-0"
+                />
+              )}
+              <EditableLabel
+                label={ci.label}
+                isEditMode={isEditMode}
+                onSave={(lbl) => onUpdateLabel('custom', ci.id, lbl)}
+              />
+              <span className="text-[9px] font-mono uppercase bg-indigo-100 text-indigo-800 border border-indigo-200 px-1.5 py-0.5 rounded shrink-0">
+                Custom
+              </span>
+            </div>
+          </td>
+          {incomeData.map(d => (
+            <td key={d.year} className={`py-2 px-3 text-right ${ci.sign === 'negative' ? 'text-rose-700' : 'text-indigo-800'}`}>
+              <EditableCell
+                val={getCustomItemYearValue(ci, d.year)}
+                isEditMode={isEditMode}
+                onSave={(val) => onUpdateValue('custom', ci.id, d.year, val)}
+                isNegative={ci.sign === 'negative'}
+              />
+            </td>
+          ))}
+        </tr>
+      ));
+
   return (
     <div className="bg-white/92 backdrop-blur-md border border-slate-200/90 rounded-2xl overflow-hidden shadow-sm">
       <StatementMasthead
@@ -1607,44 +1856,16 @@ function IncomeStatementTable({
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200/70 tabular-nums">
-            <tr className="font-semibold text-slate-900 hover:bg-slate-50/70">
-              <td className="py-2.5 px-4 font-sans">
-                <EditableLabel
-                  label={getLbl('income', 'revenue', 'Sales Revenue')}
-                  isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('income', 'revenue', lbl)}
-                />
-              </td>
-              {incomeData.map(d => (
-                <td key={d.year} className="py-2.5 px-3 text-right text-emerald-700 font-bold">
-                  <EditableCell
-                    val={getVal('income', 'revenue', d.year, d.revenue)}
-                    isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('income', 'revenue', d.year, val)}
-                  />
-                </td>
-              ))}
-            </tr>
-
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
-                <EditableLabel
-                  label={getLbl('income', 'costOfSales', 'Cost of Goods Sold / Cost of Sales')}
-                  isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('income', 'costOfSales', lbl)}
-                />
-              </td>
-              {incomeData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-rose-700">
-                  <EditableCell
-                    val={getVal('income', 'costOfSales', d.year, d.costOfSales)}
-                    isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('income', 'costOfSales', d.year, val)}
-                    isNegative
-                  />
-                </td>
-              ))}
-            </tr>
+            {renderIncomeRow('inc_revenue', 'revenue', 'Sales Revenue', d => d.revenue, {
+              rowClass: 'font-semibold text-slate-900 hover:bg-slate-50/70',
+              cellClass: 'text-emerald-700 font-bold',
+            })}
+            {renderCustomRows('Revenue & Gross Margin')}
+            {renderIncomeRow('inc_costOfSales', 'costOfSales', 'Cost of Goods Sold / Cost of Sales', d => d.costOfSales, {
+              indent: true,
+              isNegative: true,
+              cellClass: 'text-rose-700',
+            })}
 
             <tr className="bg-slate-100/80 font-bold text-slate-900">
               <td className="py-2.5 px-4 font-sans">
@@ -1665,45 +1886,17 @@ function IncomeStatementTable({
               ))}
             </tr>
 
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
-                <EditableLabel
-                  label={getLbl('income', 'operatingExpenses', 'Operating Expenses (Admin & Selling)')}
-                  isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('income', 'operatingExpenses', lbl)}
-                />
-              </td>
-              {incomeData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-rose-700">
-                  <EditableCell
-                    val={getVal('income', 'operatingExpenses', d.year, d.operatingExpenses)}
-                    isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('income', 'operatingExpenses', d.year, val)}
-                    isNegative
-                  />
-                </td>
-              ))}
-            </tr>
-
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
-                <EditableLabel
-                  label={getLbl('income', 'depreciationExpense', 'Depreciation Expense (Schedule of Fixed Assets)')}
-                  isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('income', 'depreciationExpense', lbl)}
-                />
-              </td>
-              {incomeData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-rose-700">
-                  <EditableCell
-                    val={getVal('income', 'depreciationExpense', d.year, d.depreciationExpense)}
-                    isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('income', 'depreciationExpense', d.year, val)}
-                    isNegative
-                  />
-                </td>
-              ))}
-            </tr>
+            {renderIncomeRow('inc_operatingExpenses', 'operatingExpenses', 'Operating Expenses (Admin & Selling)', d => d.operatingExpenses, {
+              indent: true,
+              isNegative: true,
+              cellClass: 'text-rose-700',
+            })}
+            {renderCustomRows('Operating Expenses')}
+            {renderIncomeRow('inc_depreciationExpense', 'depreciationExpense', 'Depreciation Expense (Schedule of Fixed Assets)', d => d.depreciationExpense, {
+              indent: true,
+              isNegative: true,
+              cellClass: 'text-rose-700',
+            })}
 
             <tr className="bg-sky-50/75 font-bold text-sky-800">
               <td className="py-2.5 px-4 font-sans">
@@ -1724,25 +1917,17 @@ function IncomeStatementTable({
               ))}
             </tr>
 
-            <tr className="bg-amber-50/75 font-semibold">
-              <td className="py-2 px-4 font-sans text-amber-900 pl-6">
-                <EditableLabel
-                  label={getLbl('income', 'financeCost', 'Finance Cost (Mandatory Direct Entry)')}
-                  isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('income', 'financeCost', lbl)}
-                />
-              </td>
-              {incomeData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-amber-800">
-                  <EditableCell
-                    val={getVal('income', 'financeCost', d.year, d.financeCost)}
-                    isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('income', 'financeCost', d.year, val)}
-                    isNegative
-                  />
-                </td>
-              ))}
-            </tr>
+            {renderIncomeRow('inc_interestIncome', 'interestIncome', 'Interest & Investment Income', d => d.interestIncome, {
+              indent: true,
+              cellClass: 'text-emerald-700',
+            })}
+            {renderIncomeRow('inc_financeCost', 'financeCost', 'Finance Cost (Mandatory Direct Entry)', d => d.financeCost, {
+              indent: true,
+              isNegative: true,
+              rowClass: 'bg-amber-50/75 font-semibold',
+              cellClass: 'text-amber-800',
+            })}
+            {renderCustomRows('Non-Operating & Tax')}
 
             <tr className="font-bold text-slate-900 hover:bg-slate-50/70">
               <td className="py-2.5 px-4 font-sans">
@@ -1762,6 +1947,12 @@ function IncomeStatementTable({
                 </td>
               ))}
             </tr>
+
+            {renderIncomeRow('inc_taxExpense', 'taxExpense', 'Income Tax Expense', d => d.taxExpense, {
+              indent: true,
+              isNegative: true,
+              cellClass: 'text-rose-700',
+            })}
 
             <tr className="bg-emerald-50/85 font-bold text-emerald-800 border-t-2 border-emerald-300 border-b-4 border-double border-emerald-600">
               <td className="py-3 px-4 font-sans text-emerald-800 text-sm">
@@ -1794,6 +1985,10 @@ function BalanceSheetTable({
   currency,
   companyProfile,
   isEditMode,
+  isCustomizeMode,
+  isElemVisible,
+  onToggleElem,
+  customItems,
   getVal,
   getLbl,
   onUpdateValue,
@@ -1803,11 +1998,99 @@ function BalanceSheetTable({
   currency: string;
   companyProfile?: CompanyProfile;
   isEditMode: boolean;
+  isCustomizeMode: boolean;
+  isElemVisible: (id: string) => boolean;
+  onToggleElem: (id: string) => void;
+  customItems: StatementConfigItem[];
   getVal: (stmt: string, field: string, year: number, fallback: number) => number;
-  getLbl: (stmt: string, field: string, defaultLabel: string) => string;
+  getLbl: (stmt: string, field: string, defaultLabel: string, configId?: string) => string;
   onUpdateValue: (stmt: string, field: string, year: number, val: number) => void;
   onUpdateLabel: (stmt: string, field: string, newLabel: string) => void;
 }) {
+  const renderToggle = (configId: string) =>
+    isCustomizeMode ? (
+      <input
+        type="checkbox"
+        checked={isElemVisible(configId)}
+        onChange={() => onToggleElem(configId)}
+        title="Include or exclude this element from calculation and exports"
+        className="w-3.5 h-3.5 accent-indigo-600 rounded cursor-pointer shrink-0"
+      />
+    ) : null;
+
+  const renderBSRow = (
+    configId: string,
+    field: string,
+    defaultLabel: string,
+    getFallback: (d: BalanceSheetYear) => number,
+    cellClass = 'text-slate-700',
+    labelClass = 'text-slate-700'
+  ) => {
+    const visible = isElemVisible(configId);
+    if (!visible && !isCustomizeMode) return null;
+    return (
+      <tr key={configId} className={!visible ? 'opacity-45 bg-slate-50/90' : 'hover:bg-slate-50/70'}>
+        <td className={`py-2 px-4 font-sans ${labelClass}`}>
+          <div className="flex items-center gap-2">
+            {renderToggle(configId)}
+            <EditableLabel
+              label={getLbl('bs', field, defaultLabel, configId)}
+              isEditMode={isEditMode}
+              onSave={(lbl) => onUpdateLabel('bs', field, lbl)}
+            />
+          </div>
+        </td>
+        {balanceData.map(d => (
+          <td key={d.year} className={`py-2 px-3 text-right ${cellClass}`}>
+            <EditableCell
+              val={getVal('bs', field, d.year, getFallback(d))}
+              isEditMode={isEditMode}
+              onSave={(val) => onUpdateValue('bs', field, d.year, val)}
+            />
+          </td>
+        ))}
+      </tr>
+    );
+  };
+
+  const renderCustomRows = (section: string) =>
+    customItems
+      .filter(ci => ci.section === section && (ci.isVisible || isCustomizeMode))
+      .map(ci => (
+        <tr key={ci.id} className={!ci.isVisible ? 'opacity-45 bg-slate-50/90' : 'bg-indigo-50/35 hover:bg-indigo-50/60'}>
+          <td className="py-2 px-4 font-sans text-indigo-900">
+            <div className="flex items-center gap-2">
+              {isCustomizeMode && (
+                <input
+                  type="checkbox"
+                  checked={ci.isVisible}
+                  onChange={() => onToggleElem(ci.id)}
+                  className="w-3.5 h-3.5 accent-indigo-600 rounded cursor-pointer shrink-0"
+                />
+              )}
+              <EditableLabel
+                label={ci.label}
+                isEditMode={isEditMode}
+                onSave={(lbl) => onUpdateLabel('custom', ci.id, lbl)}
+              />
+              <span className="text-[9px] font-mono uppercase bg-indigo-100 text-indigo-800 border border-indigo-200 px-1.5 py-0.5 rounded shrink-0">
+                Custom
+              </span>
+            </div>
+          </td>
+          {balanceData.map(d => (
+            <td key={d.year} className="py-2 px-3 text-right text-indigo-800">
+              <EditableCell
+                val={getCustomItemYearValue(ci, d.year)}
+                isEditMode={isEditMode}
+                onSave={(val) => onUpdateValue('custom', ci.id, d.year, val)}
+                isNegative={ci.sign === 'negative'}
+              />
+            </td>
+          ))}
+        </tr>
+      ));
+
   return (
     <div className="bg-white/92 backdrop-blur-md border border-slate-200/90 rounded-2xl overflow-hidden shadow-sm">
       <StatementMasthead
@@ -1842,62 +2125,12 @@ function BalanceSheetTable({
               <td colSpan={balanceData.length + 1} className="py-2 px-4 uppercase text-[11px]">Current Assets</td>
             </tr>
 
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-800 font-medium">
-                <EditableLabel
-                  label={getLbl('bs', 'cashAndEquivalents', 'Cash and Cash Equivalents')}
-                  isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('bs', 'cashAndEquivalents', lbl)}
-                />
-              </td>
-              {balanceData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-sky-700 font-medium">
-                  <EditableCell
-                    val={getVal('bs', 'cashAndEquivalents', d.year, d.cashAndEquivalents)}
-                    isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('bs', 'cashAndEquivalents', d.year, val)}
-                  />
-                </td>
-              ))}
-            </tr>
-
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-700">
-                <EditableLabel
-                  label={getLbl('bs', 'tradeReceivables', 'Trade Receivables')}
-                  isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('bs', 'tradeReceivables', lbl)}
-                />
-              </td>
-              {balanceData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
-                  <EditableCell
-                    val={getVal('bs', 'tradeReceivables', d.year, d.tradeReceivables)}
-                    isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('bs', 'tradeReceivables', d.year, val)}
-                  />
-                </td>
-              ))}
-            </tr>
-
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-700">
-                <EditableLabel
-                  label={getLbl('bs', 'closingInventory', 'Closing Inventory')}
-                  isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('bs', 'closingInventory', lbl)}
-                />
-              </td>
-              {balanceData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
-                  <EditableCell
-                    val={getVal('bs', 'closingInventory', d.year, d.closingInventory)}
-                    isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('bs', 'closingInventory', d.year, val)}
-                  />
-                </td>
-              ))}
-            </tr>
+            {renderBSRow('bs_cashAndEquivalents', 'cashAndEquivalents', 'Cash and Cash Equivalents', d => d.cashAndEquivalents, 'text-sky-700 font-medium', 'text-slate-800 font-medium')}
+            {renderBSRow('bs_tradeReceivables', 'tradeReceivables', 'Trade Receivables', d => d.tradeReceivables)}
+            {renderBSRow('bs_otherReceivables', 'otherReceivables', 'Other Receivables & Prepayments', d => d.otherReceivables)}
+            {renderBSRow('bs_closingInventory', 'closingInventory', 'Closing Inventory', d => d.closingInventory)}
+            {renderBSRow('bs_otherCurrentAssets', 'otherCurrentAssets', 'Other Current Assets', d => d.otherCurrentAssets)}
+            {renderCustomRows('Current Assets')}
 
             <tr className="bg-slate-100/80 font-semibold text-slate-900">
               <td className="py-2 px-4 font-sans">
@@ -1922,20 +2155,25 @@ function BalanceSheetTable({
               <td colSpan={balanceData.length + 1} className="py-2 px-4 uppercase text-[11px]">Non-Current Assets</td>
             </tr>
 
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-800 font-medium">
+            {renderBSRow('bs_propertyPlantEquipment', 'propertyPlantEquipment', 'Property, Plant and Equipment (NBV)', d => d.propertyPlantEquipment, 'text-emerald-700 font-medium', 'text-slate-800 font-medium')}
+            {renderBSRow('bs_intangibleAssets', 'intangibleAssets', 'Intangible Assets', d => d.intangibleAssets)}
+            {renderBSRow('bs_otherNonCurrentAssets', 'otherNonCurrentAssets', 'Other Non-Current Assets', d => d.otherNonCurrentAssets)}
+            {renderCustomRows('Non-Current Assets')}
+
+            <tr className="bg-slate-100/80 font-semibold text-slate-900">
+              <td className="py-2 px-4 font-sans">
                 <EditableLabel
-                  label={getLbl('bs', 'propertyPlantEquipment', 'Property, Plant and Equipment (NBV)')}
+                  label={getLbl('bs', 'totalNonCurrentAssets', 'Total Non-Current Assets')}
                   isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('bs', 'propertyPlantEquipment', lbl)}
+                  onSave={(lbl) => onUpdateLabel('bs', 'totalNonCurrentAssets', lbl)}
                 />
               </td>
               {balanceData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-emerald-700 font-medium">
+                <td key={d.year} className="py-2 px-3 text-right font-bold text-slate-800">
                   <EditableCell
-                    val={getVal('bs', 'propertyPlantEquipment', d.year, d.propertyPlantEquipment)}
+                    val={getVal('bs', 'totalNonCurrentAssets', d.year, d.totalNonCurrentAssets)}
                     isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('bs', 'propertyPlantEquipment', d.year, val)}
+                    onSave={(val) => onUpdateValue('bs', 'totalNonCurrentAssets', d.year, val)}
                   />
                 </td>
               ))}
@@ -1960,44 +2198,78 @@ function BalanceSheetTable({
               ))}
             </tr>
 
-            {/* Liabilities */}
+            {/* Current Liabilities */}
             <tr className="bg-rose-50/75 font-sans font-bold text-rose-800">
-              <td colSpan={balanceData.length + 1} className="py-2 px-4 uppercase text-[11px]">Liabilities</td>
+              <td colSpan={balanceData.length + 1} className="py-2 px-4 uppercase text-[11px]">Current Liabilities</td>
             </tr>
 
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-700">
+            {renderBSRow('bs_tradePayables', 'tradePayables', 'Trade Payables', d => d.tradePayables)}
+            {renderBSRow('bs_otherPayables', 'otherPayables', 'Other Payables & Accruals', d => d.otherPayables)}
+            {renderBSRow('bs_shortTermBorrowings', 'shortTermBorrowings', 'Short-Term Borrowings', d => d.shortTermBorrowings)}
+            {renderBSRow('bs_currentTaxPayable', 'currentTaxPayable', 'Current Tax Payable', d => d.currentTaxPayable)}
+            {renderCustomRows('Current Liabilities')}
+
+            <tr className="bg-slate-100/80 font-semibold text-slate-900">
+              <td className="py-2 px-4 font-sans">
                 <EditableLabel
-                  label={getLbl('bs', 'tradePayables', 'Trade Payables')}
+                  label={getLbl('bs', 'totalCurrentLiabilities', 'Total Current Liabilities')}
                   isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('bs', 'tradePayables', lbl)}
+                  onSave={(lbl) => onUpdateLabel('bs', 'totalCurrentLiabilities', lbl)}
                 />
               </td>
               {balanceData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
+                <td key={d.year} className="py-2 px-3 text-right font-bold text-rose-800">
                   <EditableCell
-                    val={getVal('bs', 'tradePayables', d.year, d.tradePayables)}
+                    val={getVal('bs', 'totalCurrentLiabilities', d.year, d.totalCurrentLiabilities)}
                     isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('bs', 'tradePayables', d.year, val)}
+                    onSave={(val) => onUpdateValue('bs', 'totalCurrentLiabilities', d.year, val)}
                   />
                 </td>
               ))}
             </tr>
 
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-700">
+            {/* Non-Current Liabilities */}
+            <tr className="bg-rose-50/75 font-sans font-bold text-rose-800">
+              <td colSpan={balanceData.length + 1} className="py-2 px-4 uppercase text-[11px]">Non-Current Liabilities</td>
+            </tr>
+
+            {renderBSRow('bs_longTermBorrowings', 'longTermBorrowings', 'Long-Term Borrowings', d => d.longTermBorrowings)}
+            {renderBSRow('bs_otherNonCurrentLiabilities', 'otherNonCurrentLiabilities', 'Other Non-Current Liabilities', d => d.otherNonCurrentLiabilities)}
+            {renderCustomRows('Non-Current Liabilities')}
+
+            <tr className="bg-slate-100/80 font-semibold text-slate-900">
+              <td className="py-2 px-4 font-sans">
                 <EditableLabel
-                  label={getLbl('bs', 'longTermBorrowings', 'Long-Term Borrowings')}
+                  label={getLbl('bs', 'totalNonCurrentLiabilities', 'Total Non-Current Liabilities')}
                   isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('bs', 'longTermBorrowings', lbl)}
+                  onSave={(lbl) => onUpdateLabel('bs', 'totalNonCurrentLiabilities', lbl)}
                 />
               </td>
               {balanceData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
+                <td key={d.year} className="py-2 px-3 text-right font-bold text-slate-800">
                   <EditableCell
-                    val={getVal('bs', 'longTermBorrowings', d.year, d.longTermBorrowings)}
+                    val={getVal('bs', 'totalNonCurrentLiabilities', d.year, d.totalNonCurrentLiabilities)}
                     isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('bs', 'longTermBorrowings', d.year, val)}
+                    onSave={(val) => onUpdateValue('bs', 'totalNonCurrentLiabilities', d.year, val)}
+                  />
+                </td>
+              ))}
+            </tr>
+
+            <tr className="bg-rose-50/70 font-bold text-rose-900">
+              <td className="py-2 px-4 font-sans">
+                <EditableLabel
+                  label={getLbl('bs', 'totalLiabilities', 'TOTAL LIABILITIES')}
+                  isEditMode={isEditMode}
+                  onSave={(lbl) => onUpdateLabel('bs', 'totalLiabilities', lbl)}
+                />
+              </td>
+              {balanceData.map(d => (
+                <td key={d.year} className="py-2 px-3 text-right font-bold text-rose-900">
+                  <EditableCell
+                    val={getVal('bs', 'totalLiabilities', d.year, d.totalLiabilities)}
+                    isEditMode={isEditMode}
+                    onSave={(val) => onUpdateValue('bs', 'totalLiabilities', d.year, val)}
                   />
                 </td>
               ))}
@@ -2008,39 +2280,25 @@ function BalanceSheetTable({
               <td colSpan={balanceData.length + 1} className="py-2 px-4 uppercase text-[11px]">Shareholders Equity</td>
             </tr>
 
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-700">
-                <EditableLabel
-                  label={getLbl('bs', 'shareCapital', 'Share Capital')}
-                  isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('bs', 'shareCapital', lbl)}
-                />
-              </td>
-              {balanceData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
-                  <EditableCell
-                    val={getVal('bs', 'shareCapital', d.year, d.shareCapital)}
-                    isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('bs', 'shareCapital', d.year, val)}
-                  />
-                </td>
-              ))}
-            </tr>
+            {renderBSRow('bs_shareCapital', 'shareCapital', 'Share Capital', d => d.shareCapital)}
+            {renderBSRow('bs_retainedEarnings', 'retainedEarnings', 'Retained Earnings', d => d.retainedEarnings)}
+            {renderBSRow('bs_reserves', 'reserves', 'Reserves & Surplus', d => d.reserves)}
+            {renderCustomRows('Equity')}
 
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-700">
+            <tr className="bg-teal-50/75 font-bold text-teal-900">
+              <td className="py-2 px-4 font-sans">
                 <EditableLabel
-                  label={getLbl('bs', 'retainedEarnings', 'Retained Earnings')}
+                  label={getLbl('bs', 'totalEquity', 'TOTAL EQUITY')}
                   isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('bs', 'retainedEarnings', lbl)}
+                  onSave={(lbl) => onUpdateLabel('bs', 'totalEquity', lbl)}
                 />
               </td>
               {balanceData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
+                <td key={d.year} className="py-2 px-3 text-right font-bold text-teal-900">
                   <EditableCell
-                    val={getVal('bs', 'retainedEarnings', d.year, d.retainedEarnings)}
+                    val={getVal('bs', 'totalEquity', d.year, d.totalEquity)}
                     isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('bs', 'retainedEarnings', d.year, val)}
+                    onSave={(val) => onUpdateValue('bs', 'totalEquity', d.year, val)}
                   />
                 </td>
               ))}
@@ -2077,6 +2335,10 @@ function EquityStatementTable({
   currency,
   companyProfile,
   isEditMode,
+  isCustomizeMode,
+  isElemVisible,
+  onToggleElem,
+  customItems,
   getVal,
   getLbl,
   onUpdateValue,
@@ -2086,11 +2348,61 @@ function EquityStatementTable({
   currency: string;
   companyProfile?: CompanyProfile;
   isEditMode: boolean;
+  isCustomizeMode: boolean;
+  isElemVisible: (id: string) => boolean;
+  onToggleElem: (id: string) => void;
+  customItems: StatementConfigItem[];
   getVal: (stmt: string, field: string, year: number, fallback: number) => number;
-  getLbl: (stmt: string, field: string, defaultLabel: string) => string;
+  getLbl: (stmt: string, field: string, defaultLabel: string, configId?: string) => string;
   onUpdateValue: (stmt: string, field: string, year: number, val: number) => void;
   onUpdateLabel: (stmt: string, field: string, newLabel: string) => void;
 }) {
+  const renderToggle = (configId: string) =>
+    isCustomizeMode ? (
+      <input
+        type="checkbox"
+        checked={isElemVisible(configId)}
+        onChange={() => onToggleElem(configId)}
+        title="Include or exclude this element from calculation and exports"
+        className="w-3.5 h-3.5 accent-indigo-600 rounded cursor-pointer shrink-0"
+      />
+    ) : null;
+
+  const renderEqRow = (
+    configId: string,
+    field: string,
+    defaultLabel: string,
+    getFallback: (d: EquityStatementYear) => number,
+    opts?: { indent?: boolean; isNegative?: boolean; cellClass?: string; labelClass?: string }
+  ) => {
+    const visible = isElemVisible(configId);
+    if (!visible && !isCustomizeMode) return null;
+    return (
+      <tr key={configId} className={!visible ? 'opacity-45 bg-slate-50/90' : 'hover:bg-slate-50/70'}>
+        <td className={`py-2 px-4 font-sans ${opts?.indent ? 'pl-6 text-slate-600' : opts?.labelClass || 'text-slate-700 font-medium'}`}>
+          <div className="flex items-center gap-2">
+            {renderToggle(configId)}
+            <EditableLabel
+              label={getLbl('eq', field, defaultLabel, configId)}
+              isEditMode={isEditMode}
+              onSave={(lbl) => onUpdateLabel('eq', field, lbl)}
+            />
+          </div>
+        </td>
+        {equityData.map(d => (
+          <td key={d.year} className={`py-2 px-3 text-right ${opts?.cellClass || 'text-slate-700'}`}>
+            <EditableCell
+              val={getVal('eq', field, d.year, getFallback(d))}
+              isEditMode={isEditMode}
+              onSave={(val) => onUpdateValue('eq', field, d.year, val)}
+              isNegative={opts?.isNegative}
+            />
+          </td>
+        ))}
+      </tr>
+    );
+  };
+
   return (
     <div className="bg-white/92 backdrop-blur-md border border-slate-200/90 rounded-2xl overflow-hidden shadow-sm">
       <StatementMasthead
@@ -2121,82 +2433,109 @@ function EquityStatementTable({
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200/70 tabular-nums">
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-700 font-medium">
+            {renderEqRow('eq_openingShareCapital', 'openingShareCapital', 'Opening Share Capital', d => d.openingShareCapital)}
+            {renderEqRow('eq_shareCapitalIssued', 'shareCapitalIssued', 'Share Capital Issued during Year', d => d.shareCapitalIssued, { indent: true })}
+
+            <tr className="bg-slate-100/75 font-semibold text-slate-900">
+              <td className="py-2 px-4 font-sans">
                 <EditableLabel
-                  label={getLbl('eq', 'openingShareCapital', 'Opening Share Capital')}
+                  label={getLbl('eq', 'closingShareCapital', 'Closing Share Capital')}
                   isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('eq', 'openingShareCapital', lbl)}
+                  onSave={(lbl) => onUpdateLabel('eq', 'closingShareCapital', lbl)}
                 />
               </td>
               {equityData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
+                <td key={d.year} className="py-2 px-3 text-right font-bold text-slate-800">
                   <EditableCell
-                    val={getVal('eq', 'openingShareCapital', d.year, d.openingShareCapital)}
+                    val={getVal('eq', 'closingShareCapital', d.year, d.closingShareCapital)}
                     isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('eq', 'openingShareCapital', d.year, val)}
+                    onSave={(val) => onUpdateValue('eq', 'closingShareCapital', d.year, val)}
                   />
                 </td>
               ))}
             </tr>
 
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
+            {renderEqRow('eq_openingRetainedEarnings', 'openingRetainedEarnings', 'Opening Retained Earnings', d => d.openingRetainedEarnings)}
+            {renderEqRow('eq_netProfitForYear', 'netProfitForYear', 'Net Profit for the Year', d => d.netProfitForYear, { indent: true, cellClass: 'text-emerald-700 font-medium' })}
+            {renderEqRow('eq_dividendsPaid', 'dividendsPaid', 'Dividends Paid to Shareholders', d => d.dividendsPaid, { indent: true, isNegative: true, cellClass: 'text-rose-700' })}
+
+            <tr className="bg-slate-100/75 font-semibold text-slate-900">
+              <td className="py-2 px-4 font-sans">
                 <EditableLabel
-                  label={getLbl('eq', 'shareCapitalIssued', 'Share Capital Issued during Year')}
+                  label={getLbl('eq', 'closingRetainedEarnings', 'Closing Retained Earnings')}
                   isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('eq', 'shareCapitalIssued', lbl)}
+                  onSave={(lbl) => onUpdateLabel('eq', 'closingRetainedEarnings', lbl)}
                 />
               </td>
               {equityData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-slate-700">
+                <td key={d.year} className="py-2 px-3 text-right font-bold text-slate-800">
                   <EditableCell
-                    val={getVal('eq', 'shareCapitalIssued', d.year, d.shareCapitalIssued)}
+                    val={getVal('eq', 'closingRetainedEarnings', d.year, d.closingRetainedEarnings)}
                     isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('eq', 'shareCapitalIssued', d.year, val)}
+                    onSave={(val) => onUpdateValue('eq', 'closingRetainedEarnings', d.year, val)}
                   />
                 </td>
               ))}
             </tr>
 
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
+            {renderEqRow('eq_openingReserves', 'openingReserves', 'Opening Reserves', d => d.openingReserves)}
+            {renderEqRow('eq_otherComprehensiveIncome', 'otherComprehensiveIncome', 'Other Comprehensive Income', d => d.otherComprehensiveIncome, { indent: true })}
+
+            <tr className="bg-slate-100/75 font-semibold text-slate-900">
+              <td className="py-2 px-4 font-sans">
                 <EditableLabel
-                  label={getLbl('eq', 'netProfitForYear', 'Net Profit for the Year')}
+                  label={getLbl('eq', 'closingReserves', 'Closing Reserves')}
                   isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('eq', 'netProfitForYear', lbl)}
+                  onSave={(lbl) => onUpdateLabel('eq', 'closingReserves', lbl)}
                 />
               </td>
               {equityData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-emerald-700 font-medium">
+                <td key={d.year} className="py-2 px-3 text-right font-bold text-slate-800">
                   <EditableCell
-                    val={getVal('eq', 'netProfitForYear', d.year, d.netProfitForYear)}
+                    val={getVal('eq', 'closingReserves', d.year, d.closingReserves)}
                     isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('eq', 'netProfitForYear', d.year, val)}
+                    onSave={(val) => onUpdateValue('eq', 'closingReserves', d.year, val)}
                   />
                 </td>
               ))}
             </tr>
 
-            <tr className="hover:bg-slate-50/70">
-              <td className="py-2 px-4 font-sans text-slate-600 pl-6">
-                <EditableLabel
-                  label={getLbl('eq', 'dividendsPaid', 'Dividends Paid to Shareholders')}
-                  isEditMode={isEditMode}
-                  onSave={(lbl) => onUpdateLabel('eq', 'dividendsPaid', lbl)}
-                />
-              </td>
-              {equityData.map(d => (
-                <td key={d.year} className="py-2 px-3 text-right text-rose-700">
-                  <EditableCell
-                    val={getVal('eq', 'dividendsPaid', d.year, d.dividendsPaid)}
-                    isEditMode={isEditMode}
-                    onSave={(val) => onUpdateValue('eq', 'dividendsPaid', d.year, val)}
-                    isNegative
-                  />
-                </td>
+            {customItems
+              .filter(ci => ci.isVisible || isCustomizeMode)
+              .map(ci => (
+                <tr key={ci.id} className={!ci.isVisible ? 'opacity-45 bg-slate-50/90' : 'bg-indigo-50/35 hover:bg-indigo-50/60'}>
+                  <td className="py-2 px-4 font-sans text-indigo-900">
+                    <div className="flex items-center gap-2">
+                      {isCustomizeMode && (
+                        <input
+                          type="checkbox"
+                          checked={ci.isVisible}
+                          onChange={() => onToggleElem(ci.id)}
+                          className="w-3.5 h-3.5 accent-indigo-600 rounded cursor-pointer shrink-0"
+                        />
+                      )}
+                      <EditableLabel
+                        label={ci.label}
+                        isEditMode={isEditMode}
+                        onSave={(lbl) => onUpdateLabel('custom', ci.id, lbl)}
+                      />
+                      <span className="text-[9px] font-mono uppercase bg-indigo-100 text-indigo-800 border border-indigo-200 px-1.5 py-0.5 rounded shrink-0">
+                        Custom
+                      </span>
+                    </div>
+                  </td>
+                  {equityData.map(d => (
+                    <td key={d.year} className={`py-2 px-3 text-right ${ci.sign === 'negative' ? 'text-rose-700' : 'text-indigo-800'}`}>
+                      <EditableCell
+                        val={getCustomItemYearValue(ci, d.year)}
+                        isEditMode={isEditMode}
+                        onSave={(val) => onUpdateValue('custom', ci.id, d.year, val)}
+                        isNegative={ci.sign === 'negative'}
+                      />
+                    </td>
+                  ))}
+                </tr>
               ))}
-            </tr>
 
             <tr className="bg-emerald-50/85 font-bold text-emerald-800 border-t-2 border-emerald-300 border-b-4 border-double border-emerald-600 text-sm">
               <td className="py-3 px-4 font-sans">
@@ -2229,16 +2568,31 @@ function FixedAssetsScheduleTable({
   currency,
   companyProfile,
   isEditMode,
+  isCustomizeMode,
+  isElemVisible,
+  onToggleElem,
+  customItems,
+  getLbl,
   onUpdateCategory,
+  onUpdateValue,
+  onUpdateLabel,
 }: {
   fixedAssetsData: ScheduleOfFixedAssetsYear[];
   currency: string;
   companyProfile?: CompanyProfile;
   isEditMode: boolean;
-  onUpdateCategory: (catIndex: number, field: string, val: number | string) => void;
+  isCustomizeMode: boolean;
+  isElemVisible: (id: string) => boolean;
+  onToggleElem: (id: string) => void;
+  customItems: StatementConfigItem[];
+  getLbl: (stmt: string, field: string, defaultLabel: string, configId?: string) => string;
+  onUpdateCategory: (year: number, catIndex: number, field: string, val: number) => void;
+  onUpdateValue: (stmt: string, field: string, year: number, val: number) => void;
+  onUpdateLabel: (stmt: string, field: string, newLabel: string) => void;
 }) {
   if (fixedAssetsData.length === 0) return null;
   const latest = fixedAssetsData[fixedAssetsData.length - 1];
+  const standardCategories = latest.allCategories || latest.categories.slice(0, FIXED_ASSET_CATEGORY_CONFIG_IDS.length);
 
   return (
     <div className="bg-white/92 backdrop-blur-md border border-slate-200/90 rounded-2xl overflow-hidden shadow-sm">
@@ -2266,67 +2620,132 @@ function FixedAssetsScheduleTable({
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200/70 tabular-nums">
-            {latest.categories.map((c, idx) => (
-              <tr key={c.name} className="hover:bg-slate-50">
-                <td className="py-2.5 px-4 font-sans text-slate-900 font-medium">
-                  {isEditMode ? (
-                    <input
-                      type="text"
-                      value={c.name}
-                      onChange={(e) => onUpdateCategory(idx, 'name', e.target.value)}
-                      className="bg-white border border-emerald-600 rounded px-1.5 py-0.5 text-xs text-slate-900 w-full focus:outline-none focus:ring-1 focus:ring-emerald-500"
+            {standardCategories.map((c, idx) => {
+              const cfgId = FIXED_ASSET_CATEGORY_CONFIG_IDS[idx];
+              const visible = cfgId ? isElemVisible(cfgId) : true;
+              if (!visible && !isCustomizeMode) return null;
+              const effectiveName = getLbl('fa', String(idx), c.name, cfgId);
+
+              return (
+                <tr key={cfgId || c.name} className={!visible ? 'opacity-45 bg-slate-50/90' : 'hover:bg-slate-50'}>
+                  <td className="py-2.5 px-4 font-sans text-slate-900 font-medium">
+                    <div className="flex items-center gap-2">
+                      {isCustomizeMode && cfgId && (
+                        <input
+                          type="checkbox"
+                          checked={visible}
+                          onChange={() => onToggleElem(cfgId)}
+                          title="Include or exclude this asset class from calculations and exports"
+                          className="w-3.5 h-3.5 accent-indigo-600 rounded cursor-pointer shrink-0"
+                        />
+                      )}
+                      <EditableLabel
+                        label={effectiveName}
+                        isEditMode={isEditMode}
+                        onSave={(lbl) => onUpdateLabel('fa', String(idx), lbl)}
+                      />
+                    </div>
+                  </td>
+                  <td className="py-2.5 px-2 text-right text-slate-600">
+                    <EditableCell
+                      val={c.depRate}
+                      isEditMode={isEditMode}
+                      onSave={(v) => onUpdateCategory(latest.year, idx, 'depRate', v)}
                     />
-                  ) : (
-                    c.name
-                  )}
-                </td>
-                <td className="py-2.5 px-2 text-right text-slate-600">{c.depRate}%</td>
-                <td className="py-2.5 px-3 text-right text-slate-700">
-                  <EditableCell
-                    val={c.costOpening}
-                    isEditMode={isEditMode}
-                    onSave={(v) => onUpdateCategory(idx, 'costOpening', v)}
-                  />
-                </td>
-                <td className="py-2.5 px-3 text-right text-emerald-700">
-                  <EditableCell
-                    val={c.additions}
-                    isEditMode={isEditMode}
-                    onSave={(v) => onUpdateCategory(idx, 'additions', v)}
-                  />
-                </td>
-                <td className="py-2.5 px-3 text-right text-rose-700">
-                  <EditableCell
-                    val={c.disposals}
-                    isEditMode={isEditMode}
-                    onSave={(v) => onUpdateCategory(idx, 'disposals', v)}
-                  />
-                </td>
-                <td className="py-2.5 px-3 text-right text-slate-900 font-semibold">
-                  {c.costClosing.toLocaleString()}
-                </td>
-                <td className="py-2.5 px-3 text-right text-slate-600">
-                  <EditableCell
-                    val={c.depOpening}
-                    isEditMode={isEditMode}
-                    onSave={(v) => onUpdateCategory(idx, 'depOpening', v)}
-                  />
-                </td>
-                <td className="py-2.5 px-3 text-right text-rose-700">
-                  <EditableCell
-                    val={c.depCharge}
-                    isEditMode={isEditMode}
-                    onSave={(v) => onUpdateCategory(idx, 'depCharge', v)}
-                  />
-                </td>
-                <td className="py-2.5 px-3 text-right text-slate-700">
-                  {c.depClosing.toLocaleString()}
-                </td>
-                <td className="py-2.5 px-4 text-right text-emerald-700 font-bold">
-                  {c.netBookValue.toLocaleString()}
-                </td>
-              </tr>
-            ))}
+                    %
+                  </td>
+                  <td className="py-2.5 px-3 text-right text-slate-700">
+                    <EditableCell
+                      val={c.costOpening}
+                      isEditMode={isEditMode}
+                      onSave={(v) => onUpdateCategory(latest.year, idx, 'costOpening', v)}
+                    />
+                  </td>
+                  <td className="py-2.5 px-3 text-right text-emerald-700">
+                    <EditableCell
+                      val={c.additions}
+                      isEditMode={isEditMode}
+                      onSave={(v) => onUpdateCategory(latest.year, idx, 'additions', v)}
+                    />
+                  </td>
+                  <td className="py-2.5 px-3 text-right text-rose-700">
+                    <EditableCell
+                      val={c.disposals}
+                      isEditMode={isEditMode}
+                      onSave={(v) => onUpdateCategory(latest.year, idx, 'disposals', v)}
+                    />
+                  </td>
+                  <td className="py-2.5 px-3 text-right text-slate-900 font-semibold">
+                    {c.costClosing.toLocaleString()}
+                  </td>
+                  <td className="py-2.5 px-3 text-right text-slate-600">
+                    <EditableCell
+                      val={c.depOpening}
+                      isEditMode={isEditMode}
+                      onSave={(v) => onUpdateCategory(latest.year, idx, 'depOpening', v)}
+                    />
+                  </td>
+                  <td className="py-2.5 px-3 text-right text-rose-700">
+                    <EditableCell
+                      val={c.depCharge}
+                      isEditMode={isEditMode}
+                      onSave={(v) => onUpdateCategory(latest.year, idx, 'depCharge', v)}
+                    />
+                  </td>
+                  <td className="py-2.5 px-3 text-right text-slate-700">
+                    {c.depClosing.toLocaleString()}
+                  </td>
+                  <td className="py-2.5 px-4 text-right text-emerald-700 font-bold">
+                    {c.netBookValue.toLocaleString()}
+                  </td>
+                </tr>
+              );
+            })}
+
+            {customItems
+              .filter(ci => ci.isVisible || isCustomizeMode)
+              .map(ci => {
+                const val = getCustomItemYearValue(ci, latest.year);
+                return (
+                  <tr key={ci.id} className={!ci.isVisible ? 'opacity-45 bg-slate-50/90' : 'bg-indigo-50/35 hover:bg-indigo-50/60'}>
+                    <td className="py-2.5 px-4 font-sans text-indigo-900 font-medium">
+                      <div className="flex items-center gap-2">
+                        {isCustomizeMode && (
+                          <input
+                            type="checkbox"
+                            checked={ci.isVisible}
+                            onChange={() => onToggleElem(ci.id)}
+                            className="w-3.5 h-3.5 accent-indigo-600 rounded cursor-pointer shrink-0"
+                          />
+                        )}
+                        <EditableLabel
+                          label={ci.label}
+                          isEditMode={isEditMode}
+                          onSave={(lbl) => onUpdateLabel('custom', ci.id, lbl)}
+                        />
+                        <span className="text-[9px] font-mono uppercase bg-indigo-100 text-indigo-800 border border-indigo-200 px-1.5 py-0.5 rounded shrink-0">
+                          Custom
+                        </span>
+                      </div>
+                    </td>
+                    <td className="py-2.5 px-2 text-right text-slate-500">0%</td>
+                    <td className="py-2.5 px-3 text-right text-indigo-800">
+                      <EditableCell
+                        val={val}
+                        isEditMode={isEditMode}
+                        onSave={(v) => onUpdateValue('custom', ci.id, latest.year, v)}
+                      />
+                    </td>
+                    <td className="py-2.5 px-3 text-right text-slate-500">0</td>
+                    <td className="py-2.5 px-3 text-right text-slate-500">0</td>
+                    <td className="py-2.5 px-3 text-right text-indigo-900 font-semibold">{val.toLocaleString()}</td>
+                    <td className="py-2.5 px-3 text-right text-slate-500">0</td>
+                    <td className="py-2.5 px-3 text-right text-slate-500">0</td>
+                    <td className="py-2.5 px-3 text-right text-slate-500">0</td>
+                    <td className="py-2.5 px-4 text-right text-indigo-800 font-bold">{val.toLocaleString()}</td>
+                  </tr>
+                );
+              })}
 
             {/* Total Carrying Net Book Value row with Double Underline */}
             <tr className="bg-emerald-50/85 font-bold text-emerald-800 border-t-2 border-emerald-300 border-b-4 border-double border-emerald-600 text-xs">
@@ -2334,15 +2753,15 @@ function FixedAssetsScheduleTable({
                 TOTAL PROPERTY, PLANT & EQUIPMENT
               </td>
               <td className="py-3 px-2 text-right text-slate-500">-</td>
-              <td className="py-3 px-3 text-right text-slate-700 font-semibold">{latest.categories.reduce((s, c) => s + c.costOpening, 0).toLocaleString()}</td>
-              <td className="py-3 px-3 text-right text-emerald-700 font-bold">{latest.categories.reduce((s, c) => s + c.additions, 0).toLocaleString()}</td>
-              <td className="py-3 px-3 text-right text-rose-700">{latest.categories.reduce((s, c) => s + c.disposals, 0).toLocaleString()}</td>
-              <td className="py-3 px-3 text-right text-slate-900 font-bold">{latest.categories.reduce((s, c) => s + c.costClosing, 0).toLocaleString()}</td>
-              <td className="py-3 px-3 text-right text-slate-600">{latest.categories.reduce((s, c) => s + c.depOpening, 0).toLocaleString()}</td>
-              <td className="py-3 px-3 text-right text-rose-700">{latest.categories.reduce((s, c) => s + c.depCharge, 0).toLocaleString()}</td>
-              <td className="py-3 px-3 text-right text-slate-900">{latest.categories.reduce((s, c) => s + c.depClosing, 0).toLocaleString()}</td>
+              <td className="py-3 px-3 text-right text-slate-700 font-semibold">{latest.totalCostOpening.toLocaleString()}</td>
+              <td className="py-3 px-3 text-right text-emerald-700 font-bold">{latest.totalAdditions.toLocaleString()}</td>
+              <td className="py-3 px-3 text-right text-rose-700">{latest.totalDisposals.toLocaleString()}</td>
+              <td className="py-3 px-3 text-right text-slate-900 font-bold">{latest.totalCostClosing.toLocaleString()}</td>
+              <td className="py-3 px-3 text-right text-slate-600">{latest.totalDepOpening.toLocaleString()}</td>
+              <td className="py-3 px-3 text-right text-rose-700">{latest.totalDepCharge.toLocaleString()}</td>
+              <td className="py-3 px-3 text-right text-slate-900">{latest.totalDepClosing.toLocaleString()}</td>
               <td className="py-3 px-4 text-right text-emerald-800 font-extrabold text-sm font-mono">
-                {latest.categories.reduce((s, c) => s + c.netBookValue, 0).toLocaleString()}
+                {latest.totalNetBookValue.toLocaleString()}
               </td>
             </tr>
           </tbody>

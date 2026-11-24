@@ -1,45 +1,112 @@
-import React, { useState } from 'react';
-import { Settings, Plus, Trash2, ArrowUp, ArrowDown, Eye, EyeOff, CheckSquare, Square, RefreshCw, Sparkles } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import {
+  Settings,
+  Plus,
+  Trash2,
+  ArrowUp,
+  ArrowDown,
+  CheckSquare,
+  Square,
+  RefreshCw,
+} from 'lucide-react';
 import { StatementConfigItem } from '../types/financial';
 
 interface StatementConfigViewProps {
   configItems: StatementConfigItem[];
   onUpdateConfig: (items: StatementConfigItem[]) => void;
   onResetDefaults: () => void;
+  years?: number[];
 }
+
+type StatementFilter = 'all' | 'income' | 'balanceSheet' | 'cashFlow' | 'equity' | 'fixedAssets';
+
+const STATEMENT_TABS: { id: StatementFilter; label: string }[] = [
+  { id: 'all', label: 'All Statements' },
+  { id: 'income', label: 'Income Statement' },
+  { id: 'balanceSheet', label: 'Balance Sheet' },
+  { id: 'cashFlow', label: 'Cash Flows' },
+  { id: 'equity', label: 'Changes in Equity' },
+  { id: 'fixedAssets', label: 'Fixed Assets' },
+];
+
+const STATEMENT_SECTIONS: Record<Exclude<StatementFilter, 'all'>, string[]> = {
+  income: ['Revenue & Gross Margin', 'Operating Expenses', 'Non-Operating & Tax'],
+  balanceSheet: ['Current Assets', 'Non-Current Assets', 'Current Liabilities', 'Non-Current Liabilities', 'Equity'],
+  cashFlow: ['Operating Activities', 'Investing Activities', 'Financing Activities'],
+  equity: ['Share Capital', 'Retained Earnings', 'Reserves & OCI'],
+  fixedAssets: ['Asset Categories'],
+};
+
+const STATEMENT_BADGE: Record<StatementConfigItem['statement'], string> = {
+  income: 'Income Statement',
+  balanceSheet: 'Balance Sheet',
+  cashFlow: 'Cash Flows',
+  equity: 'Equity',
+  fixedAssets: 'Fixed Assets',
+};
 
 export const StatementConfigView: React.FC<StatementConfigViewProps> = ({
   configItems,
   onUpdateConfig,
   onResetDefaults,
+  years = [],
 }) => {
+  const [selectedStatement, setSelectedStatement] = useState<StatementFilter>('all');
   const [selectedSection, setSelectedSection] = useState<string>('All');
   const [newItemLabel, setNewItemLabel] = useState('');
+  const [newItemStatement, setNewItemStatement] =
+    useState<StatementConfigItem['statement']>('cashFlow');
   const [newItemSection, setNewItemSection] = useState('Operating Activities');
-  const [previewActive, setPreviewActive] = useState(false);
+  const [newItemSign, setNewItemSign] = useState<'positive' | 'negative'>('positive');
+  const [expandedCustomId, setExpandedCustomId] = useState<string | null>(null);
 
-  const sections = ['All', 'Operating Activities', 'Investing Activities', 'Financing Activities'];
+  const availableSections = useMemo(() => {
+    const scoped =
+      selectedStatement === 'all'
+        ? configItems
+        : configItems.filter(i => i.statement === selectedStatement);
+    const unique = Array.from(new Set(scoped.map(i => i.section)));
+    return ['All', ...unique];
+  }, [configItems, selectedStatement]);
 
-  const filteredItems = configItems.filter(item => 
-    selectedSection === 'All' ? true : item.section === selectedSection
-  ).sort((a, b) => a.order - b.order);
+  const filteredItems = useMemo(() => {
+    return configItems
+      .filter(item => {
+        if (selectedStatement !== 'all' && item.statement !== selectedStatement) return false;
+        if (selectedSection !== 'All' && item.section !== selectedSection) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        if (a.statement !== b.statement) return a.statement.localeCompare(b.statement);
+        return a.order - b.order;
+      });
+  }, [configItems, selectedStatement, selectedSection]);
+
+  const handleSelectStatementTab = (tab: StatementFilter) => {
+    setSelectedStatement(tab);
+    setSelectedSection('All');
+    if (tab !== 'all') {
+      setNewItemStatement(tab);
+      setNewItemSection(STATEMENT_SECTIONS[tab][0]);
+    }
+  };
 
   const toggleVisibility = (id: string) => {
     onUpdateConfig(
-      configItems.map(item => {
-        if (item.id === id) {
-          if (item.isMandatory) return item; // protected
-          return { ...item, isVisible: !item.isVisible };
-        }
-        return item;
-      })
+      configItems.map(item =>
+        item.id === id ? { ...item, isVisible: !item.isVisible } : item
+      )
     );
   };
 
-  const handleSelectAll = (select: boolean) => {
+  const handleSelectScoped = (select: boolean, optionalOnly = false) => {
     onUpdateConfig(
       configItems.map(item => {
-        if (item.isMandatory) return item;
+        const matchesStatement =
+          selectedStatement === 'all' || item.statement === selectedStatement;
+        const matchesSection = selectedSection === 'All' || item.section === selectedSection;
+        if (!matchesStatement || !matchesSection) return item;
+        if (optionalOnly && item.isMandatory) return item;
         return { ...item, isVisible: select };
       })
     );
@@ -47,7 +114,29 @@ export const StatementConfigView: React.FC<StatementConfigViewProps> = ({
 
   const handleLabelChange = (id: string, newLabel: string) => {
     onUpdateConfig(
-      configItems.map(item => item.id === id ? { ...item, label: newLabel } : item)
+      configItems.map(item => (item.id === id ? { ...item, label: newLabel } : item))
+    );
+  };
+
+  const handleCustomYearValueChange = (id: string, yr: number, value: number) => {
+    onUpdateConfig(
+      configItems.map(item =>
+        item.id === id
+          ? {
+              ...item,
+              customValues: {
+                ...(item.customValues || {}),
+                [yr]: Number.isFinite(value) ? value : 0,
+              },
+            }
+          : item
+      )
+    );
+  };
+
+  const handleCustomSignChange = (id: string, sign: 'positive' | 'negative') => {
+    onUpdateConfig(
+      configItems.map(item => (item.id === id ? { ...item, sign } : item))
     );
   };
 
@@ -62,7 +151,6 @@ export const StatementConfigView: React.FC<StatementConfigViewProps> = ({
     newItems[idx] = newItems[targetIdx];
     newItems[targetIdx] = temp;
 
-    // re-index order
     const reindexed = newItems.map((item, i) => ({ ...item, order: i + 1 }));
     onUpdateConfig(reindexed);
   };
@@ -71,45 +159,52 @@ export const StatementConfigView: React.FC<StatementConfigViewProps> = ({
     e.preventDefault();
     if (!newItemLabel.trim()) return;
 
+    const newId = `custom_${Date.now()}`;
     const newItem: StatementConfigItem = {
-      id: `custom_${Date.now()}`,
-      statement: 'cashFlow',
+      id: newId,
+      statement: newItemStatement,
       section: newItemSection,
       label: newItemLabel.trim(),
       isMandatory: false,
       isVisible: true,
       order: configItems.length + 1,
       isCustom: true,
+      sign: newItemSign,
+      customValues: Object.fromEntries(years.map(y => [y, 0])),
     };
 
     onUpdateConfig([...configItems, newItem]);
     setNewItemLabel('');
+    setExpandedCustomId(newId);
   };
 
   const handleDeleteCustomItem = (id: string) => {
     onUpdateConfig(configItems.filter(i => i.id !== id));
+    if (expandedCustomId === id) setExpandedCustomId(null);
   };
+
+  const totalSelectedCount = filteredItems.filter(i => i.isVisible).length;
 
   return (
     <div className="space-y-6">
       {/* Configuration Header */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-5 bg-white/92 backdrop-blur-md border border-slate-200/90 rounded-2xl shadow-sm">
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <Settings className="w-5 h-5 text-indigo-600" />
             <h2 className="text-lg font-bold text-slate-900 tracking-tight">
-              Statement of Cash Flows Configuration Module
+              Financial Statement Element Selection &amp; Configuration
             </h2>
             <span className="text-[11px] font-semibold text-indigo-800 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-md">
-              Section 76.6
+              {totalSelectedCount} / {filteredItems.length} Selected
             </span>
           </div>
           <p className="text-xs text-slate-600 mt-1">
-            Configure line items, customize labels, reorder presentation, add sector-specific line items, and manage presentation subtotals. Mandatory accounting calculations remain protected.
+            Select or deselect any line item across all 5 financial statements, customize labels, add custom items with year-wise amounts, and recalculate linked subtotals, ratios, previews, and exports automatically.
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={onResetDefaults}
             className="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-slate-50 rounded-lg border border-slate-300 transition-colors flex items-center gap-1.5"
@@ -120,66 +215,115 @@ export const StatementConfigView: React.FC<StatementConfigViewProps> = ({
         </div>
       </div>
 
-      {/* Action Controls & Section Filters */}
-      <div className="flex flex-wrap items-center justify-between gap-3 p-4 bg-white/90 backdrop-blur-md border border-slate-200/90 rounded-xl text-xs shadow-sm">
-        <div className="flex items-center gap-2">
-          <span className="text-slate-600 font-medium">Activity Filter:</span>
-          <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg border border-slate-200">
-            {sections.map(sec => (
+      {/* Statement Tabs + Section Filters */}
+      <div className="flex flex-col gap-3 p-4 bg-white/90 backdrop-blur-md border border-slate-200/90 rounded-xl text-xs shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg border border-slate-200 flex-wrap">
+            {STATEMENT_TABS.map(tab => (
               <button
-                key={sec}
-                onClick={() => setSelectedSection(sec)}
-                className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-                  selectedSection === sec
+                key={tab.id}
+                onClick={() => handleSelectStatementTab(tab.id)}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                  selectedStatement === tab.id
                     ? 'bg-emerald-600 text-white font-semibold'
                     : 'text-slate-700 hover:text-slate-900'
                 }`}
               >
-                {sec}
+                {tab.label}
               </button>
             ))}
           </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => handleSelectScoped(true, false)}
+              className="px-2.5 py-1.5 text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-50 rounded-lg border border-slate-300 transition-colors flex items-center gap-1"
+            >
+              <CheckSquare className="w-3.5 h-3.5 text-emerald-600" />
+              Select All
+            </button>
+            <button
+              onClick={() => handleSelectScoped(false, true)}
+              className="px-2.5 py-1.5 text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-50 rounded-lg border border-slate-300 transition-colors flex items-center gap-1"
+            >
+              <Square className="w-3.5 h-3.5 text-slate-500" />
+              Deselect Optional
+            </button>
+          </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => handleSelectAll(true)}
-            className="px-2.5 py-1 text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-50 rounded-lg border border-slate-300 transition-colors flex items-center gap-1"
-          >
-            <CheckSquare className="w-3.5 h-3.5 text-emerald-600" />
-            Select All
-          </button>
-          <button
-            onClick={() => handleSelectAll(false)}
-            className="px-2.5 py-1 text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-50 rounded-lg border border-slate-300 transition-colors flex items-center gap-1"
-          >
-            <Square className="w-3.5 h-3.5 text-slate-500" />
-            Deselect Optional
-          </button>
-        </div>
+        {availableSections.length > 2 && (
+          <div className="flex items-center gap-2 flex-wrap pt-1 border-t border-slate-200/70">
+            <span className="text-slate-600 font-medium">Section:</span>
+            <div className="flex items-center gap-1 flex-wrap">
+              {availableSections.map(sec => (
+                <button
+                  key={sec}
+                  onClick={() => setSelectedSection(sec)}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors border ${
+                    selectedSection === sec
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  {sec}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Add Custom Item Widget */}
-      <form onSubmit={handleAddCustomItem} className="p-4 bg-white/92 backdrop-blur-md border border-slate-200/90 rounded-xl flex flex-col sm:flex-row items-center gap-3 text-xs shadow-sm">
+      <form
+        onSubmit={handleAddCustomItem}
+        className="p-4 bg-white/92 backdrop-blur-md border border-slate-200/90 rounded-xl flex flex-wrap items-center gap-2.5 text-xs shadow-sm"
+      >
         <div className="flex items-center gap-2 text-slate-900 font-semibold shrink-0">
           <Plus className="w-4 h-4 text-emerald-600" />
-          Add Custom Cash Flow Line:
+          Add Custom Element:
         </div>
-        <input
-          type="text"
-          placeholder="e.g. Movement in Sukuk Issuance Proceeds"
-          value={newItemLabel}
-          onChange={(e) => setNewItemLabel(e.target.value)}
-          className="flex-1 w-full bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-        />
+        <select
+          value={newItemStatement}
+          onChange={e => {
+            const stmt = e.target.value as StatementConfigItem['statement'];
+            setNewItemStatement(stmt);
+            setNewItemSection(STATEMENT_SECTIONS[stmt][0]);
+          }}
+          className="bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 text-slate-900 focus:outline-none focus:ring-1 focus:ring-emerald-500 shrink-0"
+        >
+          <option value="income">Income Statement</option>
+          <option value="balanceSheet">Balance Sheet</option>
+          <option value="cashFlow">Cash Flow Statement</option>
+          <option value="equity">Statement of Changes in Equity</option>
+          <option value="fixedAssets">Schedule of Fixed Assets</option>
+        </select>
         <select
           value={newItemSection}
-          onChange={(e) => setNewItemSection(e.target.value)}
-          className="bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-slate-900 focus:outline-none focus:ring-1 focus:ring-emerald-500 shrink-0"
+          onChange={e => setNewItemSection(e.target.value)}
+          className="bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 text-slate-900 focus:outline-none focus:ring-1 focus:ring-emerald-500 shrink-0"
         >
-          <option value="Operating Activities">Operating Activities</option>
-          <option value="Investing Activities">Investing Activities</option>
-          <option value="Financing Activities">Financing Activities</option>
+          {STATEMENT_SECTIONS[newItemStatement].map(sec => (
+            <option key={sec} value={sec}>
+              {sec}
+            </option>
+          ))}
+        </select>
+        <input
+          type="text"
+          placeholder="Custom element label (e.g. Sukuk Issuance Proceeds)"
+          value={newItemLabel}
+          onChange={e => setNewItemLabel(e.target.value)}
+          className="flex-1 min-w-[200px] bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+        />
+        <select
+          value={newItemSign}
+          onChange={e => setNewItemSign(e.target.value as 'positive' | 'negative')}
+          className="bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 text-slate-900 focus:outline-none focus:ring-1 focus:ring-emerald-500 shrink-0"
+          title="Contribution sign in subtotals"
+        >
+          <option value="positive">+ Positive / Inflow</option>
+          <option value="negative">- Negative / Outflow</option>
         </select>
         <button
           type="submit"
@@ -195,100 +339,156 @@ export const StatementConfigView: React.FC<StatementConfigViewProps> = ({
           <table className="w-full text-left text-xs">
             <thead className="bg-slate-100/95 text-slate-700 border-b border-slate-200 uppercase tracking-wider text-[11px]">
               <tr>
-                <th className="py-3 px-4 w-12 text-center font-semibold">Vis</th>
+                <th className="py-3 px-4 w-14 text-center font-semibold">Include</th>
                 <th className="py-3 px-4 w-16 text-center font-semibold">Order</th>
+                <th className="py-3 px-4 w-36 font-semibold">Statement</th>
                 <th className="py-3 px-4 font-semibold text-slate-900">Statement Line Item Label</th>
-                <th className="py-3 px-4 w-44 font-semibold">Activity Section</th>
-                <th className="py-3 px-4 w-32 font-semibold">Classification</th>
-                <th className="py-3 px-4 w-28 text-right font-semibold">Actions</th>
+                <th className="py-3 px-4 w-44 font-semibold">Section</th>
+                <th className="py-3 px-4 w-28 font-semibold">Role</th>
+                <th className="py-3 px-4 w-32 text-right font-semibold">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200/70 font-sans">
               {filteredItems.map((item, idx) => (
-                <tr 
-                  key={item.id}
-                  className={`hover:bg-slate-50 transition-colors ${!item.isVisible ? 'opacity-50 bg-slate-100/50' : ''}`}
-                >
-                  <td className="py-2.5 px-4 text-center">
-                    <button
-                      onClick={() => toggleVisibility(item.id)}
-                      disabled={item.isMandatory}
-                      title={item.isMandatory ? 'Mandatory item protected by accounting rules' : 'Toggle item visibility'}
-                      className={`p-1 rounded-md transition-colors ${
-                        item.isVisible 
-                          ? 'text-emerald-700 hover:bg-emerald-50' 
-                          : 'text-slate-400 hover:bg-slate-100'
-                      } ${item.isMandatory ? 'cursor-not-allowed opacity-80' : ''}`}
-                    >
-                      {item.isVisible ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
-                    </button>
-                  </td>
+                <React.Fragment key={item.id}>
+                  <tr
+                    className={`hover:bg-slate-50 transition-colors ${
+                      !item.isVisible ? 'opacity-55 bg-slate-100/60' : ''
+                    }`}
+                  >
+                    <td className="py-2.5 px-4 text-center">
+                      <input
+                        type="checkbox"
+                        checked={item.isVisible}
+                        onChange={() => toggleVisibility(item.id)}
+                        aria-label={`Include ${item.label}`}
+                        className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer accent-emerald-600"
+                      />
+                    </td>
 
-                  <td className="py-2.5 px-4 text-center text-slate-500 font-mono">
-                    {item.order}
-                  </td>
+                    <td className="py-2.5 px-4 text-center text-slate-500 font-mono">
+                      {item.order}
+                    </td>
 
-                  <td className="py-2.5 px-4">
-                    <input
-                      type="text"
-                      value={item.label}
-                      onChange={(e) => handleLabelChange(item.id, e.target.value)}
-                      className="w-full bg-transparent hover:bg-slate-50 focus:bg-white border border-transparent focus:border-emerald-500 rounded px-2 py-1 text-slate-900 font-medium transition-colors focus:outline-none"
-                    />
-                  </td>
-
-                  <td className="py-2.5 px-4">
-                    <span className="text-[11px] text-slate-600">
-                      {item.section}
-                    </span>
-                  </td>
-
-                  <td className="py-2.5 px-4">
-                    {item.isMandatory ? (
-                      <span className="text-[10px] font-semibold text-emerald-800 bg-emerald-50 border border-emerald-300 px-2 py-0.5 rounded">
-                        Mandatory Protected
+                    <td className="py-2.5 px-4">
+                      <span className="text-[11px] font-medium text-slate-700 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded">
+                        {STATEMENT_BADGE[item.statement]}
                       </span>
-                    ) : item.isCustom ? (
-                      <span className="text-[10px] font-semibold text-sky-800 bg-sky-50 border border-sky-300 px-2 py-0.5 rounded">
-                        Custom User Item
-                      </span>
-                    ) : (
-                      <span className="text-[10px] text-slate-500">
-                        Configurable
-                      </span>
-                    )}
-                  </td>
+                    </td>
 
-                  <td className="py-2.5 px-4 text-right">
-                    <div className="flex items-center justify-end gap-1">
-                      <button
-                        onClick={() => handleMove(item.id, 'up')}
-                        disabled={idx === 0}
-                        title="Move Up"
-                        className="p-1 text-slate-500 hover:text-slate-900 disabled:opacity-30 rounded hover:bg-slate-100"
-                      >
-                        <ArrowUp className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => handleMove(item.id, 'down')}
-                        disabled={idx === filteredItems.length - 1}
-                        title="Move Down"
-                        className="p-1 text-slate-500 hover:text-slate-900 disabled:opacity-30 rounded hover:bg-slate-100"
-                      >
-                        <ArrowDown className="w-3.5 h-3.5" />
-                      </button>
-                      {item.isCustom && (
-                        <button
-                          onClick={() => handleDeleteCustomItem(item.id)}
-                          title="Delete Custom Item"
-                          className="p-1 text-rose-600 hover:text-rose-700 rounded hover:bg-rose-50"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                    <td className="py-2.5 px-4">
+                      <input
+                        type="text"
+                        value={item.label}
+                        onChange={e => handleLabelChange(item.id, e.target.value)}
+                        className="w-full bg-transparent hover:bg-slate-50 focus:bg-white border border-transparent focus:border-emerald-500 rounded px-2 py-1 text-slate-900 font-medium transition-colors focus:outline-none"
+                      />
+                    </td>
+
+                    <td className="py-2.5 px-4">
+                      <span className="text-[11px] text-slate-600">{item.section}</span>
+                    </td>
+
+                    <td className="py-2.5 px-4">
+                      {item.isCustom ? (
+                        <span className="text-[10px] font-semibold text-sky-800 bg-sky-50 border border-sky-300 px-2 py-0.5 rounded">
+                          Custom
+                        </span>
+                      ) : item.isMandatory ? (
+                        <span className="text-[10px] font-semibold text-emerald-800 bg-emerald-50 border border-emerald-300 px-2 py-0.5 rounded">
+                          Core
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-slate-500">Optional</span>
                       )}
-                    </div>
-                  </td>
-                </tr>
+                    </td>
+
+                    <td className="py-2.5 px-4 text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        {item.isCustom && years.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedCustomId(expandedCustomId === item.id ? null : item.id)
+                            }
+                            className="px-2 py-0.5 text-[10px] font-semibold text-sky-700 bg-sky-50 hover:bg-sky-100 border border-sky-200 rounded transition-colors"
+                          >
+                            {expandedCustomId === item.id ? 'Hide Values' : 'Values'}
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleMove(item.id, 'up')}
+                          disabled={idx === 0}
+                          title="Move Up"
+                          className="p-1 text-slate-500 hover:text-slate-900 disabled:opacity-30 rounded hover:bg-slate-100"
+                        >
+                          <ArrowUp className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleMove(item.id, 'down')}
+                          disabled={idx === filteredItems.length - 1}
+                          title="Move Down"
+                          className="p-1 text-slate-500 hover:text-slate-900 disabled:opacity-30 rounded hover:bg-slate-100"
+                        >
+                          <ArrowDown className="w-3.5 h-3.5" />
+                        </button>
+                        {item.isCustom && (
+                          <button
+                            onClick={() => handleDeleteCustomItem(item.id)}
+                            title="Delete Custom Item"
+                            className="p-1 text-rose-600 hover:text-rose-700 rounded hover:bg-rose-50"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+
+                  {item.isCustom && expandedCustomId === item.id && years.length > 0 && (
+                    <tr className="bg-sky-50/50">
+                      <td colSpan={7} className="px-6 py-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                          <span className="text-[11px] font-semibold text-sky-900">
+                            Year-Wise Amounts for "{item.label}"
+                          </span>
+                          <select
+                            value={item.sign || 'positive'}
+                            onChange={e =>
+                              handleCustomSignChange(
+                                item.id,
+                                e.target.value as 'positive' | 'negative'
+                              )
+                            }
+                            className="text-[11px] bg-white border border-sky-200 rounded px-2 py-0.5 text-slate-800"
+                          >
+                            <option value="positive">Positive / Inflow (+)</option>
+                            <option value="negative">Negative / Outflow (-)</option>
+                          </select>
+                        </div>
+                        <div className="grid grid-cols-3 sm:grid-cols-6 md:grid-cols-9 gap-2">
+                          {years.map(yr => (
+                            <label key={yr} className="flex flex-col gap-1 text-[10px] text-slate-600">
+                              <span className="font-mono font-semibold">{yr}</span>
+                              <input
+                                type="number"
+                                value={item.customValues?.[yr] ?? 0}
+                                onChange={e =>
+                                  handleCustomYearValueChange(
+                                    item.id,
+                                    yr,
+                                    parseFloat(e.target.value)
+                                  )
+                                }
+                                className="w-full px-2 py-1 bg-white border border-sky-200 rounded font-mono text-right text-slate-900 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                              />
+                            </label>
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
               ))}
             </tbody>
           </table>

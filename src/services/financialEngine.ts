@@ -14,7 +14,159 @@ import {
   PrimaryDriverKey,
   DriverAutoFillConfig,
   AutoFillConfigs,
+  StatementCellOverrides,
+  StatementLabelOverrides,
 } from '../types/financial';
+
+export interface StatementCalculationOptions {
+  statementConfig?: StatementConfigItem[];
+  cellOverrides?: StatementCellOverrides;
+}
+
+export const FIXED_ASSET_CATEGORY_CONFIG_IDS = [
+  'fa_land_buildings',
+  'fa_plant_machinery',
+  'fa_office_equipment',
+  'fa_motor_vehicles',
+  'fa_computer_it',
+] as const;
+
+export const STATEMENT_CONFIG_TO_OVERRIDE_KEY: Record<string, { stmt: string; field: string }> = {
+  // Income Statement
+  inc_revenue: { stmt: 'income', field: 'revenue' },
+  inc_costOfSales: { stmt: 'income', field: 'costOfSales' },
+  inc_operatingExpenses: { stmt: 'income', field: 'operatingExpenses' },
+  inc_depreciationExpense: { stmt: 'income', field: 'depreciationExpense' },
+  inc_interestIncome: { stmt: 'income', field: 'interestIncome' },
+  inc_financeCost: { stmt: 'income', field: 'financeCost' },
+  inc_taxExpense: { stmt: 'income', field: 'taxExpense' },
+  // Balance Sheet
+  bs_cashAndEquivalents: { stmt: 'bs', field: 'cashAndEquivalents' },
+  bs_tradeReceivables: { stmt: 'bs', field: 'tradeReceivables' },
+  bs_otherReceivables: { stmt: 'bs', field: 'otherReceivables' },
+  bs_closingInventory: { stmt: 'bs', field: 'closingInventory' },
+  bs_otherCurrentAssets: { stmt: 'bs', field: 'otherCurrentAssets' },
+  bs_propertyPlantEquipment: { stmt: 'bs', field: 'propertyPlantEquipment' },
+  bs_intangibleAssets: { stmt: 'bs', field: 'intangibleAssets' },
+  bs_otherNonCurrentAssets: { stmt: 'bs', field: 'otherNonCurrentAssets' },
+  bs_tradePayables: { stmt: 'bs', field: 'tradePayables' },
+  bs_otherPayables: { stmt: 'bs', field: 'otherPayables' },
+  bs_shortTermBorrowings: { stmt: 'bs', field: 'shortTermBorrowings' },
+  bs_currentTaxPayable: { stmt: 'bs', field: 'currentTaxPayable' },
+  bs_longTermBorrowings: { stmt: 'bs', field: 'longTermBorrowings' },
+  bs_otherNonCurrentLiabilities: { stmt: 'bs', field: 'otherNonCurrentLiabilities' },
+  bs_shareCapital: { stmt: 'bs', field: 'shareCapital' },
+  bs_retainedEarnings: { stmt: 'bs', field: 'retainedEarnings' },
+  bs_reserves: { stmt: 'bs', field: 'reserves' },
+  // Cash Flow
+  cf_pbt: { stmt: 'cf', field: 'profitBeforeTax' },
+  cf_dep: { stmt: 'cf', field: 'adjDepreciation' },
+  cf_amort: { stmt: 'cf', field: 'adjAmortization' },
+  cf_finance: { stmt: 'cf', field: 'adjFinanceCost' },
+  cf_interest_inc: { stmt: 'cf', field: 'adjInterestIncome' },
+  cf_disposal_gain_loss: { stmt: 'cf', field: 'adjLossGainDisposal' },
+  cf_wc_inventory: { stmt: 'cf', field: 'changeInInventory' },
+  cf_wc_receivables: { stmt: 'cf', field: 'changeInReceivables' },
+  cf_wc_other_rec: { stmt: 'cf', field: 'changeInOtherReceivables' },
+  cf_wc_other_ca: { stmt: 'cf', field: 'changeInOtherCA' },
+  cf_wc_payables: { stmt: 'cf', field: 'changeInPayables' },
+  cf_wc_other_pay: { stmt: 'cf', field: 'changeInOtherPayables' },
+  cf_tax_paid: { stmt: 'cf', field: 'incomeTaxPaid' },
+  cf_finance_paid: { stmt: 'cf', field: 'financeCostPaid' },
+  cf_pur_ppe: { stmt: 'cf', field: 'purchasePPE' },
+  cf_sale_ppe: { stmt: 'cf', field: 'salePPE' },
+  cf_pur_intangible: { stmt: 'cf', field: 'purchaseIntangibles' },
+  cf_interest_rec: { stmt: 'cf', field: 'interestReceived' },
+  cf_dividends_rec: { stmt: 'cf', field: 'dividendsReceived' },
+  cf_direct_financing: { stmt: 'cf', field: 'directlyEnteredFinancingCashFlow' },
+  cf_shares_issue: { stmt: 'cf', field: 'financingProceedsShares' },
+  cf_borrow_proceeds: { stmt: 'cf', field: 'financingProceedsBorrowings' },
+  cf_borrow_repay: { stmt: 'cf', field: 'repaymentOfBorrowings' },
+  cf_dividends_paid: { stmt: 'cf', field: 'financingDividendsPaid' },
+  // Equity
+  eq_openingShareCapital: { stmt: 'eq', field: 'openingShareCapital' },
+  eq_shareCapitalIssued: { stmt: 'eq', field: 'shareCapitalIssued' },
+  eq_openingRetainedEarnings: { stmt: 'eq', field: 'openingRetainedEarnings' },
+  eq_netProfitForYear: { stmt: 'eq', field: 'netProfitForYear' },
+  eq_dividendsPaid: { stmt: 'eq', field: 'dividendsPaid' },
+  eq_openingReserves: { stmt: 'eq', field: 'openingReserves' },
+  eq_otherComprehensiveIncome: { stmt: 'eq', field: 'otherComprehensiveIncome' },
+};
+
+export function buildConfigVisibilityMap(statementConfig?: StatementConfigItem[]): Map<string, StatementConfigItem> {
+  const map = new Map<string, StatementConfigItem>();
+  (statementConfig || []).forEach(item => map.set(item.id, item));
+  return map;
+}
+
+export function isConfigElementVisible(
+  configMap: Map<string, StatementConfigItem>,
+  id: string
+): boolean {
+  const item = configMap.get(id);
+  return item ? item.isVisible : true;
+}
+
+export function getCellOverride(
+  cellOverrides: StatementCellOverrides | undefined,
+  stmt: string,
+  field: string,
+  year: number
+): number | undefined {
+  const key = `${stmt}_${field}`;
+  const val = cellOverrides?.[key]?.[year];
+  return val !== undefined && Number.isFinite(val) ? val : undefined;
+}
+
+export function resolveEffectiveLabel(
+  stmt: string,
+  field: string,
+  defaultLabel: string,
+  labelOverrides?: StatementLabelOverrides,
+  statementConfig?: StatementConfigItem[]
+): string {
+  const key = `${stmt}_${field}`;
+  if (labelOverrides && labelOverrides[key] !== undefined) {
+    return labelOverrides[key];
+  }
+  if (statementConfig) {
+    const matchedId = Object.entries(STATEMENT_CONFIG_TO_OVERRIDE_KEY).find(
+      ([, v]) => v.stmt === stmt && v.field === field
+    )?.[0];
+    if (matchedId) {
+      const cfgItem = statementConfig.find(c => c.id === matchedId);
+      const defItem = DEFAULT_STATEMENT_CONFIG_ITEMS.find(c => c.id === matchedId);
+      if (cfgItem && defItem && cfgItem.label !== defItem.label) {
+        return cfgItem.label;
+      }
+    }
+  }
+  return defaultLabel;
+}
+
+export function getCustomItemYearValue(item: StatementConfigItem, year: number): number {
+  const raw = item.customValues?.[year] ?? 0;
+  if (!Number.isFinite(raw)) return 0;
+  return item.sign === 'negative' && raw > 0 ? -raw : raw;
+}
+
+export function getVisibleCustomItemsSum(
+  statementConfig: StatementConfigItem[] | undefined,
+  statement: StatementConfigItem['statement'],
+  year: number,
+  section?: string
+): number {
+  if (!statementConfig) return 0;
+  return statementConfig
+    .filter(
+      item =>
+        item.isCustom &&
+        item.isVisible &&
+        item.statement === statement &&
+        (!section || item.section === section)
+    )
+    .reduce((sum, item) => sum + getCustomItemYearValue(item, year), 0);
+}
 
 export const INITIAL_COMPANY_PROFILE: CompanyProfile = {
   companyName: 'Apex Industrial Holdings Ltd.',
@@ -186,41 +338,47 @@ export function calculateFinancialRatios(
   balance: BalanceSheetYear,
   cashFlow: CashFlowStatementYear
 ): FinancialRatios {
+  const hasRev = income.revenue > 0;
   const rev = Math.max(1, income.revenue);
   const gp = income.grossProfit;
   const ebit = income.operatingProfit;
   const ebitda = ebit + income.depreciationExpense;
   const np = income.netProfit;
+  const hasEq = balance.totalEquity > 0;
   const eq = Math.max(1, balance.totalEquity);
+  const hasAssets = balance.totalAssets > 0;
   const assets = Math.max(1, balance.totalAssets);
   const ca = balance.totalCurrentAssets;
+  const hasCl = balance.totalCurrentLiabilities > 0;
   const cl = Math.max(1, balance.totalCurrentLiabilities);
   const inv = balance.closingInventory;
   const cash = balance.cashAndEquivalents;
   const totalDebt = balance.shortTermBorrowings + balance.longTermBorrowings;
+  const hasFc = income.financeCost > 0;
   const fc = Math.max(1, income.financeCost);
+  const hasCos = income.costOfSales > 0;
   const cos = Math.max(1, income.costOfSales);
-  const debtService = fc + (input.repaymentOfBorrowings || 0);
+  const debtService = income.financeCost + (cashFlow.repaymentOfBorrowings || 0);
 
   return {
-    grossMarginPct: Number(((gp / rev) * 100).toFixed(1)),
-    operatingMarginPct: Number(((ebit / rev) * 100).toFixed(1)),
-    netMarginPct: Number(((np / rev) * 100).toFixed(1)),
-    ebitdaMarginPct: Number(((ebitda / rev) * 100).toFixed(1)),
-    returnOnEquityPct: Number(((np / eq) * 100).toFixed(1)),
-    returnOnCapitalEmployedPct: Number(((ebit / Math.max(1, assets - cl)) * 100).toFixed(1)),
-    currentRatio: Number((ca / cl).toFixed(2)),
-    quickRatio: Number(((ca - inv) / cl).toFixed(2)),
-    cashRatio: Number((cash / cl).toFixed(2)),
-    workingCapital: ca - cl,
-    debtToEquity: Number((totalDebt / eq).toFixed(2)),
-    debtToAssets: Number((totalDebt / assets).toFixed(2)),
-    interestCoverageRatio: Number((ebit / fc).toFixed(2)),
-    debtServiceCoverageRatio: Number((ebitda / Math.max(1, debtService)).toFixed(2)),
-    receivableDays: Math.round((balance.tradeReceivables / rev) * 365),
-    inventoryDays: Math.round((inv / cos) * 365),
-    payableDays: Math.round((balance.tradePayables / cos) * 365),
-    assetTurnover: Number((rev / assets).toFixed(2)),
+    grossMarginPct: hasRev ? Number(((gp / rev) * 100).toFixed(1)) : 0,
+    operatingMarginPct: hasRev ? Number(((ebit / rev) * 100).toFixed(1)) : 0,
+    netMarginPct: hasRev ? Number(((np / rev) * 100).toFixed(1)) : 0,
+    ebitdaMarginPct: hasRev ? Number(((ebitda / rev) * 100).toFixed(1)) : 0,
+    returnOnEquityPct: hasEq ? Number(((np / eq) * 100).toFixed(1)) : 0,
+    returnOnCapitalEmployedPct: assets - cl > 0 ? Number(((ebit / (assets - cl)) * 100).toFixed(1)) : 0,
+    currentRatio: hasCl ? Number((ca / cl).toFixed(2)) : 0,
+    quickRatio: hasCl ? Number(((ca - inv) / cl).toFixed(2)) : 0,
+    cashRatio: hasCl ? Number((cash / cl).toFixed(2)) : 0,
+    workingCapital: ca - balance.totalCurrentLiabilities,
+    debtToEquity: hasEq ? Number((totalDebt / eq).toFixed(2)) : 0,
+    debtToAssets: hasAssets ? Number((totalDebt / assets).toFixed(2)) : 0,
+    interestCoverageRatio: hasFc ? Number((ebit / fc).toFixed(2)) : 0,
+    debtServiceCoverageRatio: debtService > 0 ? Number((ebitda / debtService).toFixed(2)) : 0,
+    receivableDays: hasRev ? Math.round((balance.tradeReceivables / rev) * 365) : 0,
+    inventoryDays: hasCos ? Math.round((inv / cos) * 365) : 0,
+    payableDays: hasCos ? Math.round((balance.tradePayables / cos) * 365) : 0,
+    assetTurnover: hasAssets ? Number((income.revenue / assets).toFixed(2)) : 0,
   };
 }
 
@@ -785,20 +943,26 @@ export function generateProjectedYears(
   return projected;
 }
 
-// 1. Calculate Schedule of Fixed Assets (Strictly preserves input.fixedAssetsGross as Closing Cost)
+// 1. Calculate Schedule of Fixed Assets (Strictly preserves input.fixedAssetsGross as Closing Cost by default)
 export function calculateScheduleOfFixedAssets(
-  inputs: YearDataInput[]
+  inputs: YearDataInput[],
+  options?: StatementCalculationOptions
 ): ScheduleOfFixedAssetsYear[] {
   const result: ScheduleOfFixedAssetsYear[] = [];
   const firstGross = inputs[0]?.fixedAssetsGross || 32000;
   const baseAccumDep = Math.round(firstGross * 0.35);
+  const configMap = buildConfigVisibilityMap(options?.statementConfig);
+  const cellOverrides = options?.cellOverrides;
+
+  let prevBaseClosingCost = 0;
+  let prevBaseClosingDep = 0;
 
   inputs.forEach((input, index) => {
     const isFirst = index === 0;
     const closingCost = input.fixedAssetsGross; // STRICTLY FIXED USER INPUT
-    let openingCost = isFirst
+    const openingCost = isFirst
       ? Math.max(0, closingCost - input.fixedAssetsAdditions + input.fixedAssetsDisposals)
-      : result[index - 1].totalCostClosing;
+      : prevBaseClosingCost;
 
     let additions = input.fixedAssetsAdditions;
     let disposals = input.fixedAssetsDisposals;
@@ -816,13 +980,16 @@ export function calculateScheduleOfFixedAssets(
       }
     }
 
-    const openingDep = isFirst ? baseAccumDep : result[index - 1].totalDepClosing;
+    const openingDep = isFirst ? baseAccumDep : prevBaseClosingDep;
     const depCharge = Math.round(((openingCost + closingCost) / 2) * (input.depreciationRate / 100));
     const depDisposals = Math.round(disposals * 0.65);
     const closingDep = Math.max(0, openingDep + depCharge - depDisposals);
     const netBookValue = Math.max(0, closingCost - closingDep);
 
-    const categories: FixedAssetCategory[] = [
+    prevBaseClosingCost = closingCost;
+    prevBaseClosingDep = closingDep;
+
+    const baseCategories: FixedAssetCategory[] = [
       {
         name: 'Freehold Land & Industrial Buildings',
         costOpening: Math.round(openingCost * 0.40),
@@ -904,23 +1071,132 @@ export function calculateScheduleOfFixedAssets(
         depRate: 25.0,
       },
     ];
-    const lastCat = categories[categories.length - 1];
-    lastCat.netBookValue = lastCat.costClosing - lastCat.depClosing;
+    const lastBaseCat = baseCategories[baseCategories.length - 1];
+    lastBaseCat.netBookValue = lastBaseCat.costClosing - lastBaseCat.depClosing;
 
-    result.push({
-      year: input.year,
-      isProjected: input.isProjected,
-      categories,
-      totalCostOpening: openingCost,
-      totalAdditions: additions,
-      totalDisposals: disposals,
-      totalCostClosing: closingCost,
-      totalDepOpening: openingDep,
-      totalDepCharge: depCharge,
-      totalDepDisposals: depDisposals,
-      totalDepClosing: closingDep,
-      totalNetBookValue: netBookValue,
+    let hasCategoryOverride = false;
+    const processedCategories: FixedAssetCategory[] = baseCategories.map((cat, catIdx) => {
+      const prefix = `fa_${catIdx}`;
+      const ovCostOpening = getCellOverride(cellOverrides, prefix, 'costOpening', input.year);
+      const ovAdditions = getCellOverride(cellOverrides, prefix, 'additions', input.year);
+      const ovDisposals = getCellOverride(cellOverrides, prefix, 'disposals', input.year);
+      const ovCostClosing = getCellOverride(cellOverrides, prefix, 'costClosing', input.year);
+      const ovDepOpening = getCellOverride(cellOverrides, prefix, 'depOpening', input.year);
+      const ovDepCharge = getCellOverride(cellOverrides, prefix, 'depCharge', input.year);
+      const ovDepDisposals = getCellOverride(cellOverrides, prefix, 'depDisposals', input.year);
+      const ovDepClosing = getCellOverride(cellOverrides, prefix, 'depClosing', input.year);
+      const ovDepRate = getCellOverride(cellOverrides, prefix, 'depRate', input.year);
+
+      const catEdited =
+        ovCostOpening !== undefined ||
+        ovAdditions !== undefined ||
+        ovDisposals !== undefined ||
+        ovCostClosing !== undefined ||
+        ovDepOpening !== undefined ||
+        ovDepCharge !== undefined ||
+        ovDepDisposals !== undefined ||
+        ovDepClosing !== undefined ||
+        ovDepRate !== undefined;
+
+      if (!catEdited) {
+        return cat;
+      }
+
+      hasCategoryOverride = true;
+      const costOpening = ovCostOpening ?? cat.costOpening;
+      const catAdditions = ovAdditions ?? cat.additions;
+      const catDisposals = ovDisposals ?? cat.disposals;
+      const catCostClosing = ovCostClosing ?? r2(costOpening + catAdditions - catDisposals);
+      const catDepOpening = ovDepOpening ?? cat.depOpening;
+      const catDepRate = ovDepRate ?? cat.depRate;
+      const catDepCharge =
+        ovDepCharge !== undefined
+          ? ovDepCharge
+          : ovDepRate !== undefined
+          ? Math.round(((costOpening + catCostClosing) / 2) * (catDepRate / 100))
+          : cat.depCharge;
+      const catDepDisposals = ovDepDisposals ?? cat.depDisposals;
+      const catDepClosing =
+        ovDepClosing ?? Math.max(0, r2(catDepOpening + catDepCharge - catDepDisposals));
+
+      return {
+        ...cat,
+        costOpening,
+        additions: catAdditions,
+        disposals: catDisposals,
+        costClosing: catCostClosing,
+        depOpening: catDepOpening,
+        depCharge: catDepCharge,
+        depDisposals: catDepDisposals,
+        depClosing: catDepClosing,
+        netBookValue: r2(catCostClosing - catDepClosing),
+        depRate: catDepRate,
+      };
     });
+
+    const customFACategories: FixedAssetCategory[] = (options?.statementConfig || [])
+      .filter(item => item.isCustom && item.isVisible && item.statement === 'fixedAssets')
+      .map(item => {
+        const val = getCustomItemYearValue(item, input.year);
+        return {
+          name: item.label,
+          costOpening: val,
+          additions: 0,
+          disposals: 0,
+          costClosing: val,
+          depOpening: 0,
+          depCharge: 0,
+          depDisposals: 0,
+          depClosing: 0,
+          netBookValue: val,
+          depRate: 0,
+        };
+      });
+
+    const visibleStandardCategories = processedCategories.filter((_, catIdx) => {
+      const cfgId = FIXED_ASSET_CATEGORY_CONFIG_IDS[catIdx];
+      return cfgId ? isConfigElementVisible(configMap, cfgId) : true;
+    });
+
+    const allHiddenOrCustom =
+      visibleStandardCategories.length !== processedCategories.length || customFACategories.length > 0;
+    const activeCategories = [...visibleStandardCategories, ...customFACategories];
+
+    if (!allHiddenOrCustom && !hasCategoryOverride) {
+      result.push({
+        year: input.year,
+        isProjected: input.isProjected,
+        categories: activeCategories,
+        allCategories: processedCategories,
+        totalCostOpening: openingCost,
+        totalAdditions: additions,
+        totalDisposals: disposals,
+        totalCostClosing: closingCost,
+        totalDepOpening: openingDep,
+        totalDepCharge: depCharge,
+        totalDepDisposals: depDisposals,
+        totalDepClosing: closingDep,
+        totalNetBookValue: netBookValue,
+      });
+    } else {
+      const sum = (fn: (c: FixedAssetCategory) => number) =>
+        r2(activeCategories.reduce((acc, c) => acc + fn(c), 0));
+      result.push({
+        year: input.year,
+        isProjected: input.isProjected,
+        categories: activeCategories,
+        allCategories: processedCategories,
+        totalCostOpening: sum(c => c.costOpening),
+        totalAdditions: sum(c => c.additions),
+        totalDisposals: sum(c => c.disposals),
+        totalCostClosing: sum(c => c.costClosing),
+        totalDepOpening: sum(c => c.depOpening),
+        totalDepCharge: sum(c => c.depCharge),
+        totalDepDisposals: sum(c => c.depDisposals),
+        totalDepClosing: sum(c => c.depClosing),
+        totalNetBookValue: sum(c => c.netBookValue),
+      });
+    }
   });
 
   return result;
@@ -928,48 +1204,170 @@ export function calculateScheduleOfFixedAssets(
 
 const r2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 
-// 2. Calculate Income Statement (Strictly preserves salesRevenue, financeCost, and netProfit)
+// 2. Calculate Income Statement (Strictly preserves salesRevenue, financeCost, and netProfit by default)
 export function calculateIncomeStatement(
   inputs: YearDataInput[],
-  fixedAssetsSchedule: ScheduleOfFixedAssetsYear[]
+  fixedAssetsSchedule: ScheduleOfFixedAssetsYear[],
+  options?: StatementCalculationOptions
 ): IncomeStatementYear[] {
-  return inputs.map((input, index) => {
-    const revenue = input.salesRevenue; // FIXED USER INPUT / SCHEDULE
-    const financeCost = input.financeCost; // FIXED USER INPUT / EXACT SCHEDULE INST. PROFIT
-    const netProfit = input.netProfit; // FIXED USER INPUT
-    const hasCents = !Number.isInteger(revenue) || !Number.isInteger(financeCost) || !Number.isInteger(netProfit) || !Number.isInteger(input.repaymentOfBorrowings);
-    const r = (n: number) => hasCents ? r2(n) : Math.round(n);
+  const configMap = buildConfigVisibilityMap(options?.statementConfig);
+  const cellOverrides = options?.cellOverrides;
 
-    const depreciationExpense = fixedAssetsSchedule[index]?.totalDepCharge || r(input.fixedAssetsGross * 0.1);
+  // Baseline un-filtered FA depreciation so Cost of Sales & OpEx stay anchored when FA categories are deselected
+  const firstGross = inputs[0]?.fixedAssetsGross || 32000;
+  let prevBaseClosingCost = 0;
+  let prevBaseClosingDep = 0;
+  const baseDepCharges: number[] = inputs.map((input, index) => {
+    const isFirst = index === 0;
+    const closingCost = input.fixedAssetsGross;
+    const openingCost = isFirst
+      ? Math.max(0, closingCost - input.fixedAssetsAdditions + input.fixedAssetsDisposals)
+      : prevBaseClosingCost;
+    let disposals = input.fixedAssetsDisposals;
+    if (!isFirst && closingCost < openingCost - disposals) {
+      disposals = Math.max(0, openingCost - closingCost);
+    }
+    const openingDep = isFirst ? Math.round(firstGross * 0.35) : prevBaseClosingDep;
+    const depCharge = Math.round(((openingCost + closingCost) / 2) * (input.depreciationRate / 100));
+    const depDisposals = Math.round(disposals * 0.65);
+    const closingDep = Math.max(0, openingDep + depCharge - depDisposals);
+    prevBaseClosingCost = closingCost;
+    prevBaseClosingDep = closingDep;
+    return depCharge;
+  });
+
+  const allIncKeys = [
+    'inc_revenue',
+    'inc_costOfSales',
+    'inc_operatingExpenses',
+    'inc_depreciationExpense',
+    'inc_interestIncome',
+    'inc_financeCost',
+    'inc_taxExpense',
+  ] as const;
+
+  return inputs.map((input, index) => {
+    const baseRevenue = input.salesRevenue;
+    const baseFinanceCost = input.financeCost;
+    const baseNetProfit = input.netProfit;
+    const hasCents =
+      !Number.isInteger(baseRevenue) ||
+      !Number.isInteger(baseFinanceCost) ||
+      !Number.isInteger(baseNetProfit) ||
+      !Number.isInteger(input.repaymentOfBorrowings);
+    const r = (n: number) => (hasCents ? r2(n) : Math.round(n));
+
+    const baselineDepCharge = baseDepCharges[index] ?? r(input.fixedAssetsGross * 0.1);
+    const activeFADep = fixedAssetsSchedule[index]?.totalDepCharge ?? baselineDepCharge;
 
     const taxRate = input.taxRate || 25;
-    const taxExpense = netProfit >= 0
-      ? r(netProfit / Math.max(0.01, 1 - taxRate / 100) - netProfit)
-      : 0;
-    const profitBeforeTax = r2(netProfit + taxExpense);
-    let interestIncome = r(revenue * 0.005);
+    const baseTaxExpense =
+      baseNetProfit >= 0 ? r(baseNetProfit / Math.max(0.01, 1 - taxRate / 100) - baseNetProfit) : 0;
+    const basePBT = r2(baseNetProfit + baseTaxExpense);
+    let baseInterestIncome = r(baseRevenue * 0.005);
 
-    // Operating Profit (EBIT) required to yield exact PBT given fixed financeCost & interestIncome
-    const operatingProfit = r2(profitBeforeTax - interestIncome + financeCost);
-
-    // Total operating costs (CoS + OpEx) = Revenue - EBIT - Depreciation
-    const requiredOperatingCosts = r2(revenue - operatingProfit - depreciationExpense);
-    let costOfSales = input.costOfSales;
-    let operatingExpenses = input.operatingExpenses;
+    const baseOperatingProfit = r2(basePBT - baseInterestIncome + baseFinanceCost);
+    const requiredOperatingCosts = r2(baseRevenue - baseOperatingProfit - baselineDepCharge);
+    let baseCostOfSales = input.costOfSales;
+    let baseOperatingExpenses = input.operatingExpenses;
 
     if (requiredOperatingCosts >= 0) {
       const existingSum = Math.max(1, input.costOfSales + input.operatingExpenses);
       const cosRatio = input.costOfSales > 0 ? input.costOfSales / existingSum : 0.75;
-      costOfSales = r(requiredOperatingCosts * cosRatio);
-      operatingExpenses = r2(requiredOperatingCosts - costOfSales);
+      baseCostOfSales = r(requiredOperatingCosts * cosRatio);
+      baseOperatingExpenses = r2(requiredOperatingCosts - baseCostOfSales);
     } else {
-      // If NPAT exceeds Sales, preserve revenue/NPAT/financeCost by increasing Other/Interest Income
-      costOfSales = 0;
-      operatingExpenses = 0;
-      interestIncome = r2(interestIncome + Math.abs(requiredOperatingCosts));
+      baseCostOfSales = 0;
+      baseOperatingExpenses = 0;
+      baseInterestIncome = r2(baseInterestIncome + Math.abs(requiredOperatingCosts));
     }
 
-    const grossProfit = r2(revenue - costOfSales);
+    const baseGrossProfit = r2(baseRevenue - baseCostOfSales);
+
+    const anyIncHidden = allIncKeys.some(k => !isConfigElementVisible(configMap, k));
+    const hasIncOverride =
+      ['revenue', 'costOfSales', 'grossProfit', 'operatingExpenses', 'depreciationExpense', 'operatingProfit', 'interestIncome', 'financeCost', 'profitBeforeTax', 'taxExpense', 'netProfit']
+        .some(f => getCellOverride(cellOverrides, 'income', f, input.year) !== undefined);
+    const customOpRev = getVisibleCustomItemsSum(options?.statementConfig, 'income', input.year, 'Revenue & Gross Margin');
+    const customOpExp = getVisibleCustomItemsSum(options?.statementConfig, 'income', input.year, 'Operating Expenses');
+    const customNonOp = getVisibleCustomItemsSum(options?.statementConfig, 'income', input.year, 'Non-Operating & Tax');
+    const customUnscoped = (options?.statementConfig || [])
+      .filter(
+        item =>
+          item.isCustom &&
+          item.isVisible &&
+          item.statement === 'income' &&
+          item.section !== 'Revenue & Gross Margin' &&
+          item.section !== 'Operating Expenses' &&
+          item.section !== 'Non-Operating & Tax'
+      )
+      .reduce((acc, item) => acc + getCustomItemYearValue(item, input.year), 0);
+
+    const hasCustomIncome =
+      (options?.statementConfig || []).some(
+        item => item.isCustom && item.isVisible && item.statement === 'income'
+      );
+    const faDepChanged = Math.abs(activeFADep - baselineDepCharge) > 0.01;
+
+    if (!anyIncHidden && !hasIncOverride && !hasCustomIncome && !faDepChanged) {
+      return {
+        year: input.year,
+        isProjected: input.isProjected,
+        revenue: baseRevenue,
+        costOfSales: baseCostOfSales,
+        grossProfit: baseGrossProfit,
+        operatingExpenses: baseOperatingExpenses,
+        depreciationExpense: baselineDepCharge,
+        operatingProfit: baseOperatingProfit,
+        interestIncome: baseInterestIncome,
+        financeCost: baseFinanceCost,
+        profitBeforeTax: basePBT,
+        taxExpense: baseTaxExpense,
+        netProfit: baseNetProfit,
+      };
+    }
+
+    const revenue = isConfigElementVisible(configMap, 'inc_revenue')
+      ? r2((getCellOverride(cellOverrides, 'income', 'revenue', input.year) ?? baseRevenue) + customOpRev)
+      : 0;
+    const costOfSales = isConfigElementVisible(configMap, 'inc_costOfSales')
+      ? getCellOverride(cellOverrides, 'income', 'costOfSales', input.year) ?? baseCostOfSales
+      : 0;
+    const grossProfit =
+      getCellOverride(cellOverrides, 'income', 'grossProfit', input.year) ?? r2(revenue - costOfSales);
+    const operatingExpenses = isConfigElementVisible(configMap, 'inc_operatingExpenses')
+      ? r2((getCellOverride(cellOverrides, 'income', 'operatingExpenses', input.year) ?? baseOperatingExpenses) - customOpExp)
+      : 0;
+    const depreciationExpense = isConfigElementVisible(configMap, 'inc_depreciationExpense')
+      ? getCellOverride(cellOverrides, 'income', 'depreciationExpense', input.year) ?? activeFADep
+      : 0;
+    const operatingProfit =
+      getCellOverride(cellOverrides, 'income', 'operatingProfit', input.year) ??
+      r2(grossProfit - operatingExpenses - depreciationExpense);
+    const interestIncome = isConfigElementVisible(configMap, 'inc_interestIncome')
+      ? r2((getCellOverride(cellOverrides, 'income', 'interestIncome', input.year) ?? baseInterestIncome) + customNonOp + customUnscoped)
+      : 0;
+    const financeCost = isConfigElementVisible(configMap, 'inc_financeCost')
+      ? getCellOverride(cellOverrides, 'income', 'financeCost', input.year) ?? baseFinanceCost
+      : 0;
+    const profitBeforeTax =
+      getCellOverride(cellOverrides, 'income', 'profitBeforeTax', input.year) ??
+      r2(operatingProfit + interestIncome - financeCost);
+
+    const ovTax = getCellOverride(cellOverrides, 'income', 'taxExpense', input.year);
+    let taxExpense = 0;
+    if (isConfigElementVisible(configMap, 'inc_taxExpense')) {
+      if (ovTax !== undefined) {
+        taxExpense = ovTax;
+      } else if (Math.abs(profitBeforeTax - basePBT) > 0.01) {
+        taxExpense = profitBeforeTax > 0 ? r(profitBeforeTax * (taxRate / 100)) : 0;
+      } else {
+        taxExpense = baseTaxExpense;
+      }
+    }
+
+    const netProfit =
+      getCellOverride(cellOverrides, 'income', 'netProfit', input.year) ?? r2(profitBeforeTax - taxExpense);
 
     return {
       year: input.year,
@@ -993,9 +1391,15 @@ export function calculateIncomeStatement(
 export function calculateCashFlowStatement(
   inputs: YearDataInput[],
   incomeStatements: IncomeStatementYear[],
-  fixedAssetsSchedule: ScheduleOfFixedAssetsYear[]
+  fixedAssetsSchedule: ScheduleOfFixedAssetsYear[],
+  options?: StatementCalculationOptions
 ): CashFlowStatementYear[] {
   const result: CashFlowStatementYear[] = [];
+  const configMap = buildConfigVisibilityMap(options?.statementConfig);
+  const cellOverrides = options?.cellOverrides;
+
+  // Track unfiltered base first-year Net Change in Cash so Year 0 opening cash stays anchored when elements are deselected
+  let baseFirstNetChangeInCash = 0;
 
   inputs.forEach((input, index) => {
     const isFirst = index === 0;
@@ -1003,97 +1407,296 @@ export function calculateCashFlowStatement(
     const income = incomeStatements[index];
     const fixedAssets = fixedAssetsSchedule[index];
 
-    const profitBeforeTax = income.profitBeforeTax;
-    const adjDepreciation = fixedAssets.totalDepCharge;
-    const adjAmortization = prevInput ? Math.max(0, prevInput.intangibleAssets - input.intangibleAssets) : 100;
-    const adjFinanceCost = income.financeCost;
-    const adjInterestIncome = -income.interestIncome;
-    const adjLossGainDisposal = -fixedAssets.totalDepDisposals;
+    if (isFirst) {
+      const baseTaxRate = input.taxRate || 25;
+      const hasCents =
+        !Number.isInteger(input.salesRevenue) ||
+        !Number.isInteger(input.financeCost) ||
+        !Number.isInteger(input.netProfit) ||
+        !Number.isInteger(input.repaymentOfBorrowings);
+      const r = (n: number) => (hasCents ? r2(n) : Math.round(n));
+      const baseTaxExp =
+        input.netProfit >= 0
+          ? r(input.netProfit / Math.max(0.01, 1 - baseTaxRate / 100) - input.netProfit)
+          : 0;
+      const basePBT = r2(input.netProfit + baseTaxExp);
+      const firstGross = inputs[0]?.fixedAssetsGross || 32000;
+      const baseOpeningCost = Math.max(0, input.fixedAssetsGross - input.fixedAssetsAdditions + input.fixedAssetsDisposals);
+      const baseDepCharge = Math.round(((baseOpeningCost + input.fixedAssetsGross) / 2) * (input.depreciationRate / 100));
+      const baseDepDisposals = Math.round(input.fixedAssetsDisposals * 0.65);
+      const baseIntInc = r(input.salesRevenue * 0.005);
+      const baseOpProfitBeforeWC =
+        basePBT + baseDepCharge + 100 + input.financeCost - baseIntInc - baseDepDisposals;
+      const baseWC =
+        -Math.round(input.closingInventory * 0.08) -
+        Math.round(input.tradeReceivables * 0.08) -
+        Math.round(input.otherReceivables * 0.05) -
+        Math.round(input.otherCurrentAssets * 0.04) +
+        Math.round(input.tradePayables * 0.07) +
+        Math.round(input.otherPayables * 0.04);
+      const baseOpCash = baseOpProfitBeforeWC + baseWC - baseTaxExp - input.financeCost;
+      const baseInvCash = -input.fixedAssetsAdditions + input.fixedAssetsDisposals + baseIntInc;
+      baseFirstNetChangeInCash = r2(baseOpCash + baseInvCash + input.cashFlowFromFinancing);
+      void firstGross;
+    }
 
-    const operatingProfitBeforeWC =
-      profitBeforeTax + adjDepreciation + adjAmortization + adjFinanceCost + adjInterestIncome + adjLossGainDisposal;
+    const vis = (id: string) => isConfigElementVisible(configMap, id);
 
-    const changeInInventory = prevInput
+    const profitBeforeTax = vis('cf_pbt')
+      ? getCellOverride(cellOverrides, 'cf', 'profitBeforeTax', input.year) ?? income.profitBeforeTax
+      : 0;
+
+    // Depreciation add-back tracks P&L depreciationExpense so toggling off P&L depreciation doesn't double-count
+    const depAddBackDefault = vis('inc_depreciationExpense') ? income.depreciationExpense : 0;
+    const adjDepreciation = vis('cf_dep')
+      ? getCellOverride(cellOverrides, 'cf', 'adjDepreciation', input.year) ?? depAddBackDefault
+      : 0;
+
+    const baseAmort = prevInput ? Math.max(0, prevInput.intangibleAssets - input.intangibleAssets) : 100;
+    const adjAmortization =
+      vis('cf_amort') && vis('bs_intangibleAssets')
+        ? getCellOverride(cellOverrides, 'cf', 'adjAmortization', input.year) ?? baseAmort
+        : 0;
+
+    const adjFinanceCost =
+      vis('cf_finance') && vis('inc_financeCost')
+        ? getCellOverride(cellOverrides, 'cf', 'adjFinanceCost', input.year) ?? income.financeCost
+        : 0;
+
+    const adjInterestIncome =
+      vis('cf_interest_inc') && vis('inc_interestIncome')
+        ? getCellOverride(cellOverrides, 'cf', 'adjInterestIncome', input.year) ?? -income.interestIncome
+        : 0;
+
+    const adjLossGainDisposal = vis('cf_disposal_gain_loss')
+      ? getCellOverride(cellOverrides, 'cf', 'adjLossGainDisposal', input.year) ?? -fixedAssets.totalDepDisposals
+      : 0;
+
+    const operatingProfitBeforeWC = r2(
+      profitBeforeTax + adjDepreciation + adjAmortization + adjFinanceCost + adjInterestIncome + adjLossGainDisposal
+    );
+
+    const baseInvChg = prevInput
       ? -(input.closingInventory - prevInput.closingInventory)
       : -Math.round(input.closingInventory * 0.08);
+    const changeInInventory =
+      vis('cf_wc_inventory') && vis('bs_closingInventory')
+        ? getCellOverride(cellOverrides, 'cf', 'changeInInventory', input.year) ?? baseInvChg
+        : 0;
 
-    const changeInReceivables = prevInput
+    const baseRecChg = prevInput
       ? -(input.tradeReceivables - prevInput.tradeReceivables)
       : -Math.round(input.tradeReceivables * 0.08);
+    const changeInReceivables =
+      vis('cf_wc_receivables') && vis('bs_tradeReceivables')
+        ? getCellOverride(cellOverrides, 'cf', 'changeInReceivables', input.year) ?? baseRecChg
+        : 0;
 
-    const changeInOtherReceivables = prevInput
+    const baseOtherRecChg = prevInput
       ? -(input.otherReceivables - prevInput.otherReceivables)
       : -Math.round(input.otherReceivables * 0.05);
+    const changeInOtherReceivables =
+      vis('cf_wc_other_rec') && vis('bs_otherReceivables')
+        ? getCellOverride(cellOverrides, 'cf', 'changeInOtherReceivables', input.year) ?? baseOtherRecChg
+        : 0;
 
-    const changeInOtherCA = prevInput
+    const baseOtherCAChg = prevInput
       ? -(input.otherCurrentAssets - prevInput.otherCurrentAssets)
       : -Math.round(input.otherCurrentAssets * 0.04);
+    const changeInOtherCA =
+      vis('cf_wc_other_ca') && vis('bs_otherCurrentAssets')
+        ? getCellOverride(cellOverrides, 'cf', 'changeInOtherCA', input.year) ?? baseOtherCAChg
+        : 0;
 
-    const changeInPayables = prevInput
-      ? (input.tradePayables - prevInput.tradePayables)
+    const basePayChg = prevInput
+      ? input.tradePayables - prevInput.tradePayables
       : Math.round(input.tradePayables * 0.07);
+    const changeInPayables =
+      vis('cf_wc_payables') && vis('bs_tradePayables')
+        ? getCellOverride(cellOverrides, 'cf', 'changeInPayables', input.year) ?? basePayChg
+        : 0;
 
-    const changeInOtherPayables = prevInput
-      ? (input.otherPayables - prevInput.otherPayables)
+    const baseOtherPayChg = prevInput
+      ? input.otherPayables - prevInput.otherPayables
       : Math.round(input.otherPayables * 0.04);
+    const changeInOtherPayables =
+      vis('cf_wc_other_pay') && vis('bs_otherPayables')
+        ? getCellOverride(cellOverrides, 'cf', 'changeInOtherPayables', input.year) ?? baseOtherPayChg
+        : 0;
 
-    const currTaxPayable = Math.round(Math.max(0, income.taxExpense) * 0.45);
-    const prevTaxPayable = prevInput ? Math.round(Math.max(0, incomeStatements[index - 1].taxExpense) * 0.45) : currTaxPayable;
+    const currTaxPayable = vis('bs_currentTaxPayable')
+      ? getCellOverride(cellOverrides, 'bs', 'currentTaxPayable', input.year) ??
+        Math.round(Math.max(0, income.taxExpense) * 0.45)
+      : 0;
+    const prevTaxPayable = prevInput
+      ? vis('bs_currentTaxPayable')
+        ? getCellOverride(cellOverrides, 'bs', 'currentTaxPayable', prevInput.year) ??
+          Math.round(Math.max(0, incomeStatements[index - 1].taxExpense) * 0.45)
+        : 0
+      : currTaxPayable;
     const changeInTaxPayable = currTaxPayable - prevTaxPayable;
 
-    const cashGeneratedFromOperations =
+    const customOperating = getVisibleCustomItemsSum(
+      options?.statementConfig,
+      'cashFlow',
+      input.year,
+      'Operating Activities'
+    );
+
+    const cashGeneratedFromOperations = r2(
       operatingProfitBeforeWC +
-      changeInInventory +
-      changeInReceivables +
-      changeInOtherReceivables +
-      changeInOtherCA +
-      changeInPayables +
-      changeInOtherPayables;
+        changeInInventory +
+        changeInReceivables +
+        changeInOtherReceivables +
+        changeInOtherCA +
+        changeInPayables +
+        changeInOtherPayables +
+        customOperating
+    );
 
-    const incomeTaxPaid = -income.taxExpense + changeInTaxPayable;
-    const financeCostPaid = -income.financeCost;
+    const incomeTaxPaid = vis('cf_tax_paid')
+      ? getCellOverride(cellOverrides, 'cf', 'incomeTaxPaid', input.year) ?? (-income.taxExpense + changeInTaxPayable)
+      : 0;
+    const financeCostPaid =
+      vis('cf_finance_paid') && vis('inc_financeCost')
+        ? getCellOverride(cellOverrides, 'cf', 'financeCostPaid', input.year) ?? -income.financeCost
+        : 0;
 
-    const netCashFromOperating = cashGeneratedFromOperations + incomeTaxPaid + financeCostPaid;
+    const netCashFromOperating =
+      getCellOverride(cellOverrides, 'cf', 'netCashFromOperating', input.year) ??
+      r2(cashGeneratedFromOperations + incomeTaxPaid + financeCostPaid);
 
     // B. Investing Activities
-    const purchasePPE = -fixedAssets.totalAdditions;
-    const salePPE = fixedAssets.totalDisposals;
-    const purchaseIntangibles = prevInput ? -Math.max(0, input.intangibleAssets - prevInput.intangibleAssets) : 0;
-    const interestReceived = income.interestIncome;
-    const dividendsReceived = 0;
+    const purchasePPE = vis('cf_pur_ppe')
+      ? getCellOverride(cellOverrides, 'cf', 'purchasePPE', input.year) ?? -fixedAssets.totalAdditions
+      : 0;
+    const salePPE = vis('cf_sale_ppe')
+      ? getCellOverride(cellOverrides, 'cf', 'salePPE', input.year) ?? fixedAssets.totalDisposals
+      : 0;
+    const basePurInt = prevInput ? -Math.max(0, input.intangibleAssets - prevInput.intangibleAssets) : 0;
+    const purchaseIntangibles =
+      vis('cf_pur_intangible') && vis('bs_intangibleAssets')
+        ? getCellOverride(cellOverrides, 'cf', 'purchaseIntangibles', input.year) ?? basePurInt
+        : 0;
+    const interestReceived =
+      vis('cf_interest_rec') && vis('inc_interestIncome')
+        ? getCellOverride(cellOverrides, 'cf', 'interestReceived', input.year) ?? income.interestIncome
+        : 0;
+    const dividendsReceived = vis('cf_dividends_rec')
+      ? getCellOverride(cellOverrides, 'cf', 'dividendsReceived', input.year) ?? 0
+      : 0;
+
+    const customInvesting = getVisibleCustomItemsSum(
+      options?.statementConfig,
+      'cashFlow',
+      input.year,
+      'Investing Activities'
+    );
 
     const netCashFromInvesting =
-      purchasePPE + salePPE + purchaseIntangibles + interestReceived + dividendsReceived;
+      getCellOverride(cellOverrides, 'cf', 'netCashFromInvesting', input.year) ??
+      r2(purchasePPE + salePPE + purchaseIntangibles + interestReceived + dividendsReceived + customInvesting);
 
-    // C. Financing Activities (Preserves user's direct financing input and repaymentOfBorrowings)
-    const directlyEnteredFinancingCashFlow = input.cashFlowFromFinancing;
-    const financingProceedsShares = input.financingProceedsShares || 0;
-    const financingProceedsBorrowings = input.financingProceedsBorrowings || 0;
-    const repaymentOfBorrowings = input.repaymentOfBorrowings !== undefined
-      ? input.repaymentOfBorrowings
-      : (input.financingRepaymentBorrowings ? Math.abs(input.financingRepaymentBorrowings) : 0);
-    const financingRepaymentBorrowings = -repaymentOfBorrowings;
-    const financingDividendsPaid = -input.dividendsPaid;
+    // C. Financing Activities
+    const rawDirectFinancing =
+      getCellOverride(cellOverrides, 'cf', 'directlyEnteredFinancingCashFlow', input.year) ??
+      input.cashFlowFromFinancing;
+    const directlyEnteredFinancingCashFlow = vis('cf_direct_financing') ? rawDirectFinancing : 0;
 
-    const breakdownSum = financingProceedsShares + financingProceedsBorrowings + financingRepaymentBorrowings + financingDividendsPaid;
-    const isFinancingBreakdownComplete = Math.abs(breakdownSum - directlyEnteredFinancingCashFlow) < 10;
+    const fullShares = input.financingProceedsShares || 0;
+    const fullBorrowProc = input.financingProceedsBorrowings || 0;
+    const fullRepayment =
+      input.repaymentOfBorrowings !== undefined
+        ? input.repaymentOfBorrowings
+        : input.financingRepaymentBorrowings
+        ? Math.abs(input.financingRepaymentBorrowings)
+        : 0;
+    const fullDivs = -input.dividendsPaid;
+    const fullBreakdownSum = fullShares + fullBorrowProc - fullRepayment + fullDivs;
 
-    const netCashFromFinancing = directlyEnteredFinancingCashFlow;
+    const financingProceedsShares = vis('cf_shares_issue')
+      ? getCellOverride(cellOverrides, 'cf', 'financingProceedsShares', input.year) ?? fullShares
+      : 0;
+    const financingProceedsBorrowings = vis('cf_borrow_proceeds')
+      ? getCellOverride(cellOverrides, 'cf', 'financingProceedsBorrowings', input.year) ?? fullBorrowProc
+      : 0;
+    const ovRepayPos = getCellOverride(cellOverrides, 'cf', 'repaymentOfBorrowings', input.year);
+    const ovRepayNeg = getCellOverride(cellOverrides, 'cf', 'financingRepaymentBorrowings', input.year);
+    const repaymentOfBorrowings = vis('cf_borrow_repay')
+      ? ovRepayPos !== undefined
+        ? ovRepayPos
+        : ovRepayNeg !== undefined
+        ? Math.abs(ovRepayNeg)
+        : fullRepayment
+      : 0;
+    const financingRepaymentBorrowings = vis('cf_borrow_repay')
+      ? ovRepayNeg !== undefined
+        ? ovRepayNeg
+        : -repaymentOfBorrowings
+      : 0;
+    const financingDividendsPaid = vis('cf_dividends_paid')
+      ? getCellOverride(cellOverrides, 'cf', 'financingDividendsPaid', input.year) ?? fullDivs
+      : 0;
+
+    const customFinancing = getVisibleCustomItemsSum(
+      options?.statementConfig,
+      'cashFlow',
+      input.year,
+      'Financing Activities'
+    );
+
+    const activeBreakdownSum =
+      financingProceedsShares +
+      financingProceedsBorrowings +
+      financingRepaymentBorrowings +
+      financingDividendsPaid +
+      customFinancing;
+    const isFinancingBreakdownComplete = Math.abs(fullBreakdownSum - rawDirectFinancing) < 10;
+
+    const allFinBreakdownDefault =
+      vis('cf_shares_issue') &&
+      vis('cf_borrow_proceeds') &&
+      vis('cf_borrow_repay') &&
+      vis('cf_dividends_paid') &&
+      ovRepayPos === undefined &&
+      ovRepayNeg === undefined &&
+      getCellOverride(cellOverrides, 'cf', 'financingProceedsShares', input.year) === undefined &&
+      getCellOverride(cellOverrides, 'cf', 'financingProceedsBorrowings', input.year) === undefined &&
+      getCellOverride(cellOverrides, 'cf', 'financingDividendsPaid', input.year) === undefined &&
+      customFinancing === 0;
+
+    const computedNetCashFromFinancing = vis('cf_direct_financing')
+      ? allFinBreakdownDefault
+        ? directlyEnteredFinancingCashFlow
+        : r2(directlyEnteredFinancingCashFlow + (activeBreakdownSum - fullBreakdownSum))
+      : r2(activeBreakdownSum);
+
+    const netCashFromFinancing =
+      getCellOverride(cellOverrides, 'cf', 'netCashFromFinancing', input.year) ??
+      computedNetCashFromFinancing;
 
     // D. Net Increase / Decrease in Cash and Cash Equivalents
     const netChangeInCash = r2(netCashFromOperating + netCashFromInvesting + netCashFromFinancing);
 
     let openingCash = isFirst
-      ? r2(input.cashAndEquivalentsBS - netChangeInCash)
+      ? r2(input.cashAndEquivalentsBS - baseFirstNetChangeInCash)
       : result[index - 1].closingCashCalculated;
     if (openingCash < 0 && isFirst) {
       openingCash = Math.max(200, Math.round(input.salesRevenue * 0.05));
     }
 
     const closingCashCalculated = r2(openingCash + netChangeInCash);
-    // Reconcile Balance Sheet Cash cleanly unless user has explicitly entered an audited override for historical years
-    const balanceSheetCash = isFirst && input.cashAndEquivalentsBS !== undefined && !input.isProjected
-      ? (Math.abs(closingCashCalculated - input.cashAndEquivalentsBS) < 5 ? closingCashCalculated : input.cashAndEquivalentsBS)
+
+    const ovBSCash = getCellOverride(cellOverrides, 'bs', 'cashAndEquivalents', input.year);
+    const balanceSheetCash = !vis('bs_cashAndEquivalents')
+      ? 0
+      : ovBSCash !== undefined
+      ? ovBSCash
+      : isFirst && input.cashAndEquivalentsBS !== undefined && !input.isProjected
+      ? Math.abs(closingCashCalculated - input.cashAndEquivalentsBS) < 5 &&
+        Math.abs(netChangeInCash - baseFirstNetChangeInCash) < 0.01
+        ? closingCashCalculated
+        : input.cashAndEquivalentsBS
       : closingCashCalculated;
 
     const reconciliationDifference = r2(closingCashCalculated - balanceSheetCash);
@@ -1116,6 +1719,7 @@ export function calculateCashFlowStatement(
       changeInInventory,
       changeInReceivables,
       changeInOtherReceivables,
+      changeInOtherCA,
       changeInPayables,
       changeInOtherPayables,
       cashGeneratedFromOperations,
@@ -1152,31 +1756,54 @@ export function calculateCashFlowStatement(
 // 4. Calculate Statement of Changes in Equity
 export function calculateEquityStatement(
   inputs: YearDataInput[],
-  incomeStatements: IncomeStatementYear[]
+  incomeStatements: IncomeStatementYear[],
+  options?: StatementCalculationOptions
 ): EquityStatementYear[] {
   const result: EquityStatementYear[] = [];
+  const configMap = buildConfigVisibilityMap(options?.statementConfig);
+  const cellOverrides = options?.cellOverrides;
+  const vis = (id: string) => isConfigElementVisible(configMap, id);
 
   inputs.forEach((input, index) => {
     const isFirst = index === 0;
     const income = incomeStatements[index];
 
-    const openingShareCapital = isFirst ? input.shareCapital : result[index - 1].closingShareCapital;
-    const shareCapitalIssued = input.financingProceedsShares || 0;
-    const closingShareCapital = openingShareCapital + shareCapitalIssued;
+    const openingShareCapital = vis('eq_openingShareCapital')
+      ? getCellOverride(cellOverrides, 'eq', 'openingShareCapital', input.year) ??
+        (isFirst ? input.shareCapital : result[index - 1].closingShareCapital)
+      : 0;
+    const shareCapitalIssued = vis('eq_shareCapitalIssued')
+      ? getCellOverride(cellOverrides, 'eq', 'shareCapitalIssued', input.year) ??
+        (input.financingProceedsShares || 0)
+      : 0;
+    const closingShareCapital = r2(openingShareCapital + shareCapitalIssued);
 
-    const openingRetainedEarnings = isFirst
-      ? (input.retainedEarningsOpening ?? 6500)
-      : result[index - 1].closingRetainedEarnings;
-    const netProfitForYear = income.netProfit; // FIXED USER INPUT
-    const dividendsPaid = input.dividendsPaid;
-    const closingRetainedEarnings = openingRetainedEarnings + netProfitForYear - dividendsPaid;
+    const openingRetainedEarnings = vis('eq_openingRetainedEarnings')
+      ? getCellOverride(cellOverrides, 'eq', 'openingRetainedEarnings', input.year) ??
+        (isFirst ? input.retainedEarningsOpening ?? 6500 : result[index - 1].closingRetainedEarnings)
+      : 0;
+    const netProfitForYear = vis('eq_netProfitForYear')
+      ? getCellOverride(cellOverrides, 'eq', 'netProfitForYear', input.year) ?? income.netProfit
+      : 0;
+    const dividendsPaid = vis('eq_dividendsPaid')
+      ? getCellOverride(cellOverrides, 'eq', 'dividendsPaid', input.year) ?? input.dividendsPaid
+      : 0;
+    const closingRetainedEarnings = r2(openingRetainedEarnings + netProfitForYear - dividendsPaid);
 
-    const openingReserves = isFirst ? 1800 : result[index - 1].closingReserves;
-    const otherComprehensiveIncome = 0;
-    const closingReserves = openingReserves + otherComprehensiveIncome;
+    const openingReserves = vis('eq_openingReserves')
+      ? getCellOverride(cellOverrides, 'eq', 'openingReserves', input.year) ??
+        (isFirst ? 1800 : result[index - 1].closingReserves)
+      : 0;
+    const otherComprehensiveIncome = vis('eq_otherComprehensiveIncome')
+      ? getCellOverride(cellOverrides, 'eq', 'otherComprehensiveIncome', input.year) ?? 0
+      : 0;
+    const closingReserves = r2(openingReserves + otherComprehensiveIncome);
 
-    const totalOpeningEquity = openingShareCapital + openingRetainedEarnings + openingReserves;
-    const totalClosingEquity = closingShareCapital + closingRetainedEarnings + closingReserves;
+    const customEquity = getVisibleCustomItemsSum(options?.statementConfig, 'equity', input.year);
+    const totalOpeningEquity = r2(openingShareCapital + openingRetainedEarnings + openingReserves);
+    const totalClosingEquity = r2(
+      closingShareCapital + closingRetainedEarnings + closingReserves + customEquity
+    );
 
     result.push({
       year: input.year,
@@ -1204,49 +1831,166 @@ export function calculateBalanceSheet(
   inputs: YearDataInput[],
   equityStatements: EquityStatementYear[],
   fixedAssetsSchedule: ScheduleOfFixedAssetsYear[],
-  cashFlowStatements?: CashFlowStatementYear[]
+  cashFlowStatements?: CashFlowStatementYear[],
+  options?: StatementCalculationOptions,
+  incomeStatements?: IncomeStatementYear[]
 ): BalanceSheetYear[] {
+  const configMap = buildConfigVisibilityMap(options?.statementConfig);
+  const cellOverrides = options?.cellOverrides;
+  const vis = (id: string) => isConfigElementVisible(configMap, id);
+
   return inputs.map((input, index) => {
     const equity = equityStatements[index];
     const fixedAssets = fixedAssetsSchedule[index];
+    const income = incomeStatements?.[index];
 
-    const cashAndEquivalents = cashFlowStatements && cashFlowStatements[index]
-      ? cashFlowStatements[index].closingCashCalculated
-      : input.cashAndEquivalentsBS;
-    const tradeReceivables = input.tradeReceivables;
-    const otherReceivables = input.otherReceivables;
-    const closingInventory = input.closingInventory; // FIXED USER INPUT
-    const otherCurrentAssets = input.otherCurrentAssets;
-    const totalCurrentAssets = r2(cashAndEquivalents + tradeReceivables + otherReceivables + closingInventory + otherCurrentAssets);
-
-    const tradePayables = input.tradePayables;
-    const otherPayables = input.otherPayables;
-    const shortTermBorrowings = input.shortTermBorrowings;
     const hasCents = !Number.isInteger(input.financeCost) || !Number.isInteger(input.netProfit);
-    const rawTax = Math.max(0, input.netProfit / Math.max(0.01, 1 - (input.taxRate || 25) / 100) - input.netProfit);
-    const currentTaxPayable = hasCents ? r2(rawTax * 0.45) : Math.round(Math.round(rawTax) * 0.45);
-    const totalCurrentLiabilities = r2(tradePayables + otherPayables + shortTermBorrowings + currentTaxPayable);
+    const rawBaseTax = Math.max(
+      0,
+      input.netProfit / Math.max(0.01, 1 - (input.taxRate || 25) / 100) - input.netProfit
+    );
+    const baseTaxPayable = hasCents
+      ? r2(rawBaseTax * 0.45)
+      : Math.round(Math.round(rawBaseTax) * 0.45);
+    const activeTaxPayable =
+      income && (!vis('inc_taxExpense') || getCellOverride(cellOverrides, 'income', 'taxExpense', input.year) !== undefined || Math.abs(income.taxExpense - rawBaseTax) > 1)
+        ? Math.round(Math.max(0, income.taxExpense) * 0.45)
+        : baseTaxPayable;
 
-    const longTermBorrowings = input.longTermBorrowings;
-    const otherNonCurrentLiabilities = 0;
-    const totalNonCurrentLiabilities = r2(longTermBorrowings + otherNonCurrentLiabilities);
+    // Baseline plug for otherNonCurrentAssets computed BEFORE applying bs_* deselections/overrides
+    const baseCash =
+      cashFlowStatements && cashFlowStatements[index]
+        ? cashFlowStatements[index].closingCashCalculated
+        : input.cashAndEquivalentsBS;
+    const baseCurrentAssets = r2(
+      baseCash +
+        input.tradeReceivables +
+        input.otherReceivables +
+        input.closingInventory +
+        input.otherCurrentAssets
+    );
+    const baseCurrentLiabilities = r2(
+      input.tradePayables + input.otherPayables + input.shortTermBorrowings + activeTaxPayable
+    );
+    const baseLiabilitiesAndEquity = r2(
+      baseCurrentLiabilities +
+        input.longTermBorrowings +
+        (equity.closingShareCapital + equity.closingRetainedEarnings + equity.closingReserves)
+    );
+    const baseOtherNonCurrentAssets = Math.max(
+      0,
+      r2(baseLiabilitiesAndEquity - (baseCurrentAssets + fixedAssets.totalNetBookValue + input.intangibleAssets))
+    );
+
+    // Apply bs_* visibility, inline cell overrides, and custom items
+    const cashAndEquivalents = vis('bs_cashAndEquivalents')
+      ? getCellOverride(cellOverrides, 'bs', 'cashAndEquivalents', input.year) ?? baseCash
+      : 0;
+    const tradeReceivables = vis('bs_tradeReceivables')
+      ? getCellOverride(cellOverrides, 'bs', 'tradeReceivables', input.year) ?? input.tradeReceivables
+      : 0;
+    const otherReceivables = vis('bs_otherReceivables')
+      ? getCellOverride(cellOverrides, 'bs', 'otherReceivables', input.year) ?? input.otherReceivables
+      : 0;
+    const closingInventory = vis('bs_closingInventory')
+      ? getCellOverride(cellOverrides, 'bs', 'closingInventory', input.year) ?? input.closingInventory
+      : 0;
+    const otherCurrentAssets = vis('bs_otherCurrentAssets')
+      ? getCellOverride(cellOverrides, 'bs', 'otherCurrentAssets', input.year) ?? input.otherCurrentAssets
+      : 0;
+    const customCurrentAssets = getVisibleCustomItemsSum(
+      options?.statementConfig,
+      'balanceSheet',
+      input.year,
+      'Current Assets'
+    );
+    const totalCurrentAssets = r2(
+      cashAndEquivalents +
+        tradeReceivables +
+        otherReceivables +
+        closingInventory +
+        otherCurrentAssets +
+        customCurrentAssets
+    );
+
+    const propertyPlantEquipment = vis('bs_propertyPlantEquipment')
+      ? getCellOverride(cellOverrides, 'bs', 'propertyPlantEquipment', input.year) ?? fixedAssets.totalNetBookValue
+      : 0;
+    const intangibleAssets = vis('bs_intangibleAssets')
+      ? getCellOverride(cellOverrides, 'bs', 'intangibleAssets', input.year) ?? input.intangibleAssets
+      : 0;
+    const otherNonCurrentAssets = vis('bs_otherNonCurrentAssets')
+      ? getCellOverride(cellOverrides, 'bs', 'otherNonCurrentAssets', input.year) ?? baseOtherNonCurrentAssets
+      : 0;
+    const customNonCurrentAssets = getVisibleCustomItemsSum(
+      options?.statementConfig,
+      'balanceSheet',
+      input.year,
+      'Non-Current Assets'
+    );
+    const totalNonCurrentAssets = r2(
+      propertyPlantEquipment + intangibleAssets + otherNonCurrentAssets + customNonCurrentAssets
+    );
+    const totalAssets = r2(totalCurrentAssets + totalNonCurrentAssets);
+
+    const tradePayables = vis('bs_tradePayables')
+      ? getCellOverride(cellOverrides, 'bs', 'tradePayables', input.year) ?? input.tradePayables
+      : 0;
+    const otherPayables = vis('bs_otherPayables')
+      ? getCellOverride(cellOverrides, 'bs', 'otherPayables', input.year) ?? input.otherPayables
+      : 0;
+    const shortTermBorrowings = vis('bs_shortTermBorrowings')
+      ? getCellOverride(cellOverrides, 'bs', 'shortTermBorrowings', input.year) ?? input.shortTermBorrowings
+      : 0;
+    const currentTaxPayable = vis('bs_currentTaxPayable')
+      ? getCellOverride(cellOverrides, 'bs', 'currentTaxPayable', input.year) ?? activeTaxPayable
+      : 0;
+    const customCurrentLiab = getVisibleCustomItemsSum(
+      options?.statementConfig,
+      'balanceSheet',
+      input.year,
+      'Current Liabilities'
+    );
+    const totalCurrentLiabilities = r2(
+      tradePayables + otherPayables + shortTermBorrowings + currentTaxPayable + customCurrentLiab
+    );
+
+    const longTermBorrowings = vis('bs_longTermBorrowings')
+      ? getCellOverride(cellOverrides, 'bs', 'longTermBorrowings', input.year) ?? input.longTermBorrowings
+      : 0;
+    const otherNonCurrentLiabilities = vis('bs_otherNonCurrentLiabilities')
+      ? getCellOverride(cellOverrides, 'bs', 'otherNonCurrentLiabilities', input.year) ?? 0
+      : 0;
+    const customNonCurrentLiab = getVisibleCustomItemsSum(
+      options?.statementConfig,
+      'balanceSheet',
+      input.year,
+      'Non-Current Liabilities'
+    );
+    const totalNonCurrentLiabilities = r2(
+      longTermBorrowings + otherNonCurrentLiabilities + customNonCurrentLiab
+    );
 
     const totalLiabilities = r2(totalCurrentLiabilities + totalNonCurrentLiabilities);
 
-    const shareCapital = equity.closingShareCapital;
-    const retainedEarnings = equity.closingRetainedEarnings;
-    const reserves = equity.closingReserves;
-    const totalEquity = r2(shareCapital + retainedEarnings + reserves);
+    const shareCapital = vis('bs_shareCapital')
+      ? getCellOverride(cellOverrides, 'bs', 'shareCapital', input.year) ?? equity.closingShareCapital
+      : 0;
+    const retainedEarnings = vis('bs_retainedEarnings')
+      ? getCellOverride(cellOverrides, 'bs', 'retainedEarnings', input.year) ?? equity.closingRetainedEarnings
+      : 0;
+    const reserves = vis('bs_reserves')
+      ? getCellOverride(cellOverrides, 'bs', 'reserves', input.year) ?? equity.closingReserves
+      : 0;
+    const customEquityBS = getVisibleCustomItemsSum(
+      options?.statementConfig,
+      'balanceSheet',
+      input.year,
+      'Equity'
+    );
+    const totalEquity = r2(shareCapital + retainedEarnings + reserves + customEquityBS);
 
     const totalLiabilitiesAndEquity = r2(totalLiabilities + totalEquity);
-
-    const propertyPlantEquipment = fixedAssets.totalNetBookValue;
-    const intangibleAssets = input.intangibleAssets;
-    const nonCurrentAssetsBaseline = r2(propertyPlantEquipment + intangibleAssets);
-    const otherNonCurrentAssets = Math.max(0, r2(totalLiabilitiesAndEquity - (totalCurrentAssets + nonCurrentAssetsBaseline)));
-    const totalNonCurrentAssets = r2(nonCurrentAssetsBaseline + otherNonCurrentAssets);
-
-    const totalAssets = r2(totalCurrentAssets + totalNonCurrentAssets);
     const balanceCheck = r2(totalAssets - totalLiabilitiesAndEquity);
 
     return {
@@ -1485,8 +2229,37 @@ export function generateNotesToFinancialStatements(
   ];
 }
 
-// Default Configuration Items for the Financial Statement Configuration Module (Section 76.6)
+// Default Configuration Items for the Financial Statement Configuration Module across all 5 statements
 export const DEFAULT_STATEMENT_CONFIG_ITEMS: StatementConfigItem[] = [
+  // Income Statement
+  { id: 'inc_revenue', statement: 'income', section: 'Revenue & Gross Margin', label: 'Sales Revenue / Turnover', isMandatory: true, isVisible: true, order: 1 },
+  { id: 'inc_costOfSales', statement: 'income', section: 'Revenue & Gross Margin', label: 'Cost of Sales', isMandatory: false, isVisible: true, order: 2 },
+  { id: 'inc_operatingExpenses', statement: 'income', section: 'Operating Expenses', label: 'Operating & Administrative Expenses', isMandatory: false, isVisible: true, order: 3 },
+  { id: 'inc_depreciationExpense', statement: 'income', section: 'Operating Expenses', label: 'Depreciation Expense (Linked to Fixed Assets)', isMandatory: false, isVisible: true, order: 4 },
+  { id: 'inc_interestIncome', statement: 'income', section: 'Non-Operating & Tax', label: 'Interest & Investment Income', isMandatory: false, isVisible: true, order: 5 },
+  { id: 'inc_financeCost', statement: 'income', section: 'Non-Operating & Tax', label: 'Finance Cost', isMandatory: true, isVisible: true, order: 6 },
+  { id: 'inc_taxExpense', statement: 'income', section: 'Non-Operating & Tax', label: 'Income Tax Expense', isMandatory: false, isVisible: true, order: 7 },
+
+  // Balance Sheet - Current & Non-Current Assets
+  { id: 'bs_cashAndEquivalents', statement: 'balanceSheet', section: 'Current Assets', label: 'Cash and Cash Equivalents', isMandatory: true, isVisible: true, order: 1 },
+  { id: 'bs_tradeReceivables', statement: 'balanceSheet', section: 'Current Assets', label: 'Trade Receivables', isMandatory: false, isVisible: true, order: 2 },
+  { id: 'bs_otherReceivables', statement: 'balanceSheet', section: 'Current Assets', label: 'Other Receivables & Prepayments', isMandatory: false, isVisible: true, order: 3 },
+  { id: 'bs_closingInventory', statement: 'balanceSheet', section: 'Current Assets', label: 'Closing Inventory', isMandatory: true, isVisible: true, order: 4 },
+  { id: 'bs_otherCurrentAssets', statement: 'balanceSheet', section: 'Current Assets', label: 'Other Current Assets', isMandatory: false, isVisible: true, order: 5 },
+  { id: 'bs_propertyPlantEquipment', statement: 'balanceSheet', section: 'Non-Current Assets', label: 'Property, Plant & Equipment (WDV)', isMandatory: true, isVisible: true, order: 6 },
+  { id: 'bs_intangibleAssets', statement: 'balanceSheet', section: 'Non-Current Assets', label: 'Intangible Assets', isMandatory: false, isVisible: true, order: 7 },
+  { id: 'bs_otherNonCurrentAssets', statement: 'balanceSheet', section: 'Non-Current Assets', label: 'Other Non-Current Assets', isMandatory: false, isVisible: true, order: 8 },
+  // Balance Sheet - Liabilities & Equity
+  { id: 'bs_tradePayables', statement: 'balanceSheet', section: 'Current Liabilities', label: 'Trade Payables', isMandatory: false, isVisible: true, order: 9 },
+  { id: 'bs_otherPayables', statement: 'balanceSheet', section: 'Current Liabilities', label: 'Other Payables & Accruals', isMandatory: false, isVisible: true, order: 10 },
+  { id: 'bs_shortTermBorrowings', statement: 'balanceSheet', section: 'Current Liabilities', label: 'Short-Term Borrowings', isMandatory: false, isVisible: true, order: 11 },
+  { id: 'bs_currentTaxPayable', statement: 'balanceSheet', section: 'Current Liabilities', label: 'Current Tax Payable', isMandatory: false, isVisible: true, order: 12 },
+  { id: 'bs_longTermBorrowings', statement: 'balanceSheet', section: 'Non-Current Liabilities', label: 'Long-Term Borrowings', isMandatory: false, isVisible: true, order: 13 },
+  { id: 'bs_otherNonCurrentLiabilities', statement: 'balanceSheet', section: 'Non-Current Liabilities', label: 'Other Non-Current Liabilities', isMandatory: false, isVisible: true, order: 14 },
+  { id: 'bs_shareCapital', statement: 'balanceSheet', section: 'Equity', label: 'Share Capital', isMandatory: true, isVisible: true, order: 15 },
+  { id: 'bs_retainedEarnings', statement: 'balanceSheet', section: 'Equity', label: 'Retained Earnings', isMandatory: true, isVisible: true, order: 16 },
+  { id: 'bs_reserves', statement: 'balanceSheet', section: 'Equity', label: 'Reserves & Surplus', isMandatory: false, isVisible: true, order: 17 },
+
   // Cash Flow Configuration Items (Section 76.6)
   { id: 'cf_pbt', statement: 'cashFlow', section: 'Operating Activities', label: 'Net Profit Before Tax', isMandatory: true, isVisible: true, order: 1 },
   { id: 'cf_dep', statement: 'cashFlow', section: 'Operating Activities', label: 'Adjustments for Depreciation', isMandatory: true, isVisible: true, order: 2 },
@@ -1497,24 +2270,41 @@ export const DEFAULT_STATEMENT_CONFIG_ITEMS: StatementConfigItem[] = [
   { id: 'cf_wc_inventory', statement: 'cashFlow', section: 'Operating Activities', label: '(Increase) / Decrease in Inventory', isMandatory: false, isVisible: true, order: 7 },
   { id: 'cf_wc_receivables', statement: 'cashFlow', section: 'Operating Activities', label: '(Increase) / Decrease in Trade Receivables', isMandatory: false, isVisible: true, order: 8 },
   { id: 'cf_wc_other_rec', statement: 'cashFlow', section: 'Operating Activities', label: '(Increase) / Decrease in Other Receivables', isMandatory: false, isVisible: true, order: 9 },
-  { id: 'cf_wc_payables', statement: 'cashFlow', section: 'Operating Activities', label: 'Increase / (Decrease) in Trade Payables', isMandatory: false, isVisible: true, order: 10 },
-  { id: 'cf_wc_other_pay', statement: 'cashFlow', section: 'Operating Activities', label: 'Increase / (Decrease) in Other Payables', isMandatory: false, isVisible: true, order: 11 },
-  { id: 'cf_tax_paid', statement: 'cashFlow', section: 'Operating Activities', label: 'Income Tax Paid', isMandatory: true, isVisible: true, order: 12 },
-  { id: 'cf_finance_paid', statement: 'cashFlow', section: 'Operating Activities', label: 'Finance Cost Paid', isMandatory: true, isVisible: true, order: 13 },
-  
+  { id: 'cf_wc_other_ca', statement: 'cashFlow', section: 'Operating Activities', label: '(Increase) / Decrease in Other Current Assets', isMandatory: false, isVisible: true, order: 10 },
+  { id: 'cf_wc_payables', statement: 'cashFlow', section: 'Operating Activities', label: 'Increase / (Decrease) in Trade Payables', isMandatory: false, isVisible: true, order: 11 },
+  { id: 'cf_wc_other_pay', statement: 'cashFlow', section: 'Operating Activities', label: 'Increase / (Decrease) in Other Payables', isMandatory: false, isVisible: true, order: 12 },
+  { id: 'cf_tax_paid', statement: 'cashFlow', section: 'Operating Activities', label: 'Income Tax Paid', isMandatory: true, isVisible: true, order: 13 },
+  { id: 'cf_finance_paid', statement: 'cashFlow', section: 'Operating Activities', label: 'Finance Cost Paid', isMandatory: true, isVisible: true, order: 14 },
+
   // Investing Activities
-  { id: 'cf_pur_ppe', statement: 'cashFlow', section: 'Investing Activities', label: 'Purchase of Property, Plant and Equipment', isMandatory: true, isVisible: true, order: 14 },
-  { id: 'cf_sale_ppe', statement: 'cashFlow', section: 'Investing Activities', label: 'Proceeds from Sale of Fixed Assets', isMandatory: false, isVisible: true, order: 15 },
-  { id: 'cf_pur_intangible', statement: 'cashFlow', section: 'Investing Activities', label: 'Purchase of Intangible Assets', isMandatory: false, isVisible: true, order: 16 },
-  { id: 'cf_interest_rec', statement: 'cashFlow', section: 'Investing Activities', label: 'Interest Received', isMandatory: false, isVisible: true, order: 17 },
-  { id: 'cf_dividends_rec', statement: 'cashFlow', section: 'Investing Activities', label: 'Dividends Received', isMandatory: false, isVisible: true, order: 18 },
+  { id: 'cf_pur_ppe', statement: 'cashFlow', section: 'Investing Activities', label: 'Purchase of Property, Plant and Equipment', isMandatory: true, isVisible: true, order: 15 },
+  { id: 'cf_sale_ppe', statement: 'cashFlow', section: 'Investing Activities', label: 'Proceeds from Sale of Fixed Assets', isMandatory: false, isVisible: true, order: 16 },
+  { id: 'cf_pur_intangible', statement: 'cashFlow', section: 'Investing Activities', label: 'Purchase of Intangible Assets', isMandatory: false, isVisible: true, order: 17 },
+  { id: 'cf_interest_rec', statement: 'cashFlow', section: 'Investing Activities', label: 'Interest Received', isMandatory: false, isVisible: true, order: 18 },
+  { id: 'cf_dividends_rec', statement: 'cashFlow', section: 'Investing Activities', label: 'Dividends Received', isMandatory: false, isVisible: true, order: 19 },
 
   // Financing Activities
-  { id: 'cf_direct_financing', statement: 'cashFlow', section: 'Financing Activities', label: 'Net Cash Flow from Financing Activities (Direct User Entry)', isMandatory: true, isVisible: true, order: 19 },
-  { id: 'cf_shares_issue', statement: 'cashFlow', section: 'Financing Activities', label: 'Proceeds from Issue of Share Capital', isMandatory: false, isVisible: true, order: 20 },
-  { id: 'cf_borrow_proceeds', statement: 'cashFlow', section: 'Financing Activities', label: 'Proceeds from Borrowings & Financing', isMandatory: false, isVisible: true, order: 21 },
-  { id: 'cf_borrow_repay', statement: 'cashFlow', section: 'Financing Activities', label: 'Repayment of Borrowings & Financing', isMandatory: false, isVisible: true, order: 22 },
-  { id: 'cf_dividends_paid', statement: 'cashFlow', section: 'Financing Activities', label: 'Dividends Paid to Shareholders', isMandatory: false, isVisible: true, order: 23 },
+  { id: 'cf_direct_financing', statement: 'cashFlow', section: 'Financing Activities', label: 'Net Cash Flow from Financing Activities (Direct User Entry)', isMandatory: true, isVisible: true, order: 20 },
+  { id: 'cf_shares_issue', statement: 'cashFlow', section: 'Financing Activities', label: 'Proceeds from Issue of Share Capital', isMandatory: false, isVisible: true, order: 21 },
+  { id: 'cf_borrow_proceeds', statement: 'cashFlow', section: 'Financing Activities', label: 'Proceeds from Borrowings & Financing', isMandatory: false, isVisible: true, order: 22 },
+  { id: 'cf_borrow_repay', statement: 'cashFlow', section: 'Financing Activities', label: 'Repayment of Borrowings & Financing', isMandatory: false, isVisible: true, order: 23 },
+  { id: 'cf_dividends_paid', statement: 'cashFlow', section: 'Financing Activities', label: 'Dividends Paid to Shareholders', isMandatory: false, isVisible: true, order: 24 },
+
+  // Statement of Changes in Equity
+  { id: 'eq_openingShareCapital', statement: 'equity', section: 'Share Capital', label: 'Opening Share Capital', isMandatory: true, isVisible: true, order: 1 },
+  { id: 'eq_shareCapitalIssued', statement: 'equity', section: 'Share Capital', label: 'Share Capital Issued', isMandatory: false, isVisible: true, order: 2 },
+  { id: 'eq_openingRetainedEarnings', statement: 'equity', section: 'Retained Earnings', label: 'Opening Retained Earnings', isMandatory: true, isVisible: true, order: 3 },
+  { id: 'eq_netProfitForYear', statement: 'equity', section: 'Retained Earnings', label: 'Net Profit for the Year', isMandatory: true, isVisible: true, order: 4 },
+  { id: 'eq_dividendsPaid', statement: 'equity', section: 'Retained Earnings', label: 'Dividends Paid / Drawings', isMandatory: false, isVisible: true, order: 5 },
+  { id: 'eq_openingReserves', statement: 'equity', section: 'Reserves & OCI', label: 'Opening Reserves', isMandatory: false, isVisible: true, order: 6 },
+  { id: 'eq_otherComprehensiveIncome', statement: 'equity', section: 'Reserves & OCI', label: 'Other Comprehensive Income', isMandatory: false, isVisible: true, order: 7 },
+
+  // Schedule of Fixed Assets Categories
+  { id: 'fa_land_buildings', statement: 'fixedAssets', section: 'Asset Categories', label: 'Freehold Land & Industrial Buildings', isMandatory: false, isVisible: true, order: 1 },
+  { id: 'fa_plant_machinery', statement: 'fixedAssets', section: 'Asset Categories', label: 'Plant, Machinery & Automated Systems', isMandatory: false, isVisible: true, order: 2 },
+  { id: 'fa_office_equipment', statement: 'fixedAssets', section: 'Asset Categories', label: 'Office Equipment & Fixtures', isMandatory: false, isVisible: true, order: 3 },
+  { id: 'fa_motor_vehicles', statement: 'fixedAssets', section: 'Asset Categories', label: 'Motor Vehicles & Logistics Fleet', isMandatory: false, isVisible: true, order: 4 },
+  { id: 'fa_computer_it', statement: 'fixedAssets', section: 'Asset Categories', label: 'Computer, IT & Telecommunications', isMandatory: false, isVisible: true, order: 5 },
 ];
 
 export const COMPANY_TYPE_TEMPLATES: Record<EntityType, { title: string; desc: string; operatingCustomLines: string[]; financingCustomLines: string[] }> = {
@@ -1587,11 +2377,14 @@ export function buildPreviousFormatData(
   balanceSheets: BalanceSheetYear[],
   cashFlowStatements: CashFlowStatementYear[],
   equityStatements: EquityStatementYear[],
-  fixedAssetsSchedule: ScheduleOfFixedAssetsYear[]
+  fixedAssetsSchedule: ScheduleOfFixedAssetsYear[],
+  options?: StatementCalculationOptions
 ): import('../types/financial').PreviousFormatYearData[] {
   const histIndices = inputs
     .map((inp, idx) => ({ inp, idx }))
     .filter(item => !item.inp.isProjected);
+  const configMap = buildConfigVisibilityMap(options?.statementConfig);
+  const vis = (id: string) => isConfigElementVisible(configMap, id);
 
   const prevResults: import('../types/financial').PreviousFormatYearData[] = [];
 
@@ -1602,18 +2395,18 @@ export function buildPreviousFormatData(
     const eq = equityStatements[idx];
     const fa = fixedAssetsSchedule[idx];
 
-    // Fixed 6 inputs strictly preserved
-    const sales = inp.salesRevenue;
-    const stockAndStores = inp.closingInventory;
-    const financialExp = inp.financeCost;
-    const netProfitAfterIncomeTax = inp.netProfit;
-    const repaymentOfBorrowings = inp.repaymentOfBorrowings;
-    const faGrossAssetBase = inp.fixedAssetsGross;
+    // Recalculated drivers synchronized with Section 76 engines
+    const sales = inc.revenue;
+    const stockAndStores = bs.closingInventory;
+    const financialExp = inc.financeCost;
+    const netProfitAfterIncomeTax = inc.netProfit;
+    const repaymentOfBorrowings = cf.repaymentOfBorrowings;
+    const faGrossAssetBase = fa.totalCostClosing;
 
     // Income Statement exact breakdown
     const costOfGoodsSold = inc.costOfSales;
-    const grossProfit = sales - costOfGoodsSold;
-    const depreciation = fa.totalDepCharge;
+    const grossProfit = inc.grossProfit;
+    const depreciation = inc.depreciationExpense;
     const nonDepOpEx = Math.max(0, inc.operatingExpenses);
 
     // Allocate non-depreciation Operating Expenses cleanly across the 12 exact expense lines from Previous Financials
@@ -1660,8 +2453,8 @@ export function buildPreviousFormatData(
     const operatingSubtotal = r2(netOperatingProfit + otherIncome);
     const incomeTaxProvision = inc.taxExpense;
 
-    // Balance Sheet exact structure (reconciles Assets === Capital + Liabilities to 0!)
-    const fixedAssetsWDV = fa.totalNetBookValue;
+    // Balance Sheet exact structure synchronized with BalanceSheetYear
+    const fixedAssetsWDV = bs.propertyPlantEquipment;
     const advancesDepositsPrepayments = r2(bs.otherReceivables + bs.otherCurrentAssets);
     const billsReceivable = bs.tradeReceivables;
     const cashAndCashEquivalents = bs.cashAndEquivalents;
@@ -1679,7 +2472,7 @@ export function buildPreviousFormatData(
     );
 
     const capitalAfterDrawings = r2(totalAssetsTaka - totalCurrentLiabilities);
-    const drawings = inp.dividendsPaid;
+    const drawings = eq.dividendsPaid;
     const capitalSubtotal = r2(capitalAfterDrawings + drawings);
     const openingCapital = hIdx === 0
       ? r2(capitalSubtotal - netProfitAfterIncomeTax)
@@ -1688,7 +2481,7 @@ export function buildPreviousFormatData(
     // Cash Flow exact structure matching Previous Financials PDF & exact ending cash
     const prevBS = hIdx > 0 ? prevResults[hIdx - 1] : null;
     const cfNetIncome = netProfitAfterIncomeTax;
-    const cfDepreciation = depreciation;
+    const cfDepreciation = vis('cf_dep') ? depreciation : 0;
     const nonCashCA = r2(advancesDepositsPrepayments + stockAndStores + billsReceivable);
     const prevNonCashCA = prevBS
       ? r2(prevBS.advancesDepositsPrepayments + prevBS.stockAndStores + prevBS.billsReceivable)
@@ -1704,11 +2497,11 @@ export function buildPreviousFormatData(
       cfNetIncome + cfDepreciation + cfChangeInCurrentAssets + cfChangeInCWIP + cfChangeInCurrentLiabilities
     );
 
-    const cfAcquisitionPPE = -fa.totalAdditions;
-    const cfDisposalIntangible = r2(fa.totalDisposals - fa.totalDepDisposals);
+    const cfAcquisitionPPE = cf.purchasePPE;
+    const cfDisposalIntangible = vis('cf_sale_ppe') ? r2(fa.totalDisposals - fa.totalDepDisposals) : 0;
     const cfNetCashInvesting = r2(cfAcquisitionPPE + cfDisposalIntangible);
 
-    const cfDrawings = -drawings;
+    const cfDrawings = vis('cf_dividends_paid') ? -drawings : 0;
     const cfOpeningBalance = hIdx === 0
       ? 0
       : r2(capitalAfterDrawings - (prevBS!.capitalAfterDrawings + netProfitAfterIncomeTax - drawings));
@@ -1900,11 +2693,14 @@ export function buildProjectedFormatData(
   balanceSheets: BalanceSheetYear[],
   cashFlowStatements: CashFlowStatementYear[],
   equityStatements: EquityStatementYear[],
-  fixedAssetsSchedule: ScheduleOfFixedAssetsYear[]
+  fixedAssetsSchedule: ScheduleOfFixedAssetsYear[],
+  options?: StatementCalculationOptions
 ): import('../types/financial').ProjectedFormatYearData[] {
   const projIndices = inputs
     .map((inp, idx) => ({ inp, idx }))
     .filter(item => item.inp.isProjected);
+  const configMap = buildConfigVisibilityMap(options?.statementConfig);
+  const vis = (id: string) => isConfigElementVisible(configMap, id);
 
   // Anchor opening year to last historical year if available
   const firstProjIdx = projIndices[0]?.idx ?? 0;
@@ -1915,6 +2711,7 @@ export function buildProjectedFormatData(
   projIndices.forEach(({ inp, idx }, pIdx) => {
     const inc = incomeStatements[idx];
     const bs = balanceSheets[idx];
+    const cf = cashFlowStatements[idx];
     const eq = equityStatements[idx];
     const fa = fixedAssetsSchedule[idx];
 
@@ -1922,26 +2719,26 @@ export function buildProjectedFormatData(
     const prevBS = anchorHistIdx >= 0 && pIdx === 0 ? balanceSheets[anchorHistIdx] : null;
     const prevFA = anchorHistIdx >= 0 && pIdx === 0 ? fixedAssetsSchedule[anchorHistIdx] : null;
 
-    // Fixed 6 inputs strictly preserved
-    const sales = inp.salesRevenue;
-    const inventories = inp.closingInventory;
-    const financialExpenses = inp.financeCost;
-    const netProfitAfterTax = inp.netProfit;
-    const repaymentOfBorrowings = inp.repaymentOfBorrowings;
-    const schedGrossAssetBase = inp.fixedAssetsGross;
+    // Recalculated figures synchronized with Section 76 engines
+    const sales = inc.revenue;
+    const inventories = bs.closingInventory;
+    const financialExpenses = inc.financeCost;
+    const netProfitAfterTax = inc.netProfit;
+    const repaymentOfBorrowings = cf.repaymentOfBorrowings;
+    const schedGrossAssetBase = fa.totalCostClosing;
 
     // P&L
     const costOfGoodsSold = inc.costOfSales;
-    const grossProfit = sales - costOfGoodsSold;
+    const grossProfit = inc.grossProfit;
     const othersIncome = inc.interestIncome;
     const grossProfitWithOtherIncome = grossProfit + othersIncome;
-    const adminAndSellingExpenses = inc.operatingExpenses + fa.totalDepCharge;
+    const adminAndSellingExpenses = inc.operatingExpenses + inc.depreciationExpense;
     const totalOperatingProfit = grossProfitWithOtherIncome - adminAndSellingExpenses;
     const netProfitBeforeTax = totalOperatingProfit - financialExpenses;
     const provisionForIncomeTax = inc.taxExpense;
 
     // Balance Sheet Assets
-    const propertyPlantEquipments = fa.totalNetBookValue;
+    const propertyPlantEquipments = bs.propertyPlantEquipment;
     const tradeAndOtherReceivables = bs.tradeReceivables;
     const advanceDepositPrepayments = bs.otherReceivables + bs.otherCurrentAssets;
 
@@ -1954,7 +2751,7 @@ export function buildProjectedFormatData(
     const totalCurrentLiabilities =
       tradeAndOtherPayables + provisionsForTax + shortTermLoan + liabilitiesForExp;
 
-    // Cash Flow Statement (exact roll-forward matching Projected_Financials PDF)
+    // Cash Flow Statement (exact roll-forward matching Projected_Financials PDF + element toggles)
     const prevInv = prevProj ? prevProj.inventories : (prevBS ? prevBS.closingInventory : Math.round(inventories * 0.9));
     const prevRec = prevProj ? prevProj.tradeAndOtherReceivables : (prevBS ? prevBS.tradeReceivables : Math.round(tradeAndOtherReceivables * 0.9));
     const prevAdv = prevProj ? prevProj.advanceDepositPrepayments : (prevBS ? prevBS.otherReceivables + prevBS.otherCurrentAssets : Math.round(advanceDepositPrepayments * 0.9));
@@ -1963,15 +2760,20 @@ export function buildProjectedFormatData(
     const prevExp = prevProj ? prevProj.liabilitiesForExp : (prevBS ? prevBS.otherPayables : Math.round(liabilitiesForExp * 0.9));
 
     const cfNetIncome = netProfitAfterTax;
-    const cfChangeInventory = -(inventories - prevInv);
-    const cfChangeReceivables = -(tradeAndOtherReceivables - prevRec);
-    const cfChangeAdvanceDeposit = -(advanceDepositPrepayments - prevAdv);
+    const cfChangeInventory =
+      vis('cf_wc_inventory') && vis('bs_closingInventory') ? -(inventories - prevInv) : 0;
+    const cfChangeReceivables =
+      vis('cf_wc_receivables') && vis('bs_tradeReceivables') ? -(tradeAndOtherReceivables - prevRec) : 0;
+    const cfChangeAdvanceDeposit =
+      vis('cf_wc_other_rec') || vis('cf_wc_other_ca') ? -(advanceDepositPrepayments - prevAdv) : 0;
     const cfChangeCurrentAssets = 0;
     const cfChangeCurrentLiabilities = 0;
-    const cfChangeTradePayables = tradeAndOtherPayables - prevPay;
-    const cfChangeProvisionsTax = provisionsForTax - prevTax;
-    const cfChangeLiabilitiesExp = liabilitiesForExp - prevExp;
-    const cfDepreciation = fa.totalDepCharge;
+    const cfChangeTradePayables =
+      vis('cf_wc_payables') && vis('bs_tradePayables') ? tradeAndOtherPayables - prevPay : 0;
+    const cfChangeProvisionsTax = vis('bs_currentTaxPayable') ? provisionsForTax - prevTax : 0;
+    const cfChangeLiabilitiesExp =
+      vis('cf_wc_other_pay') && vis('bs_otherPayables') ? liabilitiesForExp - prevExp : 0;
+    const cfDepreciation = vis('cf_dep') ? inc.depreciationExpense : 0;
 
     const cfNetCashOperating =
       cfNetIncome +
@@ -1986,10 +2788,10 @@ export function buildProjectedFormatData(
       cfDepreciation;
 
     // Investing
-    const cfSalePPE = fa.totalDisposals - fa.totalDepDisposals;
+    const cfSalePPE = vis('cf_sale_ppe') ? fa.totalDisposals - fa.totalDepDisposals : 0;
     const cfInvestingCapitalInflow = 0;
     const cfPreliminaryExpenses = 0;
-    const cfPurchasePPE = -fa.totalAdditions;
+    const cfPurchasePPE = cf.purchasePPE;
     const cfPurchaseInvestment = 0;
     const cfNetCashInvesting = cfSalePPE + cfInvestingCapitalInflow + cfPreliminaryExpenses + cfPurchasePPE + cfPurchaseInvestment;
 
@@ -1998,12 +2800,12 @@ export function buildProjectedFormatData(
       ? prevProj.longTermLoan + prevProj.shortTermLoan
       : (prevBS ? prevBS.longTermBorrowings + prevBS.shortTermBorrowings : longTermLoan + shortTermLoan + repaymentOfBorrowings);
     const currTotalDebt = r2(longTermLoan + shortTermLoan);
-    const cfLoanReceived = r2(currTotalDebt - prevTotalDebt); // Net debt inflow / (-repayment)
-    const cfAdditionalCapital = inp.financingProceedsShares || 0;
+    const cfLoanReceived = vis('cf_borrow_proceeds') || vis('cf_borrow_repay') ? r2(currTotalDebt - prevTotalDebt) : 0;
+    const cfAdditionalCapital = eq.shareCapitalIssued;
     const cfIssuanceOfDebt = 0;
     const cfDividendsToStockholders = 0;
-    const drawings = inp.dividendsPaid;
-    const cfDrawingsOutflow = -drawings;
+    const drawings = eq.dividendsPaid;
+    const cfDrawingsOutflow = vis('cf_dividends_paid') ? -drawings : 0;
     const cfRedeemLongTermDebt = 0;
     const cfIssuanceBondsPayable = 0;
     const cfNetCashFinancing = r2(
@@ -2022,7 +2824,7 @@ export function buildProjectedFormatData(
       : (prevBS ? prevBS.cashAndEquivalents : Math.round(sales * 0.08));
     const cfClosingCash = r2(cfOpeningCash + cfNetCashIncrease);
 
-    const cashAndCashEquivalents = cfClosingCash;
+    const cashAndCashEquivalents = vis('bs_cashAndEquivalents') ? cfClosingCash : 0;
     const totalCurrentAssets = r2(
       inventories + tradeAndOtherReceivables + advanceDepositPrepayments + cashAndCashEquivalents
     );
@@ -2163,9 +2965,22 @@ export function validateFinancialModel(
   balanceSheets: BalanceSheetYear[],
   cashFlowStatements: CashFlowStatementYear[],
   equityStatements: EquityStatementYear[],
-  fixedAssetsSchedule: ScheduleOfFixedAssetsYear[]
+  fixedAssetsSchedule: ScheduleOfFixedAssetsYear[],
+  options?: StatementCalculationOptions
 ): import('../types/financial').FinancialValidationIssue[] {
   const issues: import('../types/financial').FinancialValidationIssue[] = [];
+  const configMap = buildConfigVisibilityMap(options?.statementConfig);
+  const cellOverrides = options?.cellOverrides;
+
+  const hasDeselectedIncome = (options?.statementConfig || []).some(
+    c => (c.statement === 'income' || c.statement === 'fixedAssets') && !c.isVisible
+  );
+  const hasDeselectedFA = (options?.statementConfig || []).some(
+    c => c.statement === 'fixedAssets' && !c.isVisible
+  );
+  const hasDeselectedCF = (options?.statementConfig || []).some(
+    c => c.statement === 'cashFlow' && !c.isVisible
+  );
 
   const histCount = inputs.filter(y => !y.isProjected).length;
   const projCount = inputs.filter(y => y.isProjected).length;
@@ -2204,7 +3019,10 @@ export function validateFinancialModel(
       });
     }
 
-    if (inc && Math.abs(inc.netProfit - inp.netProfit) > 0.01) {
+    const hasIncomeYrOverride = Object.keys(cellOverrides || {}).some(
+      k => (k.startsWith('income_') || k.startsWith('fa_')) && cellOverrides?.[k]?.[inp.year] !== undefined
+    );
+    if (!hasDeselectedIncome && !hasIncomeYrOverride && inc && Math.abs(inc.netProfit - inp.netProfit) > 0.01) {
       issues.push({
         id: `npat-mismatch-${inp.year}`,
         year: inp.year,
@@ -2214,7 +3032,10 @@ export function validateFinancialModel(
       });
     }
 
-    if (fa && Math.abs(fa.totalCostClosing - inp.fixedAssetsGross) > 0.01) {
+    const hasFAYrOverride = Object.keys(cellOverrides || {}).some(
+      k => k.startsWith('fa_') && cellOverrides?.[k]?.[inp.year] !== undefined
+    );
+    if (!hasDeselectedFA && !hasFAYrOverride && fa && Math.abs(fa.totalCostClosing - inp.fixedAssetsGross) > 0.01) {
       issues.push({
         id: `fa-mismatch-${inp.year}`,
         year: inp.year,
@@ -2234,7 +3055,10 @@ export function validateFinancialModel(
       });
     }
 
-    if (eq && bs && Math.abs(eq.totalClosingEquity - bs.totalEquity) > 1) {
+    const hasBSorEqCustomization = (options?.statementConfig || []).some(
+      c => (c.statement === 'balanceSheet' || c.statement === 'equity') && !c.isVisible
+    );
+    if (!hasBSorEqCustomization && eq && bs && Math.abs(eq.totalClosingEquity - bs.totalEquity) > 1) {
       issues.push({
         id: `eq-mismatch-${inp.year}`,
         year: inp.year,
@@ -2255,7 +3079,13 @@ export function validateFinancialModel(
     }
 
     if (inp.isScheduleLocked) {
-      if (inp.schedulePrincipalLocked !== undefined && cf && Math.abs(cf.repaymentOfBorrowings - inp.schedulePrincipalLocked) > 0.01) {
+      if (
+        isConfigElementVisible(configMap, 'cf_borrow_repay') &&
+        !hasDeselectedCF &&
+        inp.schedulePrincipalLocked !== undefined &&
+        cf &&
+        Math.abs(cf.repaymentOfBorrowings - inp.schedulePrincipalLocked) > 0.01
+      ) {
         issues.push({
           id: `sched-principal-lock-${inp.year}`,
           year: inp.year,
@@ -2264,7 +3094,12 @@ export function validateFinancialModel(
           message: `Cash Flow Repayment of Borrowings (${cf.repaymentOfBorrowings}) differs from exact Schedule Inst. Principal (${inp.schedulePrincipalLocked}).`,
         });
       }
-      if (inp.scheduleFinanceCostLocked !== undefined && inc && Math.abs(inc.financeCost - inp.scheduleFinanceCostLocked) > 0.01) {
+      if (
+        isConfigElementVisible(configMap, 'inc_financeCost') &&
+        inp.scheduleFinanceCostLocked !== undefined &&
+        inc &&
+        Math.abs(inc.financeCost - inp.scheduleFinanceCostLocked) > 0.01
+      ) {
         issues.push({
           id: `sched-profit-lock-${inp.year}`,
           year: inp.year,

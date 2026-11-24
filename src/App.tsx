@@ -40,6 +40,8 @@ import {
   calculateDebtServiceCoverage,
   implementRepaymentScheduleIntoModel,
   ImplementScheduleResult,
+  STATEMENT_CONFIG_TO_OVERRIDE_KEY,
+  FIXED_ASSET_CATEGORY_CONFIG_IDS,
 } from './services/financialEngine';
 import { rebuildScheduleSummaries } from './services/repaymentScheduleParser';
 import {
@@ -141,26 +143,38 @@ export default function App() {
     return [...activeHistoricalInputs, ...generatedProjected];
   }, [activeHistoricalInputs, generatedProjected]);
 
+  const calcOptions = useMemo(
+    () => ({ statementConfig, cellOverrides }),
+    [statementConfig, cellOverrides]
+  );
+
   // Five Standard Financial Statements + Schedule of Fixed Assets Calculations
   const fixedAssetsSchedule = useMemo(() => {
-    return calculateScheduleOfFixedAssets(allYearsInputs);
-  }, [allYearsInputs]);
+    return calculateScheduleOfFixedAssets(allYearsInputs, calcOptions);
+  }, [allYearsInputs, calcOptions]);
 
   const incomeStatements = useMemo(() => {
-    return calculateIncomeStatement(allYearsInputs, fixedAssetsSchedule);
-  }, [allYearsInputs, fixedAssetsSchedule]);
+    return calculateIncomeStatement(allYearsInputs, fixedAssetsSchedule, calcOptions);
+  }, [allYearsInputs, fixedAssetsSchedule, calcOptions]);
 
   const cashFlowStatements = useMemo(() => {
-    return calculateCashFlowStatement(allYearsInputs, incomeStatements, fixedAssetsSchedule);
-  }, [allYearsInputs, incomeStatements, fixedAssetsSchedule]);
+    return calculateCashFlowStatement(allYearsInputs, incomeStatements, fixedAssetsSchedule, calcOptions);
+  }, [allYearsInputs, incomeStatements, fixedAssetsSchedule, calcOptions]);
 
   const equityStatements = useMemo(() => {
-    return calculateEquityStatement(allYearsInputs, incomeStatements);
-  }, [allYearsInputs, incomeStatements]);
+    return calculateEquityStatement(allYearsInputs, incomeStatements, calcOptions);
+  }, [allYearsInputs, incomeStatements, calcOptions]);
 
   const balanceSheets = useMemo(() => {
-    return calculateBalanceSheet(allYearsInputs, equityStatements, fixedAssetsSchedule, cashFlowStatements);
-  }, [allYearsInputs, equityStatements, fixedAssetsSchedule, cashFlowStatements]);
+    return calculateBalanceSheet(
+      allYearsInputs,
+      equityStatements,
+      fixedAssetsSchedule,
+      cashFlowStatements,
+      calcOptions,
+      incomeStatements
+    );
+  }, [allYearsInputs, equityStatements, fixedAssetsSchedule, cashFlowStatements, calcOptions, incomeStatements]);
 
   const defaultNotes = useMemo(() => {
     return generateNotesToFinancialStatements(
@@ -183,9 +197,10 @@ export default function App() {
       balanceSheets,
       cashFlowStatements,
       equityStatements,
-      fixedAssetsSchedule
+      fixedAssetsSchedule,
+      calcOptions
     );
-  }, [allYearsInputs, incomeStatements, balanceSheets, cashFlowStatements, equityStatements, fixedAssetsSchedule]);
+  }, [allYearsInputs, incomeStatements, balanceSheets, cashFlowStatements, equityStatements, fixedAssetsSchedule, calcOptions]);
 
   const previousComparativePairs = useMemo(() => {
     return buildPreviousComparativePairs(previousFormatData);
@@ -221,9 +236,10 @@ export default function App() {
       balanceSheets,
       cashFlowStatements,
       equityStatements,
-      fixedAssetsSchedule
+      fixedAssetsSchedule,
+      calcOptions
     );
-  }, [allYearsInputs, incomeStatements, balanceSheets, cashFlowStatements, equityStatements, fixedAssetsSchedule]);
+  }, [allYearsInputs, incomeStatements, balanceSheets, cashFlowStatements, equityStatements, fixedAssetsSchedule, calcOptions]);
 
   // Model-Wide Accounting & Fixed-Driver Validation
   const validationIssues = useMemo(() => {
@@ -233,9 +249,10 @@ export default function App() {
       balanceSheets,
       cashFlowStatements,
       equityStatements,
-      fixedAssetsSchedule
+      fixedAssetsSchedule,
+      calcOptions
     );
-  }, [allYearsInputs, incomeStatements, balanceSheets, cashFlowStatements, equityStatements, fixedAssetsSchedule]);
+  }, [allYearsInputs, incomeStatements, balanceSheets, cashFlowStatements, equityStatements, fixedAssetsSchedule, calcOptions]);
 
   // Debt Service Coverage & Repayment Capacity Analysis
   const debtServiceCoverage = useMemo(() => {
@@ -392,7 +409,7 @@ export default function App() {
     }));
   };
 
-  // Handler: Update Year Input
+  // Handler: Update Year Input (also clears matching statement cellOverrides so Data Entry edits take precedence)
   const handleUpdateYearData = (updated: YearDataInput) => {
     if (!updated.isProjected) {
       setHistoricalYearsStore(prev => ({
@@ -405,6 +422,44 @@ export default function App() {
         [updated.year]: updated,
       }));
     }
+    const keysToClear = [
+      'income_revenue',
+      'income_financeCost',
+      'income_netProfit',
+      'bs_closingInventory',
+      'bs_tradeReceivables',
+      'bs_otherReceivables',
+      'bs_otherCurrentAssets',
+      'bs_intangibleAssets',
+      'bs_tradePayables',
+      'bs_otherPayables',
+      'bs_shortTermBorrowings',
+      'bs_longTermBorrowings',
+      'bs_shareCapital',
+      'bs_cashAndEquivalents',
+      'cf_directlyEnteredFinancingCashFlow',
+      'cf_repaymentOfBorrowings',
+      'cf_financingRepaymentBorrowings',
+      'cf_financingProceedsBorrowings',
+      'cf_financingProceedsShares',
+      'cf_adjFinanceCost',
+      'cf_financeCostPaid',
+      'eq_dividendsPaid',
+    ];
+    setCellOverrides(prev => {
+      let changed = false;
+      const next = { ...prev };
+      for (const k of keysToClear) {
+        if (next[k]?.[updated.year] !== undefined) {
+          const yrCopy = { ...next[k] };
+          delete yrCopy[updated.year];
+          if (Object.keys(yrCopy).length === 0) delete next[k];
+          else next[k] = yrCopy;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
   };
 
   // Handler: Apply Auto-Fill to all remaining years for a specific primary financial driver
@@ -645,7 +700,95 @@ export default function App() {
 
   // Handler: Direct inline editing of ANY statement cell value
   const handleUpdateStatementValue = (statement: string, field: string, year: number, val: number) => {
+    const yearObj = allYearsInputs.find(y => y.year === year);
+
+    // Custom statement item value edit (id passed as field when statement === 'custom' or field starts with 'custom_')
+    if (statement === 'custom' || field.startsWith('custom_')) {
+      const targetId = field.startsWith('custom_') ? field : field;
+      setStatementConfig(prev =>
+        prev.map(item =>
+          item.id === targetId
+            ? {
+                ...item,
+                customValues: {
+                  ...(item.customValues || {}),
+                  [year]: val,
+                },
+              }
+            : item
+        )
+      );
+      return;
+    }
+
+    const fieldMapping: Record<string, keyof YearDataInput> = {
+      revenue: 'salesRevenue',
+      salesRevenue: 'salesRevenue',
+      financeCost: 'financeCost',
+      adjFinanceCost: 'financeCost',
+      netProfit: 'netProfit',
+      netProfitForYear: 'netProfit',
+      cashFlowFromFinancing: 'cashFlowFromFinancing',
+      directlyEnteredFinancingCashFlow: 'cashFlowFromFinancing',
+      repaymentOfBorrowings: 'repaymentOfBorrowings',
+      financingRepaymentBorrowings: 'repaymentOfBorrowings',
+      financingProceedsBorrowings: 'financingProceedsBorrowings',
+      financingProceedsShares: 'financingProceedsShares',
+      shareCapitalIssued: 'financingProceedsShares',
+      closingInventory: 'closingInventory',
+      tradeReceivables: 'tradeReceivables',
+      otherReceivables: 'otherReceivables',
+      otherCurrentAssets: 'otherCurrentAssets',
+      intangibleAssets: 'intangibleAssets',
+      tradePayables: 'tradePayables',
+      otherPayables: 'otherPayables',
+      shortTermBorrowings: 'shortTermBorrowings',
+      longTermBorrowings: 'longTermBorrowings',
+      shareCapital: 'shareCapital',
+      dividendsPaid: 'dividendsPaid',
+    };
+
+    const targetField = fieldMapping[field];
+
+    // Check Repayment Schedule lock BEFORE modifying state
+    if (
+      yearObj?.isScheduleLocked &&
+      (targetField === 'repaymentOfBorrowings' || targetField === 'financeCost' || field === 'financeCostPaid')
+    ) {
+      return;
+    }
+
     const key = `${statement}_${field}`;
+
+    if (targetField && yearObj) {
+      const updatedYear: YearDataInput = {
+        ...yearObj,
+        [targetField]: field === 'dividendsPaid' ? Math.abs(val) : val,
+      };
+
+      if (targetField === 'repaymentOfBorrowings') {
+        const absVal = Math.abs(val);
+        const diff = absVal - (yearObj.repaymentOfBorrowings || 0);
+        updatedYear.repaymentOfBorrowings = absVal;
+        updatedYear.financingRepaymentBorrowings = -absVal;
+        updatedYear.cashFlowFromFinancing =
+          (updatedYear.financingProceedsShares || 0) +
+          (updatedYear.financingProceedsBorrowings || 0) -
+          absVal -
+          updatedYear.dividendsPaid;
+        updatedYear.longTermBorrowings = Math.max(0, (yearObj.longTermBorrowings || 0) - diff);
+        updatedYear.cashAndEquivalentsBS = Math.max(0, (yearObj.cashAndEquivalentsBS || 0) - diff);
+        updatedYear.financeCost = Math.max(
+          200,
+          Math.round((updatedYear.longTermBorrowings + updatedYear.shortTermBorrowings) * 0.085)
+        );
+      }
+
+      handleUpdateYearData(updatedYear);
+      return;
+    }
+
+    // Derived / statement-only fields (costOfSales, operatingExpenses, depreciationExpense, interestIncome, taxExpense, subtotals, cf adjustments, working capital deltas, eq opening/OCI, bs cash override, etc.)
     setCellOverrides(prev => ({
       ...prev,
       [key]: {
@@ -653,74 +796,80 @@ export default function App() {
         [year]: val,
       },
     }));
-
-    const fieldMapping: Record<string, keyof YearDataInput> = {
-      'revenue': 'salesRevenue',
-      'salesRevenue': 'salesRevenue',
-      'costOfSales': 'costOfSales',
-      'operatingExpenses': 'operatingExpenses',
-      'financeCost': 'financeCost',
-      'adjFinanceCost': 'financeCost',
-      'netProfit': 'netProfit',
-      'cashFlowFromFinancing': 'cashFlowFromFinancing',
-      'directlyEnteredFinancingCashFlow': 'cashFlowFromFinancing',
-      'repaymentOfBorrowings': 'repaymentOfBorrowings',
-      'financingRepaymentBorrowings': 'repaymentOfBorrowings',
-      'financingProceedsBorrowings': 'financingProceedsBorrowings',
-      'financingProceedsShares': 'financingProceedsShares',
-      'purchasePPE': 'fixedAssetsAdditions',
-      'salePPE': 'fixedAssetsDisposals',
-      'closingInventory': 'closingInventory',
-      'tradeReceivables': 'tradeReceivables',
-      'otherReceivables': 'otherReceivables',
-      'tradePayables': 'tradePayables',
-      'otherPayables': 'otherPayables',
-      'cashAndEquivalents': 'cashAndEquivalentsBS',
-      'balanceSheetCash': 'cashAndEquivalentsBS',
-      'shortTermBorrowings': 'shortTermBorrowings',
-      'longTermBorrowings': 'longTermBorrowings',
-      'shareCapital': 'shareCapital',
-      'dividendsPaid': 'dividendsPaid',
-    };
-
-    const targetField = fieldMapping[field];
-    if (targetField) {
-      const yearObj = allYearsInputs.find(y => y.year === year);
-      if (yearObj) {
-        if (yearObj.isScheduleLocked && (targetField === 'repaymentOfBorrowings' || targetField === 'financeCost')) {
-          return;
-        }
-        const updatedYear: YearDataInput = {
-          ...yearObj,
-          [targetField]: field === 'purchasePPE' || field === 'dividendsPaid' ? Math.abs(val) : val,
-        };
-
-        if (targetField === 'repaymentOfBorrowings') {
-          const absVal = Math.abs(val);
-          const diff = absVal - (yearObj.repaymentOfBorrowings || 0);
-          updatedYear.repaymentOfBorrowings = absVal;
-          updatedYear.financingRepaymentBorrowings = -absVal;
-          updatedYear.cashFlowFromFinancing =
-            (updatedYear.financingProceedsShares || 0) +
-            (updatedYear.financingProceedsBorrowings || 0) -
-            absVal -
-            updatedYear.dividendsPaid;
-          updatedYear.longTermBorrowings = Math.max(0, (yearObj.longTermBorrowings || 0) - diff);
-          updatedYear.cashAndEquivalentsBS = Math.max(0, (yearObj.cashAndEquivalentsBS || 0) - diff);
-          updatedYear.financeCost = Math.max(200, Math.round((updatedYear.longTermBorrowings + updatedYear.shortTermBorrowings) * 0.085));
-        }
-
-        handleUpdateYearData(updatedYear);
-      }
-    }
   };
 
-  // Handler: Direct inline editing of ANY statement item label
+  // Handler: Direct inline editing of Fixed Assets category cells
+  const handleUpdateFixedAssetsCategory = (
+    year: number,
+    categoryIndex: number,
+    field: string,
+    value: number
+  ) => {
+    const key = `fa_${categoryIndex}_${field}`;
+    setCellOverrides(prev => ({
+      ...prev,
+      [key]: {
+        ...(prev[key] || {}),
+        [year]: value,
+      },
+    }));
+  };
+
+  // Handler: Direct inline editing of ANY statement item label (syncs with statementConfig)
   const handleUpdateStatementLabel = (statement: string, field: string, newLabel: string) => {
+    if (statement === 'custom') {
+      setStatementConfig(prev =>
+        prev.map(item => (item.id === field ? { ...item, label: newLabel } : item))
+      );
+      return;
+    }
+
     setLabelOverrides(prev => ({
       ...prev,
       [`${statement}_${field}`]: newLabel,
     }));
+
+    const matchedCfgId = Object.entries(STATEMENT_CONFIG_TO_OVERRIDE_KEY).find(
+      ([, v]) => v.stmt === statement && v.field === field
+    )?.[0];
+    if (matchedCfgId) {
+      setStatementConfig(prev =>
+        prev.map(item => (item.id === matchedCfgId ? { ...item, label: newLabel } : item))
+      );
+    } else if (statement === 'fa') {
+      const idxNum = Number(field);
+      const faCfgId = Number.isInteger(idxNum) ? FIXED_ASSET_CATEGORY_CONFIG_IDS[idxNum] : undefined;
+      if (faCfgId) {
+        setStatementConfig(prev =>
+          prev.map(item => (item.id === faCfgId ? { ...item, label: newLabel } : item))
+        );
+      }
+    }
+  };
+
+  // Handler: Update statementConfig and sync any customized labels into labelOverrides
+  const handleUpdateStatementConfig = (nextConfig: StatementConfigItem[]) => {
+    setStatementConfig(nextConfig);
+    setLabelOverrides(prev => {
+      const next = { ...prev };
+      nextConfig.forEach(item => {
+        const mapping = STATEMENT_CONFIG_TO_OVERRIDE_KEY[item.id];
+        const defItem = DEFAULT_STATEMENT_CONFIG_ITEMS.find(d => d.id === item.id);
+        if (mapping && defItem) {
+          const overrideKey = `${mapping.stmt}_${mapping.field}`;
+          if (item.label !== defItem.label) {
+            next[overrideKey] = item.label;
+          } else if (next[overrideKey] && next[overrideKey] === defItem.label) {
+            delete next[overrideKey];
+          }
+        }
+      });
+      return next;
+    });
+  };
+
+  const handleResetStatementConfig = () => {
+    setStatementConfig(DEFAULT_STATEMENT_CONFIG_ITEMS);
   };
 
   // Reset all custom overrides back to pure calculation engine defaults
@@ -729,6 +878,11 @@ export default function App() {
     setLabelOverrides({});
     setCustomNotes(null);
   };
+
+  const exportSyncOptions = useMemo(
+    () => ({ statementConfig, labelOverrides }),
+    [statementConfig, labelOverrides]
+  );
 
   // Handler: Export Complete Package (Section 76)
   const handleExportPackageExcel = () => {
@@ -741,7 +895,8 @@ export default function App() {
       fixedAssetsSchedule,
       effectiveNotes,
       undefined,
-      isScheduleImplemented ? debtServiceCoverage : undefined
+      isScheduleImplemented ? debtServiceCoverage : undefined,
+      exportSyncOptions
     );
   };
 
@@ -755,7 +910,8 @@ export default function App() {
       fixedAssetsSchedule,
       effectiveNotes,
       undefined,
-      isScheduleImplemented ? debtServiceCoverage : undefined
+      isScheduleImplemented ? debtServiceCoverage : undefined,
+      exportSyncOptions
     );
   };
 
@@ -769,30 +925,51 @@ export default function App() {
       fixedAssetsSchedule,
       effectiveNotes,
       undefined,
-      isScheduleImplemented ? debtServiceCoverage : undefined
+      isScheduleImplemented ? debtServiceCoverage : undefined,
+      exportSyncOptions
     );
   };
 
   // Handlers: Export Previous Comparative Pairs & Projected Exact Format Suites
   const handleExportPreviousExcel = () =>
-    exportAllPreviousComparativePairsExcel(companyProfile, previousComparativePairs, getPairScopedNotes);
+    exportAllPreviousComparativePairsExcel(
+      companyProfile,
+      previousComparativePairs,
+      getPairScopedNotes,
+      exportSyncOptions
+    );
   const handleExportPreviousWord = () =>
-    exportAllPreviousComparativePairsWord(companyProfile, previousComparativePairs, getPairScopedNotes);
+    exportAllPreviousComparativePairsWord(
+      companyProfile,
+      previousComparativePairs,
+      getPairScopedNotes,
+      exportSyncOptions
+    );
   const handleExportPreviousPdf = () =>
-    exportAllPreviousComparativePairsPdf(companyProfile, previousComparativePairs, getPairScopedNotes);
+    exportAllPreviousComparativePairsPdf(
+      companyProfile,
+      previousComparativePairs,
+      getPairScopedNotes,
+      exportSyncOptions
+    );
 
   const handleExportPreviousPair = (pairId: string, format: 'xlsx' | 'docx' | 'pdf') => {
     const pair = previousComparativePairs.find(p => p.id === pairId);
     if (!pair) return;
     const scopedNotes = getPairScopedNotes(pair.data);
-    if (format === 'xlsx') exportPreviousFinancialsExcel(companyProfile, pair.data, scopedNotes);
-    else if (format === 'docx') void exportPreviousFinancialsWord(companyProfile, pair.data, scopedNotes);
-    else exportPreviousFinancialsPdf(companyProfile, pair.data, scopedNotes);
+    if (format === 'xlsx')
+      exportPreviousFinancialsExcel(companyProfile, pair.data, scopedNotes, exportSyncOptions);
+    else if (format === 'docx')
+      void exportPreviousFinancialsWord(companyProfile, pair.data, scopedNotes, exportSyncOptions);
+    else exportPreviousFinancialsPdf(companyProfile, pair.data, scopedNotes, exportSyncOptions);
   };
 
-  const handleExportProjectedExcel = () => exportProjectedFinancialsExcel(companyProfile, projectedFormatData);
-  const handleExportProjectedWord = () => exportProjectedFinancialsWord(companyProfile, projectedFormatData);
-  const handleExportProjectedPdf = () => exportProjectedFinancialsPdf(companyProfile, projectedFormatData);
+  const handleExportProjectedExcel = () =>
+    exportProjectedFinancialsExcel(companyProfile, projectedFormatData, exportSyncOptions);
+  const handleExportProjectedWord = () =>
+    exportProjectedFinancialsWord(companyProfile, projectedFormatData, exportSyncOptions);
+  const handleExportProjectedPdf = () =>
+    exportProjectedFinancialsPdf(companyProfile, projectedFormatData, exportSyncOptions);
 
   const selectedHistYears = activeHistoricalInputs.map(y => y.year);
   const selectedProjYears = generatedProjected.map(y => y.year);
@@ -866,12 +1043,15 @@ export default function App() {
               fixedAssetsData={fixedAssetsSchedule}
               notes={effectiveNotes}
               statementConfig={statementConfig}
+              onUpdateStatementConfig={handleUpdateStatementConfig}
+              onResetStatementConfig={handleResetStatementConfig}
               assumptions={assumptions}
               onUpdateAssumptions={handleUpdateAssumptions}
               cellOverrides={cellOverrides}
               labelOverrides={labelOverrides}
               onUpdateStatementValue={handleUpdateStatementValue}
               onUpdateStatementLabel={handleUpdateStatementLabel}
+              onUpdateFixedAssetsCategory={handleUpdateFixedAssetsCategory}
               onResetOverrides={handleResetOverrides}
               onUpdateNotes={setCustomNotes}
               previousFormatData={previousFormatData}
@@ -935,8 +1115,9 @@ export default function App() {
           {activeTab === 'configuration' && (
             <StatementConfigView
               configItems={statementConfig}
-              onUpdateConfig={setStatementConfig}
-              onResetDefaults={() => setStatementConfig(DEFAULT_STATEMENT_CONFIG_ITEMS)}
+              onUpdateConfig={handleUpdateStatementConfig}
+              onResetDefaults={handleResetStatementConfig}
+              years={allYearsInputs.map(y => y.year)}
             />
           )}
 

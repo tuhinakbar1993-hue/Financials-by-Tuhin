@@ -132,6 +132,7 @@ export interface ScheduleOfFixedAssetsYear {
   year: number;
   isProjected: boolean;
   categories: FixedAssetCategory[];
+  allCategories?: FixedAssetCategory[];
   totalCostOpening: number;
   totalAdditions: number;
   totalDisposals: number;
@@ -215,6 +216,7 @@ export interface CashFlowStatementYear {
   changeInInventory: number;
   changeInReceivables: number;
   changeInOtherReceivables: number;
+  changeInOtherCA?: number;
   changeInPayables: number;
   changeInOtherPayables: number;
   cashGeneratedFromOperations: number;
@@ -292,6 +294,8 @@ export interface StatementConfigItem {
   isVisible: boolean;
   order: number;
   isCustom?: boolean;
+  customValues?: Record<number, number>;
+  sign?: 'positive' | 'negative';
 }
 
 export interface ProjectionAssumptions {

@@ -10,6 +10,8 @@ import {
   Layers,
   Building2,
   BookOpen,
+  CheckSquare,
+  RotateCcw,
 } from 'lucide-react';
 import {
   CompanyProfile,
@@ -17,8 +19,11 @@ import {
   PreviousFormatYearData,
   PreviousComparativePair,
   ProjectedFormatYearData,
+  StatementConfigItem,
+  StatementLabelOverrides,
   YearDataInput,
 } from '../types/financial';
+import { resolveEffectiveLabel } from '../services/financialEngine';
 import {
   exportPreviousFinancialsExcel,
   exportPreviousFinancialsWord,
@@ -100,6 +105,10 @@ interface PreviousFormatSuiteViewProps {
   notes: FinancialNoteItem[];
   isEditMode: boolean;
   onUpdatePrimaryDriver?: (year: number, driver: keyof YearDataInput, val: number) => void;
+  statementConfig?: StatementConfigItem[];
+  onUpdateStatementConfig?: (items: StatementConfigItem[]) => void;
+  onResetStatementConfig?: () => void;
+  labelOverrides?: StatementLabelOverrides;
 }
 
 export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = ({
@@ -110,9 +119,42 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
   notes,
   isEditMode,
   onUpdatePrimaryDriver,
+  statementConfig = [],
+  onUpdateStatementConfig,
+  onResetStatementConfig,
+  labelOverrides = {},
 }) => {
   const [subTab, setSubTab] = useState<'all' | 'bs' | 'is' | 'cf' | 'eq' | 'fa'>('all');
   const [selectedPairId, setSelectedPairId] = useState<string>(() => comparativePairs[0]?.id || 'all');
+  const [isCustomizeMode, setIsCustomizeMode] = useState<boolean>(false);
+
+  const isElemVisible = (id: string): boolean => {
+    const found = statementConfig.find(c => c.id === id);
+    return found ? found.isVisible : true;
+  };
+
+  const toggleElem = (id: string) => {
+    if (!onUpdateStatementConfig || statementConfig.length === 0) return;
+    onUpdateStatementConfig(
+      statementConfig.map(c => (c.id === id ? { ...c, isVisible: !c.isVisible } : c))
+    );
+  };
+
+  const renderCheck = (id: string) =>
+    isCustomizeMode && onUpdateStatementConfig ? (
+      <input
+        type="checkbox"
+        checked={isElemVisible(id)}
+        onChange={() => toggleElem(id)}
+        title="Include or exclude this element from calculation and downloads"
+        className="w-3.5 h-3.5 accent-emerald-600 rounded cursor-pointer shrink-0"
+      />
+    ) : null;
+
+  const lbl = (stmt: string, field: string, def: string) =>
+    resolveEffectiveLabel(stmt, field, def, labelOverrides, statementConfig);
+
+  const exportSyncOptions = { statementConfig, labelOverrides };
 
   useEffect(() => {
     if (selectedPairId !== 'all' && !comparativePairs.some(p => p.id === selectedPairId)) {
@@ -188,35 +230,61 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
             </p>
           </div>
 
-          {/* All Comparative Pairs Batch Download Buttons */}
-          {comparativePairs.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {/* All Comparative Pairs Batch Download Buttons + Element Selection Toggle */}
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {onUpdateStatementConfig && statementConfig.length > 0 && (
               <button
                 type="button"
-                onClick={() => exportAllPreviousComparativePairsExcel(companyProfile, comparativePairs, resolveNotes)}
-                className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors"
+                onClick={() => setIsCustomizeMode(!isCustomizeMode)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border transition-colors ${
+                  isCustomizeMode
+                    ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                }`}
               >
-                <FileSpreadsheet className="w-3.5 h-3.5" />
-                {comparativePairs.length > 1 ? `Download All ${comparativePairs.length} Excel (.xlsx)` : 'Previous Excel (.xlsx)'}
+                <CheckSquare className="w-3.5 h-3.5" />
+                <span>{isCustomizeMode ? 'Done Selecting' : 'Customize Elements'}</span>
               </button>
+            )}
+            {isCustomizeMode && onResetStatementConfig && (
               <button
                 type="button"
-                onClick={() => exportAllPreviousComparativePairsWord(companyProfile, comparativePairs, resolveNotes)}
-                className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors"
+                onClick={onResetStatementConfig}
+                className="px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 text-xs font-medium flex items-center gap-1"
               >
-                <FileText className="w-3.5 h-3.5" />
-                {comparativePairs.length > 1 ? `Download All ${comparativePairs.length} Word (.docx)` : 'Previous Word (.docx)'}
+                <RotateCcw className="w-3.5 h-3.5" />
+                Select All
               </button>
-              <button
-                type="button"
-                onClick={() => exportAllPreviousComparativePairsPdf(companyProfile, comparativePairs, resolveNotes)}
-                className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors"
-              >
-                <Download className="w-3.5 h-3.5" />
-                {comparativePairs.length > 1 ? `Download All ${comparativePairs.length} PDF (.pdf)` : 'Previous PDF (.pdf)'}
-              </button>
-            </div>
-          )}
+            )}
+            {comparativePairs.length > 0 && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => exportAllPreviousComparativePairsExcel(companyProfile, comparativePairs, resolveNotes, exportSyncOptions)}
+                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                  {comparativePairs.length > 1 ? `Download All ${comparativePairs.length} Excel (.xlsx)` : 'Previous Excel (.xlsx)'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => exportAllPreviousComparativePairsWord(companyProfile, comparativePairs, resolveNotes, exportSyncOptions)}
+                  className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors"
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  {comparativePairs.length > 1 ? `Download All ${comparativePairs.length} Word (.docx)` : 'Previous Word (.docx)'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => exportAllPreviousComparativePairsPdf(companyProfile, comparativePairs, resolveNotes, exportSyncOptions)}
+                  className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  {comparativePairs.length > 1 ? `Download All ${comparativePairs.length} PDF (.pdf)` : 'Previous PDF (.pdf)'}
+                </button>
+              </>
+            )}
+          </div>
         </div>
 
         {/* Comparative Set Selector + Individual Pair Download Cards */}
@@ -278,21 +346,21 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                     <div className="flex items-center gap-1.5 shrink-0">
                       <button
                         type="button"
-                        onClick={() => exportPreviousFinancialsExcel(companyProfile, pair.data, pairNotes)}
+                        onClick={() => exportPreviousFinancialsExcel(companyProfile, pair.data, pairNotes, exportSyncOptions)}
                         className="px-2.5 py-1 rounded-md bg-white hover:bg-emerald-600 text-emerald-700 hover:text-white border border-emerald-300 font-mono text-[11px] font-bold transition-colors"
                       >
                         .XLSX
                       </button>
                       <button
                         type="button"
-                        onClick={() => void exportPreviousFinancialsWord(companyProfile, pair.data, pairNotes)}
+                        onClick={() => void exportPreviousFinancialsWord(companyProfile, pair.data, pairNotes, exportSyncOptions)}
                         className="px-2.5 py-1 rounded-md bg-white hover:bg-blue-600 text-blue-700 hover:text-white border border-blue-300 font-mono text-[11px] font-bold transition-colors"
                       >
                         .DOCX
                       </button>
                       <button
                         type="button"
-                        onClick={() => exportPreviousFinancialsPdf(companyProfile, pair.data, pairNotes)}
+                        onClick={() => exportPreviousFinancialsPdf(companyProfile, pair.data, pairNotes, exportSyncOptions)}
                         className="px-2.5 py-1 rounded-md bg-white hover:bg-rose-600 text-rose-700 hover:text-white border border-rose-300 font-mono text-[11px] font-bold transition-colors"
                       >
                         .PDF
@@ -364,14 +432,21 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                 <tr className="bg-slate-50 font-bold text-slate-900">
                   <td colSpan={displayedData.length + 1} className="py-2 px-4">PROPERTIES &amp; ASSETS</td>
                 </tr>
-                <tr className="hover:bg-slate-50/70">
-                  <td className="py-2 px-4 text-slate-800 border-r border-slate-200">Fixed Assets (at cost less depreciation)</td>
-                  {displayedData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-800 border-r border-slate-200 last:border-r-0">
-                      {fmtCell(d.fixedAssetsWDV)}
+                {(isElemVisible('bs_propertyPlantEquipment') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('bs_propertyPlantEquipment') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/70'}>
+                    <td className="py-2 px-4 text-slate-800 border-r border-slate-200">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('bs_propertyPlantEquipment')}
+                        <span>Fixed Assets (at cost less depreciation)</span>
+                      </div>
                     </td>
-                  ))}
-                </tr>
+                    {displayedData.map(d => (
+                      <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-800 border-r border-slate-200 last:border-r-0">
+                        {fmtCell(d.fixedAssetsWDV)}
+                      </td>
+                    ))}
+                  </tr>
+                )}
                 <tr className="bg-slate-50 font-semibold text-slate-900">
                   <td className="py-2 px-4 border-r border-slate-200">Current Assets</td>
                   {displayedData.map(d => (
@@ -380,48 +455,74 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                     </td>
                   ))}
                 </tr>
-                <tr className="hover:bg-slate-50/70">
-                  <td className="py-2 px-4 pl-7 text-slate-700 border-r border-slate-200">Advances, Deposits &amp; Pre-payments</td>
-                  {displayedData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
-                      {fmtCell(d.advancesDepositsPrepayments)}
+                {(isElemVisible('bs_otherReceivables') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('bs_otherReceivables') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/70'}>
+                    <td className="py-2 px-4 pl-7 text-slate-700 border-r border-slate-200">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('bs_otherReceivables')}
+                        <span>Advances, Deposits &amp; Pre-payments</span>
+                      </div>
                     </td>
-                  ))}
-                </tr>
-                <tr className="bg-emerald-50/55 hover:bg-emerald-50">
-                  <td className="py-2 px-4 pl-7 text-emerald-900 font-medium border-r border-slate-200 flex items-center gap-1.5">
-                    <span>Stock &amp; Stores</span>
-                    <Lock className="w-3 h-3 text-emerald-700" />
-                  </td>
-                  {displayedData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-emerald-800 font-semibold border-r border-slate-200 last:border-r-0">
-                      {onUpdatePrimaryDriver ? (
-                        <InlineDriverCell
-                          value={d.stockAndStores}
-                          isEditMode={isEditMode}
-                          onSave={val => onUpdatePrimaryDriver(d.year, 'closingInventory', val)}
-                          title="Fixed User Input: Closing Inventory"
-                        />
-                      ) : fmtCell(d.stockAndStores)}
+                    {displayedData.map(d => (
+                      <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
+                        {fmtCell(d.advancesDepositsPrepayments)}
+                      </td>
+                    ))}
+                  </tr>
+                )}
+                {(isElemVisible('bs_closingInventory') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('bs_closingInventory') ? 'opacity-45 bg-slate-50' : 'bg-emerald-50/55 hover:bg-emerald-50'}>
+                    <td className="py-2 px-4 pl-7 text-emerald-900 font-medium border-r border-slate-200">
+                      <div className="flex items-center gap-1.5">
+                        {renderCheck('bs_closingInventory')}
+                        <span>Stock &amp; Stores</span>
+                        <Lock className="w-3 h-3 text-emerald-700" />
+                      </div>
                     </td>
-                  ))}
-                </tr>
-                <tr className="hover:bg-slate-50/70">
-                  <td className="py-2 px-4 pl-7 text-slate-700 border-r border-slate-200">Bills Receivable</td>
-                  {displayedData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
-                      {fmtCell(d.billsReceivable)}
+                    {displayedData.map(d => (
+                      <td key={d.year} className="py-2 px-4 text-right font-mono text-emerald-800 font-semibold border-r border-slate-200 last:border-r-0">
+                        {onUpdatePrimaryDriver ? (
+                          <InlineDriverCell
+                            value={d.stockAndStores}
+                            isEditMode={isEditMode}
+                            onSave={val => onUpdatePrimaryDriver(d.year, 'closingInventory', val)}
+                            title="Fixed User Input: Closing Inventory"
+                          />
+                        ) : fmtCell(d.stockAndStores)}
+                      </td>
+                    ))}
+                  </tr>
+                )}
+                {(isElemVisible('bs_tradeReceivables') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('bs_tradeReceivables') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/70'}>
+                    <td className="py-2 px-4 pl-7 text-slate-700 border-r border-slate-200">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('bs_tradeReceivables')}
+                        <span>Bills Receivable</span>
+                      </div>
                     </td>
-                  ))}
-                </tr>
-                <tr className="hover:bg-slate-50/70">
-                  <td className="py-2 px-4 pl-7 text-slate-700 border-r border-slate-200">Cash &amp; Cash Equivalents</td>
-                  {displayedData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
-                      {fmtCell(d.cashAndCashEquivalents)}
+                    {displayedData.map(d => (
+                      <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
+                        {fmtCell(d.billsReceivable)}
+                      </td>
+                    ))}
+                  </tr>
+                )}
+                {(isElemVisible('bs_cashAndEquivalents') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('bs_cashAndEquivalents') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/70'}>
+                    <td className="py-2 px-4 pl-7 text-slate-700 border-r border-slate-200">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('bs_cashAndEquivalents')}
+                        <span>{lbl('bs', 'cashAndEquivalents', 'Cash & Cash Equivalents')}</span>
+                      </div>
                     </td>
-                  ))}
-                </tr>
+                    {displayedData.map(d => (
+                      <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
+                        {fmtCell(d.cashAndCashEquivalents)}
+                      </td>
+                    ))}
+                  </tr>
+                )}
                 <tr className="bg-emerald-50 font-bold text-emerald-950 border-t border-b-2 border-emerald-700">
                   <td className="py-2.5 px-4 text-right border-r border-slate-200">Taka</td>
                   {displayedData.map(d => (
@@ -458,14 +559,21 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                     </td>
                   ))}
                 </tr>
-                <tr className="hover:bg-slate-50/70">
-                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Less: Drawings</td>
-                  {displayedData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-rose-700 border-r border-slate-200 last:border-r-0">
-                      {fmtCell(d.drawings)}
+                {(isElemVisible('eq_dividendsPaid') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('eq_dividendsPaid') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/70'}>
+                    <td className="py-2 px-4 text-slate-700 border-r border-slate-200">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('eq_dividendsPaid')}
+                        <span>Less: Drawings</span>
+                      </div>
                     </td>
-                  ))}
-                </tr>
+                    {displayedData.map(d => (
+                      <td key={d.year} className="py-2 px-4 text-right font-mono text-rose-700 border-r border-slate-200 last:border-r-0">
+                        {fmtCell(d.drawings)}
+                      </td>
+                    ))}
+                  </tr>
+                )}
                 <tr className="bg-slate-100/80 font-bold text-slate-900">
                   <td className="py-2 px-4 border-r border-slate-200">Capital after drawings</td>
                   {displayedData.map(d => (
@@ -482,38 +590,66 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                     </td>
                   ))}
                 </tr>
-                <tr className="hover:bg-slate-50/70">
-                  <td className="py-2 px-4 pl-7 text-slate-700 border-r border-slate-200">For Expenses</td>
-                  {displayedData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
-                      {fmtCell(d.forExpenses)}
+                {(isElemVisible('bs_otherPayables') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('bs_otherPayables') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/70'}>
+                    <td className="py-2 px-4 pl-7 text-slate-700 border-r border-slate-200">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('bs_otherPayables')}
+                        <span>For Expenses</span>
+                      </div>
                     </td>
-                  ))}
-                </tr>
-                <tr className="hover:bg-slate-50/70">
-                  <td className="py-2 px-4 pl-7 text-slate-700 border-r border-slate-200">Accounts Payable</td>
-                  {displayedData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
-                      {fmtCell(d.accountsPayable)}
+                    {displayedData.map(d => (
+                      <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
+                        {fmtCell(d.forExpenses)}
+                      </td>
+                    ))}
+                  </tr>
+                )}
+                {(isElemVisible('bs_tradePayables') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('bs_tradePayables') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/70'}>
+                    <td className="py-2 px-4 pl-7 text-slate-700 border-r border-slate-200">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('bs_tradePayables')}
+                        <span>Accounts Payable</span>
+                      </div>
                     </td>
-                  ))}
-                </tr>
-                <tr className="hover:bg-slate-50/70">
-                  <td className="py-2 px-4 pl-7 text-slate-700 border-r border-slate-200">Short Term Loan</td>
-                  {displayedData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
-                      {fmtCell(d.shortTermLoan)}
+                    {displayedData.map(d => (
+                      <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
+                        {fmtCell(d.accountsPayable)}
+                      </td>
+                    ))}
+                  </tr>
+                )}
+                {(isElemVisible('bs_shortTermBorrowings') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('bs_shortTermBorrowings') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/70'}>
+                    <td className="py-2 px-4 pl-7 text-slate-700 border-r border-slate-200">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('bs_shortTermBorrowings')}
+                        <span>Short Term Loan</span>
+                      </div>
                     </td>
-                  ))}
-                </tr>
-                <tr className="hover:bg-slate-50/70">
-                  <td className="py-2 px-4 pl-7 text-slate-700 border-r border-slate-200">Provision for Taxation</td>
-                  {displayedData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
-                      {fmtCell(d.provisionForTaxation)}
+                    {displayedData.map(d => (
+                      <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
+                        {fmtCell(d.shortTermLoan)}
+                      </td>
+                    ))}
+                  </tr>
+                )}
+                {(isElemVisible('bs_currentTaxPayable') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('bs_currentTaxPayable') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/70'}>
+                    <td className="py-2 px-4 pl-7 text-slate-700 border-r border-slate-200">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('bs_currentTaxPayable')}
+                        <span>Provision for Taxation</span>
+                      </div>
                     </td>
-                  ))}
-                </tr>
+                    {displayedData.map(d => (
+                      <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
+                        {fmtCell(d.provisionForTaxation)}
+                      </td>
+                    ))}
+                  </tr>
+                )}
                 <tr className="bg-emerald-50 font-bold text-emerald-950 border-t border-b-4 border-double border-emerald-700">
                   <td className="py-2.5 px-4 text-right border-r border-slate-200">Total</td>
                   {displayedData.map(d => (
@@ -559,32 +695,44 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 tabular-nums">
-                <tr className="bg-emerald-50/55 font-semibold text-emerald-900">
-                  <td className="py-2 px-4 border-r border-slate-200 flex items-center gap-1.5">
-                    <span>Sales</span>
-                    <Lock className="w-3 h-3 text-emerald-700" />
-                  </td>
-                  {displayedData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-200 last:border-r-0">
-                      {onUpdatePrimaryDriver ? (
-                        <InlineDriverCell
-                          value={d.sales}
-                          isEditMode={isEditMode}
-                          onSave={val => onUpdatePrimaryDriver(d.year, 'salesRevenue', val)}
-                          title="Fixed User Input: Sales Revenue"
-                        />
-                      ) : fmtCell(d.sales)}
+                {(isElemVisible('inc_revenue') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('inc_revenue') ? 'opacity-45 bg-slate-50' : 'bg-emerald-50/55 font-semibold text-emerald-900'}>
+                    <td className="py-2 px-4 border-r border-slate-200">
+                      <div className="flex items-center gap-1.5">
+                        {renderCheck('inc_revenue')}
+                        <span>{lbl('income', 'revenue', 'Sales')}</span>
+                        <Lock className="w-3 h-3 text-emerald-700" />
+                      </div>
                     </td>
-                  ))}
-                </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Less- Cost of Goods Sold</td>
-                  {displayedData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
-                      {fmtCell(d.costOfGoodsSold)}
+                    {displayedData.map(d => (
+                      <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-200 last:border-r-0">
+                        {onUpdatePrimaryDriver ? (
+                          <InlineDriverCell
+                            value={d.sales}
+                            isEditMode={isEditMode}
+                            onSave={val => onUpdatePrimaryDriver(d.year, 'salesRevenue', val)}
+                            title="Fixed User Input: Sales Revenue"
+                          />
+                        ) : fmtCell(d.sales)}
+                      </td>
+                    ))}
+                  </tr>
+                )}
+                {(isElemVisible('inc_costOfSales') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('inc_costOfSales') ? 'opacity-45 bg-slate-50' : ''}>
+                    <td className="py-2 px-4 text-slate-700 border-r border-slate-200">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('inc_costOfSales')}
+                        <span>Less- {lbl('income', 'costOfSales', 'Cost of Goods Sold')}</span>
+                      </div>
                     </td>
-                  ))}
-                </tr>
+                    {displayedData.map(d => (
+                      <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
+                        {fmtCell(d.costOfGoodsSold)}
+                      </td>
+                    ))}
+                  </tr>
+                )}
                 <tr className="bg-slate-100/80 font-bold text-slate-900">
                   <td className="py-2 px-4 border-r border-slate-200">Gross Profit</td>
                   {displayedData.map(d => (
@@ -594,7 +742,12 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                   ))}
                 </tr>
                 <tr className="bg-slate-50 font-semibold text-slate-900">
-                  <td className="py-2 px-4 border-r border-slate-200">Less- Administrative &amp; Selling Expenses</td>
+                  <td className="py-2 px-4 border-r border-slate-200">
+                    <div className="flex items-center gap-2">
+                      {renderCheck('inc_operatingExpenses')}
+                      <span>Less- Administrative &amp; Selling Expenses</span>
+                    </div>
+                  </td>
                   {displayedData.map(d => (
                     <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.adminAndSellingTotal)}
@@ -602,29 +755,38 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                   ))}
                 </tr>
                 {([
-                  ['Salary & Allowances', 'salaryAndAllowances'],
-                  ['Telephone & Mobile Bill', 'telephoneAndMobileBill'],
-                  ['Postage & Courier', 'postageAndCourier'],
-                  ['Electric Charges', 'electricCharges'],
-                  ['Entertainment', 'entertainment'],
-                  ['Printing & Stationery', 'printingAndStationery'],
-                  ['General Expenses', 'generalExpenses'],
-                  ['Licence & Renewals', 'licenceAndRenewals'],
-                  ['Audit & Professional Fee', 'auditAndProfessionalFee'],
-                  ['Travelling & Conveyance', 'travellingAndConveyance'],
-                  ['News Paper & Periodicals', 'newspaperAndPeriodicals'],
-                  ['Selling Exp.', 'sellingExp'],
-                  ['Depreciation', 'depreciation'],
-                ] as const).map(([label, key]) => (
-                  <tr key={key} className="hover:bg-slate-50/70">
-                    <td className="py-1.5 px-4 pl-7 text-slate-600 border-r border-slate-200">{label}</td>
-                    {displayedData.map(d => (
-                      <td key={d.year} className="py-1.5 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
-                        {fmtCell(d[key])}
+                  ['Salary & Allowances', 'salaryAndAllowances', 'inc_operatingExpenses'],
+                  ['Telephone & Mobile Bill', 'telephoneAndMobileBill', 'inc_operatingExpenses'],
+                  ['Postage & Courier', 'postageAndCourier', 'inc_operatingExpenses'],
+                  ['Electric Charges', 'electricCharges', 'inc_operatingExpenses'],
+                  ['Entertainment', 'entertainment', 'inc_operatingExpenses'],
+                  ['Printing & Stationery', 'printingAndStationery', 'inc_operatingExpenses'],
+                  ['General Expenses', 'generalExpenses', 'inc_operatingExpenses'],
+                  ['Licence & Renewals', 'licenceAndRenewals', 'inc_operatingExpenses'],
+                  ['Audit & Professional Fee', 'auditAndProfessionalFee', 'inc_operatingExpenses'],
+                  ['Travelling & Conveyance', 'travellingAndConveyance', 'inc_operatingExpenses'],
+                  ['News Paper & Periodicals', 'newspaperAndPeriodicals', 'inc_operatingExpenses'],
+                  ['Selling Exp.', 'sellingExp', 'inc_operatingExpenses'],
+                  ['Depreciation', 'depreciation', 'inc_depreciationExpense'],
+                ] as const).map(([label, key, cfgId]) => {
+                  const vis = isElemVisible(cfgId);
+                  if (!vis && !isCustomizeMode) return null;
+                  return (
+                    <tr key={key} className={!vis ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/70'}>
+                      <td className="py-1.5 px-4 pl-7 text-slate-600 border-r border-slate-200">
+                        <div className="flex items-center gap-2">
+                          {cfgId === 'inc_depreciationExpense' && renderCheck(cfgId)}
+                          <span>{label}</span>
+                        </div>
                       </td>
-                    ))}
-                  </tr>
-                ))}
+                      {displayedData.map(d => (
+                        <td key={d.year} className="py-1.5 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
+                          {fmtCell(d[key])}
+                        </td>
+                      ))}
+                    </tr>
+                  );
+                })}
                 <tr className="bg-slate-100/80 font-bold text-slate-900">
                   <td className="py-2 px-4 border-r border-slate-200">Net Operating Profit</td>
                   {displayedData.map(d => (
@@ -633,14 +795,21 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                     </td>
                   ))}
                 </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Add: Other Income</td>
-                  {displayedData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
-                      {fmtCell(d.otherIncome)}
+                {(isElemVisible('inc_interestIncome') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('inc_interestIncome') ? 'opacity-45 bg-slate-50' : ''}>
+                    <td className="py-2 px-4 text-slate-700 border-r border-slate-200">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('inc_interestIncome')}
+                        <span>Add: Other Income</span>
+                      </div>
                     </td>
-                  ))}
-                </tr>
+                    {displayedData.map(d => (
+                      <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
+                        {fmtCell(d.otherIncome)}
+                      </td>
+                    ))}
+                  </tr>
+                )}
                 <tr className="bg-slate-50 font-semibold text-slate-900">
                   <td className="py-2 px-4 border-r border-slate-200">Subtotal</td>
                   {displayedData.map(d => (
@@ -649,32 +818,44 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                     </td>
                   ))}
                 </tr>
-                <tr className="bg-amber-50/65">
-                  <td className="py-2 px-4 text-amber-900 font-medium border-r border-slate-200 flex items-center gap-1.5">
-                    <span>Less: Financial Exp.</span>
-                    <Lock className="w-3 h-3 text-amber-700" />
-                  </td>
-                  {displayedData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-amber-800 font-semibold border-r border-slate-200 last:border-r-0">
-                      {onUpdatePrimaryDriver ? (
-                        <InlineDriverCell
-                          value={d.financialExp}
-                          isEditMode={isEditMode}
-                          onSave={val => onUpdatePrimaryDriver(d.year, 'financeCost', val)}
-                          title="Fixed User Input: Finance Cost"
-                        />
-                      ) : fmtCell(d.financialExp)}
+                {(isElemVisible('inc_financeCost') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('inc_financeCost') ? 'opacity-45 bg-slate-50' : 'bg-amber-50/65'}>
+                    <td className="py-2 px-4 text-amber-900 font-medium border-r border-slate-200">
+                      <div className="flex items-center gap-1.5">
+                        {renderCheck('inc_financeCost')}
+                        <span>Less: Financial Exp.</span>
+                        <Lock className="w-3 h-3 text-amber-700" />
+                      </div>
                     </td>
-                  ))}
-                </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Less- Income Tax Provision</td>
-                  {displayedData.map(d => (
-                    <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
-                      {fmtCell(d.incomeTaxProvision)}
+                    {displayedData.map(d => (
+                      <td key={d.year} className="py-2 px-4 text-right font-mono text-amber-800 font-semibold border-r border-slate-200 last:border-r-0">
+                        {onUpdatePrimaryDriver ? (
+                          <InlineDriverCell
+                            value={d.financialExp}
+                            isEditMode={isEditMode}
+                            onSave={val => onUpdatePrimaryDriver(d.year, 'financeCost', val)}
+                            title="Fixed User Input: Finance Cost"
+                          />
+                        ) : fmtCell(d.financialExp)}
+                      </td>
+                    ))}
+                  </tr>
+                )}
+                {(isElemVisible('inc_taxExpense') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('inc_taxExpense') ? 'opacity-45 bg-slate-50' : ''}>
+                    <td className="py-2 px-4 text-slate-700 border-r border-slate-200">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('inc_taxExpense')}
+                        <span>Less- Income Tax Provision</span>
+                      </div>
                     </td>
-                  ))}
-                </tr>
+                    {displayedData.map(d => (
+                      <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">
+                        {fmtCell(d.incomeTaxProvision)}
+                      </td>
+                    ))}
+                  </tr>
+                )}
                 <tr className="bg-emerald-50 font-bold text-emerald-950 border-t border-b-4 border-double border-emerald-700">
                   <td className="py-2.5 px-4 border-r border-slate-200 flex items-center gap-1.5">
                     <span>Net Profit After Income Tax</span>
@@ -733,26 +914,54 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                 <tr className="bg-emerald-50/70 font-bold text-emerald-900">
                   <td colSpan={displayedData.length + 1} className="py-2 px-4">a) CASH FLOWS FROM OPERATING ACTIVITIES:</td>
                 </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-800 border-r border-slate-200">Net Income</td>
-                  {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-800 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfNetIncome)}</td>)}
-                </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Add: Depreciation of Tangible Fixed Assets</td>
-                  {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfDepreciation)}</td>)}
-                </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Add: (Increase) or decrease in Current Assets</td>
-                  {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfChangeInCurrentAssets)}</td>)}
-                </tr>
+                {(isElemVisible('cf_pbt') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('cf_pbt') ? 'opacity-45 bg-slate-50' : ''}>
+                    <td className="py-2 px-4 text-slate-800 border-r border-slate-200">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('cf_pbt')}
+                        <span>Net Income</span>
+                      </div>
+                    </td>
+                    {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-800 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfNetIncome)}</td>)}
+                  </tr>
+                )}
+                {(isElemVisible('cf_dep') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('cf_dep') ? 'opacity-45 bg-slate-50' : ''}>
+                    <td className="py-2 px-4 text-slate-700 border-r border-slate-200">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('cf_dep')}
+                        <span>Add: Depreciation of Tangible Fixed Assets</span>
+                      </div>
+                    </td>
+                    {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfDepreciation)}</td>)}
+                  </tr>
+                )}
+                {(isElemVisible('cf_wc_receivables') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('cf_wc_receivables') ? 'opacity-45 bg-slate-50' : ''}>
+                    <td className="py-2 px-4 text-slate-700 border-r border-slate-200">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('cf_wc_receivables')}
+                        <span>Add: (Increase) or decrease in Current Assets</span>
+                      </div>
+                    </td>
+                    {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfChangeInCurrentAssets)}</td>)}
+                  </tr>
+                )}
                 <tr>
                   <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Add: (Increase) or decrease in Construction Working Progress</td>
                   {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfChangeInCWIP)}</td>)}
                 </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Add: Increase or (decrease) in Current Liabilities</td>
-                  {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfChangeInCurrentLiabilities)}</td>)}
-                </tr>
+                {(isElemVisible('cf_wc_payables') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('cf_wc_payables') ? 'opacity-45 bg-slate-50' : ''}>
+                    <td className="py-2 px-4 text-slate-700 border-r border-slate-200">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('cf_wc_payables')}
+                        <span>Add: Increase or (decrease) in Current Liabilities</span>
+                      </div>
+                    </td>
+                    {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfChangeInCurrentLiabilities)}</td>)}
+                  </tr>
+                )}
                 <tr className="bg-emerald-50/75 font-bold text-emerald-900">
                   <td className="py-2 px-4 border-r border-slate-200">Net Cash from operating activities</td>
                   {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-200 last:border-r-0">{fmtCell(d.cfNetCashOperating)}</td>)}
@@ -761,14 +970,28 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                 <tr className="bg-sky-50/70 font-bold text-sky-900">
                   <td colSpan={displayedData.length + 1} className="py-2 px-4">b) CASH FLOWS FROM INVESTING ACTIVITIES:</td>
                 </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Acquisition of Tangible Fixed Assets</td>
-                  {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfAcquisitionPPE)}</td>)}
-                </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Disposal of Intangible Assets</td>
-                  {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfDisposalIntangible)}</td>)}
-                </tr>
+                {(isElemVisible('cf_pur_ppe') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('cf_pur_ppe') ? 'opacity-45 bg-slate-50' : ''}>
+                    <td className="py-2 px-4 text-slate-700 border-r border-slate-200">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('cf_pur_ppe')}
+                        <span>Acquisition of Tangible Fixed Assets</span>
+                      </div>
+                    </td>
+                    {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfAcquisitionPPE)}</td>)}
+                  </tr>
+                )}
+                {(isElemVisible('cf_pur_intangible') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('cf_pur_intangible') ? 'opacity-45 bg-slate-50' : ''}>
+                    <td className="py-2 px-4 text-slate-700 border-r border-slate-200">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('cf_pur_intangible')}
+                        <span>Disposal of Intangible Assets</span>
+                      </div>
+                    </td>
+                    {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfDisposalIntangible)}</td>)}
+                  </tr>
+                )}
                 <tr className="bg-sky-50/75 font-bold text-sky-900">
                   <td className="py-2 px-4 border-r border-slate-200">Net Cash used in investing Activities</td>
                   {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono border-r border-slate-200 last:border-r-0">{fmtCell(d.cfNetCashInvesting)}</td>)}
@@ -777,10 +1000,17 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                 <tr className="bg-amber-50/70 font-bold text-amber-900">
                   <td colSpan={displayedData.length + 1} className="py-2 px-4">c) CASH FLOWS FROM FINANCING ACTIVITIES:</td>
                 </tr>
-                <tr>
-                  <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Drawings</td>
-                  {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfDrawings)}</td>)}
-                </tr>
+                {(isElemVisible('cf_dividends_paid') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('cf_dividends_paid') ? 'opacity-45 bg-slate-50' : ''}>
+                    <td className="py-2 px-4 text-slate-700 border-r border-slate-200">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('cf_dividends_paid')}
+                        <span>Drawings</span>
+                      </div>
+                    </td>
+                    {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfDrawings)}</td>)}
+                  </tr>
+                )}
                 <tr>
                   <td className="py-2 px-4 text-slate-700 border-r border-slate-200">Opening Balance</td>
                   {displayedData.map(d => <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-700 border-r border-slate-200 last:border-r-0">{fmtCell(d.cfOpeningBalance)}</td>)}
@@ -840,24 +1070,33 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
               </thead>
               <tbody className="divide-y divide-slate-200 tabular-nums">
                 {([
-                  ['Opening Share Capital', 'eqOpeningShareCapital'],
-                  ['Share Capital Issued', 'eqShareCapitalIssued'],
-                  ['Closing Share Capital', 'eqClosingShareCapital'],
-                  ['Opening Retained Earnings', 'eqOpeningRetainedEarnings'],
-                  ['Net Profit for the Year', 'eqNetProfitForYear'],
-                  ['Dividends Paid', 'eqDividendsPaid'],
-                  ['Closing Retained Earnings', 'eqClosingRetainedEarnings'],
-                  ['Closing Reserves', 'eqClosingReserves'],
-                ] as const).map(([label, key]) => (
-                  <tr key={key} className="hover:bg-slate-50/70">
-                    <td className="py-2 px-4 text-slate-800 border-r border-slate-200">{label}</td>
-                    {displayedData.map(d => (
-                      <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-800 border-r border-slate-200 last:border-r-0">
-                        {key === 'eqDividendsPaid' ? fmtCell(-d[key]) : fmtCell(d[key])}
+                  ['Opening Share Capital', 'eqOpeningShareCapital', 'eq_openingShareCapital'],
+                  ['Share Capital Issued', 'eqShareCapitalIssued', 'eq_shareCapitalIssued'],
+                  ['Closing Share Capital', 'eqClosingShareCapital', null],
+                  ['Opening Retained Earnings', 'eqOpeningRetainedEarnings', 'eq_openingRetainedEarnings'],
+                  ['Net Profit for the Year', 'eqNetProfitForYear', 'eq_netProfitForYear'],
+                  ['Dividends Paid', 'eqDividendsPaid', 'eq_dividendsPaid'],
+                  ['Closing Retained Earnings', 'eqClosingRetainedEarnings', null],
+                  ['Closing Reserves', 'eqClosingReserves', 'eq_openingReserves'],
+                ] as const).map(([label, key, cfgId]) => {
+                  const vis = cfgId ? isElemVisible(cfgId) : true;
+                  if (!vis && !isCustomizeMode) return null;
+                  return (
+                    <tr key={key} className={!vis ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/70'}>
+                      <td className="py-2 px-4 text-slate-800 border-r border-slate-200">
+                        <div className="flex items-center gap-2">
+                          {cfgId && renderCheck(cfgId)}
+                          <span>{label}</span>
+                        </div>
                       </td>
-                    ))}
-                  </tr>
-                ))}
+                      {displayedData.map(d => (
+                        <td key={d.year} className="py-2 px-4 text-right font-mono text-slate-800 border-r border-slate-200 last:border-r-0">
+                          {key === 'eqDividendsPaid' ? fmtCell(-d[key]) : fmtCell(d[key])}
+                        </td>
+                      ))}
+                    </tr>
+                  );
+                })}
                 <tr className="bg-emerald-50 font-bold text-emerald-950 border-t border-b-4 border-double border-emerald-700">
                   <td className="py-2.5 px-4 border-r border-slate-200">TOTAL CLOSING EQUITY</td>
                   {displayedData.map(d => (
@@ -998,6 +1237,10 @@ interface ProjectedFormatSuiteViewProps {
   projData: ProjectedFormatYearData[];
   isEditMode: boolean;
   onUpdatePrimaryDriver?: (year: number, driver: keyof YearDataInput, val: number) => void;
+  statementConfig?: StatementConfigItem[];
+  onUpdateStatementConfig?: (items: StatementConfigItem[]) => void;
+  onResetStatementConfig?: () => void;
+  labelOverrides?: StatementLabelOverrides;
 }
 
 export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> = ({
@@ -1005,8 +1248,41 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
   projData,
   isEditMode,
   onUpdatePrimaryDriver,
+  statementConfig = [],
+  onUpdateStatementConfig,
+  onResetStatementConfig,
+  labelOverrides = {},
 }) => {
   const [subTab, setSubTab] = useState<'all' | 'bs' | 'pl' | 'cf' | 'notes' | 'sched'>('all');
+  const [isCustomizeMode, setIsCustomizeMode] = useState<boolean>(false);
+
+  const isElemVisible = (id: string): boolean => {
+    const found = statementConfig.find(c => c.id === id);
+    return found ? found.isVisible : true;
+  };
+
+  const toggleElem = (id: string) => {
+    if (!onUpdateStatementConfig || statementConfig.length === 0) return;
+    onUpdateStatementConfig(
+      statementConfig.map(c => (c.id === id ? { ...c, isVisible: !c.isVisible } : c))
+    );
+  };
+
+  const renderCheck = (id: string) =>
+    isCustomizeMode && onUpdateStatementConfig ? (
+      <input
+        type="checkbox"
+        checked={isElemVisible(id)}
+        onChange={() => toggleElem(id)}
+        title="Include or exclude this element from calculation and downloads"
+        className="w-3.5 h-3.5 accent-sky-600 rounded cursor-pointer shrink-0"
+      />
+    ) : null;
+
+  const lbl = (stmt: string, field: string, def: string) =>
+    resolveEffectiveLabel(stmt, field, def, labelOverrides, statementConfig);
+
+  const exportSyncOptions = { statementConfig, labelOverrides };
 
   if (projData.length === 0) {
     return (
@@ -1052,9 +1328,33 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {onUpdateStatementConfig && statementConfig.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setIsCustomizeMode(!isCustomizeMode)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border transition-colors whitespace-nowrap shrink-0 ${
+                isCustomizeMode
+                  ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                  : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+              }`}
+            >
+              <CheckSquare className="w-3.5 h-3.5" />
+              <span>{isCustomizeMode ? 'Done Selecting' : 'Customize Elements'}</span>
+            </button>
+          )}
+          {isCustomizeMode && onResetStatementConfig && (
+            <button
+              type="button"
+              onClick={onResetStatementConfig}
+              className="px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 text-xs font-medium flex items-center gap-1 whitespace-nowrap shrink-0"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              Select All
+            </button>
+          )}
           <button
             type="button"
-            onClick={() => exportProjectedFinancialsExcel(companyProfile, projData)}
+            onClick={() => exportProjectedFinancialsExcel(companyProfile, projData, exportSyncOptions)}
             className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors whitespace-nowrap shrink-0"
           >
             <FileSpreadsheet className="w-3.5 h-3.5" />
@@ -1062,7 +1362,7 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
           </button>
           <button
             type="button"
-            onClick={() => exportProjectedFinancialsWord(companyProfile, projData)}
+            onClick={() => exportProjectedFinancialsWord(companyProfile, projData, exportSyncOptions)}
             className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors whitespace-nowrap shrink-0"
           >
             <FileText className="w-3.5 h-3.5" />
@@ -1070,7 +1370,7 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
           </button>
           <button
             type="button"
-            onClick={() => exportProjectedFinancialsPdf(companyProfile, projData)}
+            onClick={() => exportProjectedFinancialsPdf(companyProfile, projData, exportSyncOptions)}
             className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors whitespace-nowrap shrink-0"
           >
             <Download className="w-3.5 h-3.5" />
@@ -1137,13 +1437,20 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                 <tr className="font-semibold text-slate-900">
                   <td colSpan={projData.length + 2} className="py-1.5 px-4">Non Current Assets</td>
                 </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td className="py-2 px-4 text-slate-700">Property Plant &amp; Equiptments</td>
-                  <td className="py-2 px-3 text-center font-mono text-sky-700 font-semibold">Schedule-A</td>
-                  {projData.map(d => (
-                    <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.propertyPlantEquipments)}</td>
-                  ))}
-                </tr>
+                {(isElemVisible('bs_propertyPlantEquipment') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('bs_propertyPlantEquipment') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/80'}>
+                    <td className="py-2 px-4 text-slate-700">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('bs_propertyPlantEquipment')}
+                        <span>Property Plant &amp; Equiptments</span>
+                      </div>
+                    </td>
+                    <td className="py-2 px-3 text-center font-mono text-sky-700 font-semibold">Schedule-A</td>
+                    {projData.map(d => (
+                      <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.propertyPlantEquipments)}</td>
+                    ))}
+                  </tr>
+                )}
                 <tr className="bg-slate-100/70 font-bold text-slate-900 border-t border-b-2 border-slate-300">
                   <td className="py-1.5 px-4">Total Non-Current Assets</td>
                   <td></td>
@@ -1155,40 +1462,66 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                 <tr className="font-semibold text-slate-900">
                   <td colSpan={projData.length + 2} className="py-2 px-4">Current Assets</td>
                 </tr>
-                <tr className="bg-emerald-50/60">
-                  <td className="py-2 px-4 text-emerald-900 font-medium flex items-center gap-1.5">
-                    <span>Inventories</span>
-                    <Lock className="w-3 h-3 text-emerald-600" />
-                  </td>
-                  <td className="py-2 px-3 text-center font-mono text-slate-600">3.00</td>
-                  {projData.map(d => (
-                    <td key={d.year} className="py-2 px-3 text-right font-mono text-emerald-800 font-semibold">
-                      {onUpdatePrimaryDriver ? (
-                        <InlineDriverCell
-                          value={d.inventories}
-                          isEditMode={isEditMode}
-                          onSave={val => onUpdatePrimaryDriver(d.year, 'closingInventory', val)}
-                          title="Fixed User Input: Closing Inventory"
-                        />
-                      ) : fmtCell(d.inventories)}
+                {(isElemVisible('bs_closingInventory') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('bs_closingInventory') ? 'opacity-45 bg-slate-50' : 'bg-emerald-50/60'}>
+                    <td className="py-2 px-4 text-emerald-900 font-medium">
+                      <div className="flex items-center gap-1.5">
+                        {renderCheck('bs_closingInventory')}
+                        <span>Inventories</span>
+                        <Lock className="w-3 h-3 text-emerald-600" />
+                      </div>
                     </td>
-                  ))}
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td className="py-2 px-4 text-slate-700">Trade &amp; Other Receivables</td>
-                  <td className="py-2 px-3 text-center font-mono text-slate-600">4.00</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.tradeAndOtherReceivables)}</td>)}
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td className="py-2 px-4 text-slate-700">Advance, Deposit &amp; Prepayments</td>
-                  <td className="py-2 px-3 text-center font-mono text-slate-600">5.00</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.advanceDepositPrepayments)}</td>)}
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td className="py-2 px-4 text-slate-700">Cash &amp; Cash Equivalents</td>
-                  <td className="py-2 px-3 text-center font-mono text-slate-600">6.00</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.cashAndCashEquivalents)}</td>)}
-                </tr>
+                    <td className="py-2 px-3 text-center font-mono text-slate-600">3.00</td>
+                    {projData.map(d => (
+                      <td key={d.year} className="py-2 px-3 text-right font-mono text-emerald-800 font-semibold">
+                        {onUpdatePrimaryDriver ? (
+                          <InlineDriverCell
+                            value={d.inventories}
+                            isEditMode={isEditMode}
+                            onSave={val => onUpdatePrimaryDriver(d.year, 'closingInventory', val)}
+                            title="Fixed User Input: Closing Inventory"
+                          />
+                        ) : fmtCell(d.inventories)}
+                      </td>
+                    ))}
+                  </tr>
+                )}
+                {(isElemVisible('bs_tradeReceivables') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('bs_tradeReceivables') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/80'}>
+                    <td className="py-2 px-4 text-slate-700">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('bs_tradeReceivables')}
+                        <span>{lbl('bs', 'tradeReceivables', 'Trade & Other Receivables')}</span>
+                      </div>
+                    </td>
+                    <td className="py-2 px-3 text-center font-mono text-slate-600">4.00</td>
+                    {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.tradeAndOtherReceivables)}</td>)}
+                  </tr>
+                )}
+                {(isElemVisible('bs_otherReceivables') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('bs_otherReceivables') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/80'}>
+                    <td className="py-2 px-4 text-slate-700">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('bs_otherReceivables')}
+                        <span>Advance, Deposit &amp; Prepayments</span>
+                      </div>
+                    </td>
+                    <td className="py-2 px-3 text-center font-mono text-slate-600">5.00</td>
+                    {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.advanceDepositPrepayments)}</td>)}
+                  </tr>
+                )}
+                {(isElemVisible('bs_cashAndEquivalents') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('bs_cashAndEquivalents') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/80'}>
+                    <td className="py-2 px-4 text-slate-700">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('bs_cashAndEquivalents')}
+                        <span>{lbl('bs', 'cashAndEquivalents', 'Cash & Cash Equivalents')}</span>
+                      </div>
+                    </td>
+                    <td className="py-2 px-3 text-center font-mono text-slate-600">6.00</td>
+                    {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.cashAndCashEquivalents)}</td>)}
+                  </tr>
+                )}
                 <tr className="bg-slate-100/70 font-bold text-slate-900 border-t border-slate-300">
                   <td className="py-1.5 px-4">Total Current Assets</td>
                   <td></td>
@@ -1223,11 +1556,18 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                   <td></td>
                   {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono">{fmtCell(d.equitySubtotal)}</td>)}
                 </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td className="py-2 px-4 text-slate-700">Drawings</td>
-                  <td></td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-rose-700">{fmtCell(d.drawings)}</td>)}
-                </tr>
+                {(isElemVisible('eq_dividendsPaid') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('eq_dividendsPaid') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/80'}>
+                    <td className="py-2 px-4 text-slate-700">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('eq_dividendsPaid')}
+                        <span>Drawings</span>
+                      </div>
+                    </td>
+                    <td></td>
+                    {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-rose-700">{fmtCell(d.drawings)}</td>)}
+                  </tr>
+                )}
                 <tr className="bg-slate-100/80 font-bold text-slate-900 border-t border-b-2 border-slate-300">
                   <td className="py-1.5 px-4">Closing Capital / Equity</td>
                   <td></td>
@@ -1237,35 +1577,70 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                 <tr className="font-semibold text-slate-900">
                   <td colSpan={projData.length + 2} className="py-2 px-4">Non-Current Liabilities</td>
                 </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td className="py-2 px-4 text-slate-700">Long Term Loan</td>
-                  <td className="py-2 px-3 text-center font-mono text-slate-600">7.00</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.longTermLoan)}</td>)}
-                </tr>
+                {(isElemVisible('bs_longTermBorrowings') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('bs_longTermBorrowings') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/80'}>
+                    <td className="py-2 px-4 text-slate-700">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('bs_longTermBorrowings')}
+                        <span>Long Term Loan</span>
+                      </div>
+                    </td>
+                    <td className="py-2 px-3 text-center font-mono text-slate-600">7.00</td>
+                    {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.longTermLoan)}</td>)}
+                  </tr>
+                )}
 
                 <tr className="font-semibold text-slate-900">
                   <td colSpan={projData.length + 2} className="py-2 px-4">Current Liabilities</td>
                 </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td className="py-2 px-4 text-slate-700">Trade &amp; Other Payables</td>
-                  <td className="py-2 px-3 text-center font-mono text-slate-600">8.00</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.tradeAndOtherPayables)}</td>)}
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td className="py-2 px-4 text-slate-700">Provisions For Tax</td>
-                  <td className="py-2 px-3 text-center font-mono text-slate-600">9.00</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.provisionsForTax)}</td>)}
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td className="py-2 px-4 text-slate-700">Short Term Loan</td>
-                  <td className="py-2 px-3 text-center font-mono text-slate-600">10.00</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.shortTermLoan)}</td>)}
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td className="py-2 px-4 text-slate-700">Liabilities for exp.</td>
-                  <td></td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.liabilitiesForExp)}</td>)}
-                </tr>
+                {(isElemVisible('bs_tradePayables') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('bs_tradePayables') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/80'}>
+                    <td className="py-2 px-4 text-slate-700">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('bs_tradePayables')}
+                        <span>Trade &amp; Other Payables</span>
+                      </div>
+                    </td>
+                    <td className="py-2 px-3 text-center font-mono text-slate-600">8.00</td>
+                    {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.tradeAndOtherPayables)}</td>)}
+                  </tr>
+                )}
+                {(isElemVisible('bs_currentTaxPayable') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('bs_currentTaxPayable') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/80'}>
+                    <td className="py-2 px-4 text-slate-700">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('bs_currentTaxPayable')}
+                        <span>Provisions For Tax</span>
+                      </div>
+                    </td>
+                    <td className="py-2 px-3 text-center font-mono text-slate-600">9.00</td>
+                    {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.provisionsForTax)}</td>)}
+                  </tr>
+                )}
+                {(isElemVisible('bs_shortTermBorrowings') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('bs_shortTermBorrowings') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/80'}>
+                    <td className="py-2 px-4 text-slate-700">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('bs_shortTermBorrowings')}
+                        <span>Short Term Loan</span>
+                      </div>
+                    </td>
+                    <td className="py-2 px-3 text-center font-mono text-slate-600">10.00</td>
+                    {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.shortTermLoan)}</td>)}
+                  </tr>
+                )}
+                {(isElemVisible('bs_otherPayables') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('bs_otherPayables') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/80'}>
+                    <td className="py-2 px-4 text-slate-700">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('bs_otherPayables')}
+                        <span>Liabilities for exp.</span>
+                      </div>
+                    </td>
+                    <td></td>
+                    {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.liabilitiesForExp)}</td>)}
+                  </tr>
+                )}
                 <tr className="bg-slate-100/70 font-bold text-slate-900 border-t border-slate-300">
                   <td className="py-1.5 px-4">Total Current Liabilities</td>
                   <td></td>
@@ -1322,40 +1697,59 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200/80 text-slate-800">
-                <tr className="bg-emerald-50/60 font-semibold text-emerald-900">
-                  <td className="py-2 px-4 flex items-center gap-1.5">
-                    <span>Sales</span>
-                    <Lock className="w-3 h-3 text-emerald-600" />
-                  </td>
-                  <td></td>
-                  {projData.map(d => (
-                    <td key={d.year} className="py-2 px-3 text-right font-mono text-emerald-800">
-                      {onUpdatePrimaryDriver ? (
-                        <InlineDriverCell
-                          value={d.sales}
-                          isEditMode={isEditMode}
-                          onSave={val => onUpdatePrimaryDriver(d.year, 'salesRevenue', val)}
-                          title="Fixed User Input: Sales Revenue"
-                        />
-                      ) : fmtCell(d.sales)}
+                {(isElemVisible('inc_revenue') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('inc_revenue') ? 'opacity-45 bg-slate-50' : 'bg-emerald-50/60 font-semibold text-emerald-900'}>
+                    <td className="py-2 px-4">
+                      <div className="flex items-center gap-1.5">
+                        {renderCheck('inc_revenue')}
+                        <span>{lbl('income', 'revenue', 'Sales')}</span>
+                        <Lock className="w-3 h-3 text-emerald-600" />
+                      </div>
                     </td>
-                  ))}
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td className="py-2 px-4 text-slate-700">Less: Cost of Goods Sold</td>
-                  <td className="py-2 px-3 text-center font-mono text-slate-600">11.00</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.costOfGoodsSold)}</td>)}
-                </tr>
+                    <td></td>
+                    {projData.map(d => (
+                      <td key={d.year} className="py-2 px-3 text-right font-mono text-emerald-800">
+                        {onUpdatePrimaryDriver ? (
+                          <InlineDriverCell
+                            value={d.sales}
+                            isEditMode={isEditMode}
+                            onSave={val => onUpdatePrimaryDriver(d.year, 'salesRevenue', val)}
+                            title="Fixed User Input: Sales Revenue"
+                          />
+                        ) : fmtCell(d.sales)}
+                      </td>
+                    ))}
+                  </tr>
+                )}
+                {(isElemVisible('inc_costOfSales') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('inc_costOfSales') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/80'}>
+                    <td className="py-2 px-4 text-slate-700">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('inc_costOfSales')}
+                        <span>Less: {lbl('income', 'costOfSales', 'Cost of Goods Sold')}</span>
+                      </div>
+                    </td>
+                    <td className="py-2 px-3 text-center font-mono text-slate-600">11.00</td>
+                    {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.costOfGoodsSold)}</td>)}
+                  </tr>
+                )}
                 <tr className="bg-slate-100/80 font-bold text-slate-900 border-t border-slate-300">
                   <td className="py-2 px-4">Gross Profit</td>
                   <td></td>
                   {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono">{fmtCell(d.grossProfit)}</td>)}
                 </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td className="py-2 px-4 text-slate-700">Add; Others Income</td>
-                  <td></td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.othersIncome)}</td>)}
-                </tr>
+                {(isElemVisible('inc_interestIncome') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('inc_interestIncome') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/80'}>
+                    <td className="py-2 px-4 text-slate-700">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('inc_interestIncome')}
+                        <span>Add; Others Income</span>
+                      </div>
+                    </td>
+                    <td></td>
+                    {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.othersIncome)}</td>)}
+                  </tr>
+                )}
                 <tr className="bg-slate-100/60 font-bold text-slate-900 border-t border-slate-300">
                   <td className="py-1.5 px-4">Total Gross Profit &amp; Other Income</td>
                   <td></td>
@@ -1364,45 +1758,64 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                 <tr className="font-semibold text-slate-900">
                   <td colSpan={projData.length + 2} className="py-2 px-4">Less: Operating Expenses:</td>
                 </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td className="py-2 px-4 text-slate-700">Administrative &amp; Selling Expenses</td>
-                  <td className="py-2 px-3 text-center font-mono text-slate-600">12.00</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.adminAndSellingExpenses)}</td>)}
-                </tr>
+                {(isElemVisible('inc_operatingExpenses') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('inc_operatingExpenses') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/80'}>
+                    <td className="py-2 px-4 text-slate-700">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('inc_operatingExpenses')}
+                        <span>{lbl('income', 'operatingExpenses', 'Administrative & Selling Expenses')}</span>
+                      </div>
+                    </td>
+                    <td className="py-2 px-3 text-center font-mono text-slate-600">12.00</td>
+                    {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.adminAndSellingExpenses)}</td>)}
+                  </tr>
+                )}
                 <tr className="bg-slate-100/80 font-bold text-slate-900 border-t border-slate-300">
                   <td className="py-2 px-4">Total Operating Profit/(Loss)</td>
                   <td></td>
                   {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono">{fmtCell(d.totalOperatingProfit)}</td>)}
                 </tr>
-                <tr className="bg-amber-50/75">
-                  <td className="py-2 px-4 text-amber-900 font-medium flex items-center gap-1.5">
-                    <span>Less: Financial Expenses</span>
-                    <Lock className="w-3 h-3 text-amber-600" />
-                  </td>
-                  <td className="py-2 px-3 text-center font-mono text-slate-600">13.00</td>
-                  {projData.map(d => (
-                    <td key={d.year} className="py-2 px-3 text-right font-mono text-amber-800 font-semibold">
-                      {onUpdatePrimaryDriver ? (
-                        <InlineDriverCell
-                          value={d.financialExpenses}
-                          isEditMode={isEditMode}
-                          onSave={val => onUpdatePrimaryDriver(d.year, 'financeCost', val)}
-                          title="Fixed User Input: Finance Cost"
-                        />
-                      ) : fmtCell(d.financialExpenses)}
+                {(isElemVisible('inc_financeCost') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('inc_financeCost') ? 'opacity-45 bg-slate-50' : 'bg-amber-50/75'}>
+                    <td className="py-2 px-4 text-amber-900 font-medium">
+                      <div className="flex items-center gap-1.5">
+                        {renderCheck('inc_financeCost')}
+                        <span>Less: Financial Expenses</span>
+                        <Lock className="w-3 h-3 text-amber-600" />
+                      </div>
                     </td>
-                  ))}
-                </tr>
+                    <td className="py-2 px-3 text-center font-mono text-slate-600">13.00</td>
+                    {projData.map(d => (
+                      <td key={d.year} className="py-2 px-3 text-right font-mono text-amber-800 font-semibold">
+                        {onUpdatePrimaryDriver ? (
+                          <InlineDriverCell
+                            value={d.financialExpenses}
+                            isEditMode={isEditMode}
+                            onSave={val => onUpdatePrimaryDriver(d.year, 'financeCost', val)}
+                            title="Fixed User Input: Finance Cost"
+                          />
+                        ) : fmtCell(d.financialExpenses)}
+                      </td>
+                    ))}
+                  </tr>
+                )}
                 <tr className="bg-slate-100/70 font-bold text-slate-900 border-t border-slate-300">
                   <td className="py-2 px-4">Net Profit/(Loss) Before Income Tax</td>
                   <td></td>
                   {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono">{fmtCell(d.netProfitBeforeTax)}</td>)}
                 </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td className="py-2 px-4 text-slate-700">Less: Provision For Income Tax</td>
-                  <td></td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.provisionForIncomeTax)}</td>)}
-                </tr>
+                {(isElemVisible('inc_taxExpense') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('inc_taxExpense') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/80'}>
+                    <td className="py-2 px-4 text-slate-700">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('inc_taxExpense')}
+                        <span>Less: Provision For Income Tax</span>
+                      </div>
+                    </td>
+                    <td></td>
+                    {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.provisionForIncomeTax)}</td>)}
+                  </tr>
+                )}
                 <tr className="bg-sky-50/85 font-bold text-sky-900 border-t border-b-4 border-double border-sky-600">
                   <td className="py-2.5 px-4 flex items-center gap-1.5">
                     <span>Net Profit/(Loss) After Income Tax</span>
@@ -1462,22 +1875,31 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
               </thead>
               <tbody className="divide-y divide-slate-200/80 text-slate-800">
                 {([
-                  ['Net Income', 'cfNetIncome'],
-                  ['(Increase)/Decrease In Inventory', 'cfChangeInventory'],
-                  ['(Increase)/Decrease In Trade & Other Receivables', 'cfChangeReceivables'],
-                  ['(Increase)/Decrease in Advance, Deposit & Prepayments', 'cfChangeAdvanceDeposit'],
-                  ['Increase/(Decrease) in Current Assets', 'cfChangeCurrentAssets'],
-                  ['Increase/(Decrease) in Current Liabilities', 'cfChangeCurrentLiabilities'],
-                  ['Increase/(Decrease) in Trade & Other Payables', 'cfChangeTradePayables'],
-                  ['Increase/(Decrease) In Provisions For Tax', 'cfChangeProvisionsTax'],
-                  ['Increase/(Decrease) Liabilities For Expense', 'cfChangeLiabilitiesExp'],
-                  ['Depreciation', 'cfDepreciation'],
-                ] as const).map(([label, key]) => (
-                  <tr key={key} className="hover:bg-slate-50/80">
-                    <td className="py-1.5 px-4 text-slate-700">{label}</td>
-                    {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d[key])}</td>)}
-                  </tr>
-                ))}
+                  ['Net Income', 'cfNetIncome', 'cf_pbt'],
+                  ['(Increase)/Decrease In Inventory', 'cfChangeInventory', 'cf_wc_inventory'],
+                  ['(Increase)/Decrease In Trade & Other Receivables', 'cfChangeReceivables', 'cf_wc_receivables'],
+                  ['(Increase)/Decrease in Advance, Deposit & Prepayments', 'cfChangeAdvanceDeposit', 'cf_wc_other_rec'],
+                  ['Increase/(Decrease) in Current Assets', 'cfChangeCurrentAssets', 'cf_wc_other_ca'],
+                  ['Increase/(Decrease) in Current Liabilities', 'cfChangeCurrentLiabilities', null],
+                  ['Increase/(Decrease) in Trade & Other Payables', 'cfChangeTradePayables', 'cf_wc_payables'],
+                  ['Increase/(Decrease) In Provisions For Tax', 'cfChangeProvisionsTax', 'cf_tax_paid'],
+                  ['Increase/(Decrease) Liabilities For Expense', 'cfChangeLiabilitiesExp', 'cf_wc_other_pay'],
+                  ['Depreciation', 'cfDepreciation', 'cf_dep'],
+                ] as const).map(([label, key, cfgId]) => {
+                  const vis = cfgId ? isElemVisible(cfgId) : true;
+                  if (!vis && !isCustomizeMode) return null;
+                  return (
+                    <tr key={key} className={!vis ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/80'}>
+                      <td className="py-1.5 px-4 text-slate-700">
+                        <div className="flex items-center gap-2">
+                          {cfgId && renderCheck(cfgId)}
+                          <span>{label}</span>
+                        </div>
+                      </td>
+                      {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d[key])}</td>)}
+                    </tr>
+                  );
+                })}
                 <tr className="bg-emerald-50/75 font-bold text-emerald-900">
                   <td className="py-2 px-4">Net Cash Used by Operating Activities</td>
                   {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono border-l border-slate-200/80">{fmtCell(d.cfNetCashOperating)}</td>)}
@@ -1489,10 +1911,17 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                 <tr className="font-semibold text-slate-800">
                   <td colSpan={projData.length + 1} className="py-1 px-4 underline">Inflows:</td>
                 </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td className="py-1.5 px-4 text-slate-700">Sale Of Property, Plant &amp; Equipment</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfSalePPE)}</td>)}
-                </tr>
+                {(isElemVisible('cf_sale_ppe') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('cf_sale_ppe') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/80'}>
+                    <td className="py-1.5 px-4 text-slate-700">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('cf_sale_ppe')}
+                        <span>Sale Of Property, Plant &amp; Equipment</span>
+                      </div>
+                    </td>
+                    {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfSalePPE)}</td>)}
+                  </tr>
+                )}
                 <tr className="hover:bg-slate-50/80">
                   <td className="py-1.5 px-4 text-slate-700">Capital</td>
                   {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfInvestingCapitalInflow)}</td>)}
@@ -1504,10 +1933,17 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                   <td className="py-1.5 px-4 text-slate-700">Preliminary Expenses</td>
                   {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfPreliminaryExpenses)}</td>)}
                 </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td className="py-1.5 px-4 text-slate-700">Purchase Property, Plant &amp; Equipment</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfPurchasePPE)}</td>)}
-                </tr>
+                {(isElemVisible('cf_pur_ppe') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('cf_pur_ppe') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/80'}>
+                    <td className="py-1.5 px-4 text-slate-700">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('cf_pur_ppe')}
+                        <span>Purchase Property, Plant &amp; Equipment</span>
+                      </div>
+                    </td>
+                    {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfPurchasePPE)}</td>)}
+                  </tr>
+                )}
                 <tr className="hover:bg-slate-50/80">
                   <td className="py-1.5 px-4 text-slate-700">Purchase Investment In Debt Or Securities</td>
                   {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfPurchaseInvestment)}</td>)}
@@ -1523,10 +1959,17 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                 <tr className="font-semibold text-slate-800">
                   <td colSpan={projData.length + 1} className="py-1 px-4 underline">Inflows:</td>
                 </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td className="py-1.5 px-4 text-slate-700">Loan Received</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfLoanReceived)}</td>)}
-                </tr>
+                {(isElemVisible('cf_borrow_proceeds') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('cf_borrow_proceeds') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/80'}>
+                    <td className="py-1.5 px-4 text-slate-700">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('cf_borrow_proceeds')}
+                        <span>Loan Received</span>
+                      </div>
+                    </td>
+                    {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfLoanReceived)}</td>)}
+                  </tr>
+                )}
                 <tr className="hover:bg-slate-50/80">
                   <td className="py-1.5 px-4 text-slate-700">Additional Capital</td>
                   {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfAdditionalCapital)}</td>)}
@@ -1538,18 +1981,32 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                 <tr className="font-semibold text-slate-800">
                   <td colSpan={projData.length + 1} className="py-1 px-4 underline">Outflows:</td>
                 </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td className="py-1.5 px-4 text-slate-700">To Stockholders as Dividend</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfDividendsToStockholders)}</td>)}
-                </tr>
+                {(isElemVisible('cf_dividends_paid') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('cf_dividends_paid') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/80'}>
+                    <td className="py-1.5 px-4 text-slate-700">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('cf_dividends_paid')}
+                        <span>To Stockholders as Dividend</span>
+                      </div>
+                    </td>
+                    {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfDividendsToStockholders)}</td>)}
+                  </tr>
+                )}
                 <tr className="hover:bg-slate-50/80">
                   <td className="py-1.5 px-4 text-slate-700">Drawings / Dividend</td>
                   {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfDrawingsOutflow)}</td>)}
                 </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td className="py-1.5 px-4 text-slate-700">To Redeem Long Term Debt (Treasury Stock)</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfRedeemLongTermDebt)}</td>)}
-                </tr>
+                {(isElemVisible('cf_borrow_repay') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('cf_borrow_repay') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/80'}>
+                    <td className="py-1.5 px-4 text-slate-700">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('cf_borrow_repay')}
+                        <span>To Redeem Long Term Debt (Treasury Stock)</span>
+                      </div>
+                    </td>
+                    {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfRedeemLongTermDebt)}</td>)}
+                  </tr>
+                )}
                 <tr className="hover:bg-slate-50/80">
                   <td className="py-1.5 px-4 text-slate-700">Issuance Of Bonds Payable</td>
                   {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfIssuanceBondsPayable)}</td>)}
