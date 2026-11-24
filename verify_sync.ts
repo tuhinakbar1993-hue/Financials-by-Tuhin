@@ -474,7 +474,166 @@ assert(reschedResult.minEbitdaDscr >= 1.25, `Expected healthy EBITDA DSCR >= 1.2
 rBs.forEach(b => assert(Math.abs(b.balanceCheck) < 0.05, `Rescheduled BS unbalanced in ${b.year}: ${b.balanceCheck}`));
 rCf.forEach(c => assert.equal(c.reconciliationStatus, 'RECONCILED', `Rescheduled CF unreconciled in ${c.year}`));
 
+// 5. Mandatory inclusion of 'Repayment of Borrowings & Financing' & Automatic omission of nil-value fields
+const baseCfCsv = xlsxCjs.utils.sheet_to_csv(baselineProjWb.Sheets['3. Cash Flows']);
+const baseProjBsCsv = xlsxCjs.utils.sheet_to_csv(baselineProjWb.Sheets['1. Financial Position']);
+assert(
+  baseCfCsv.includes('Repayment of Borrowings & Financing'),
+  'Baseline Projected Excel Cash Flows must include Repayment of Borrowings & Financing'
+);
+assert(
+  !baseCfCsv.includes('To Redeem Long Term Debt'),
+  'Legacy label To Redeem Long Term Debt must not appear in Projected Excel Cash Flows'
+);
+const baseRepayRow = baseCfJson.find(r => r[0] === 'Repayment of Borrowings & Financing')!;
+assert(baseRepayRow, 'Missing Repayment of Borrowings & Financing row in Projected Excel');
+assert.equal(
+  baseRepayRow[baseCol2026],
+  -baselineFirstProjCF.repaymentOfBorrowings,
+  'Projected Excel 2026 Repayment of Borrowings & Financing must equal -repaymentOfBorrowings'
+);
+const baseCol2027 = baseCfHeader.indexOf(2027);
+assert.equal(
+  baseRepayRow[baseCol2027],
+  -baselineSecondProjCF.repaymentOfBorrowings,
+  'Projected Excel 2027 Repayment of Borrowings & Financing must be gross (-repaymentOfBorrowings), not netted against loan proceeds'
+);
+assert.equal(
+  baseLoanRecRow[baseCol2027],
+  baselineSecondProjCF.financingProceedsBorrowings,
+  'Projected Excel 2027 Loan Received must show gross proceeds'
+);
+
+// Nil-value fields must be omitted in Projected Excel
+for (const nilLabel of [
+  'Increase/(Decrease) in Current Liabilities',
+  'Preliminary Expenses',
+  'Purchase Investment In Debt Or Securities',
+  'Issuance Of Debt (Bond & Notes)',
+  'Issuance Of Bonds Payable',
+  'To Stockholders as Dividend',
+  'Additional Capital',
+]) {
+  assert(!baseCfCsv.includes(nilLabel), `Nil-value Cash Flow row "${nilLabel}" should be omitted in Projected Excel`);
+}
+assert(!baseProjBsCsv.includes('Additional Capital'), 'Nil-value Additional Capital should be omitted in Projected Balance Sheet');
+
+// Verify Word/PDF row builders match Excel rules
+const { cfRows: baseProjTextCf, bsRows: baseProjTextBs, quantNotesRows: baseQuantNotes } =
+  exportsMod.buildProjectedTextTables(baseline.proj);
+assert(
+  baseProjTextCf.some(r => r[0] === 'Repayment of Borrowings & Financing'),
+  'Projected Word/PDF cfRows must include Repayment of Borrowings & Financing'
+);
+assert(
+  !baseProjTextCf.some(r => String(r[0]).includes('To Redeem Long Term Debt')),
+  'Projected Word/PDF cfRows must not contain legacy label'
+);
+assert(
+  !baseProjTextCf.some(r => r[0] === 'Issuance Of Debt (Bond & Notes)' || r[0] === 'Preliminary Expenses'),
+  'Projected Word/PDF cfRows must omit nil rows'
+);
+assert(
+  !baseProjTextBs.some(r => r[0] === 'Additional Capital'),
+  'Projected Word/PDF bsRows must omit nil Additional Capital'
+);
+// Quantitative notes filter nil detail rows (exclude header/spacer rows whose value cells are '')
+assert(
+  !baseQuantNotes.some(r => r.slice(2).some(v => v !== '') && r.slice(2).every(v => exportsMod.isNilExportValue(v))),
+  'Quantitative Notes Word/PDF/Excel should omit completely nil numeric lines'
+);
+
+// Verify Section 76 Complete Package (baseline) omits nil detail lines while preserving Repayment of Borrowings & Financing
+capturedWorkbooks.length = 0;
+exportsMod.exportCompletePackageExcel(
+  engine.INITIAL_COMPANY_PROFILE,
+  baseline.inc,
+  baseline.bs,
+  baseline.cf,
+  baseline.eq,
+  baseline.fa,
+  baseline.notes,
+  'baseline_complete.xlsx',
+  baseline.dscr
+);
+const baseCompWb = capturedWorkbooks[0].wb;
+validateFormulaCells(baseCompWb);
+const baseCompCfCsv = xlsxCjs.utils.sheet_to_csv(baseCompWb.Sheets['3. Cash Flows']);
+assert(
+  baseCompCfCsv.includes('Repayment of Borrowings & Financing'),
+  'Section 76 Complete Excel must include Repayment of Borrowings & Financing'
+);
+assert(
+  !baseCompCfCsv.includes('Purchase of Intangible Assets') && !baseCompCfCsv.includes('Dividends Received'),
+  'Section 76 Complete Excel must omit all-zero detail lines'
+);
+const syncCfRows = exportsMod.buildSyncCashFlowTextRows(baseline.cf);
+assert(
+  syncCfRows.some(r => r[0] === 'Repayment of Borrowings & Financing'),
+  'Section 76 Word/PDF cfRows must include Repayment of Borrowings & Financing'
+);
+assert(
+  !syncCfRows.some(r => r[0] === 'Purchase of Intangible Assets' || r[0] === 'Dividends Received'),
+  'Section 76 Word/PDF cfRows must omit all-zero detail lines'
+);
+
+// Verify Rescheduled Projected Export reflects exact rescheduled -300000 repayment
+capturedWorkbooks.length = 0;
+exportsMod.exportProjectedFinancialsExcel(engine.INITIAL_COMPANY_PROFILE, rProj);
+const reschedProjWb = capturedWorkbooks[0].wb;
+validateFormulaCells(reschedProjWb);
+const reschedCfJson = xlsxCjs.utils.sheet_to_json<(string | number)[]>(reschedProjWb.Sheets['3. Cash Flows'], { header: 1 });
+const reschedHdr = reschedCfJson.find(r => r[0] === '1. CASH FLOW FROM OPERATING ACTIVITIES:')!;
+const reschedCol2026 = reschedHdr.indexOf(2026);
+const reschedRepayRow = reschedCfJson.find(r => r[0] === 'Repayment of Borrowings & Financing')!;
+assert.equal(reschedRepayRow[reschedCol2026], -300000, 'Rescheduled Projected Excel 2026 repayment must equal -300000');
+
+// 6. PRECEDENCE TEST: Even when Repayment of Borrowings & Financing is 0 across all exported years (or deselected),
+// it MUST still appear in downloaded Cash Flows, while nil-value items (e.g., 1-year 2026 Loan Received = 0 & empty Inflows header) ARE omitted!
+const singleZeroProj = baseline.proj
+  .filter(d => d.year === 2026)
+  .map(d => ({
+    ...d,
+    cfLoanReceived: 0,
+    cfRedeemLongTermDebt: 0,
+    cfNetCashFinancing: 0,
+    cfSalePPE: 0,
+    cfPurchasePPE: 0,
+    cfNetCashInvesting: 0,
+  }));
+capturedWorkbooks.length = 0;
+exportsMod.exportProjectedFinancialsExcel(engine.INITIAL_COMPANY_PROFILE, singleZeroProj);
+const zeroPrecedenceWb = capturedWorkbooks[0].wb;
+validateFormulaCells(zeroPrecedenceWb);
+const zeroCfJson = xlsxCjs.utils.sheet_to_json<(string | number)[]>(zeroPrecedenceWb.Sheets['3. Cash Flows'], { header: 1 });
+const zeroCfCsv = xlsxCjs.utils.sheet_to_csv(zeroPrecedenceWb.Sheets['3. Cash Flows']);
+const zeroRepayRow = zeroCfJson.find(r => r[0] === 'Repayment of Borrowings & Financing');
+assert(zeroRepayRow, 'PRECEDENCE FAILED: Repayment of Borrowings & Financing must appear even when all values are 0');
+assert.equal(zeroRepayRow[1], 0, 'Zero-repayment row must display 0 when nil');
+assert(!zeroCfCsv.includes('Loan Received'), 'Nil 1-year 2026 Loan Received (0) must be omitted');
+// Since Investing has no inflows or outflows and Financing has no inflows in singleZeroProj, 'Inflows:' must not appear at all!
+assert(!zeroCfCsv.includes('Inflows:'), 'Empty Inflows: subheader must be omitted when no inflow items exist');
+
+const { cfRows: zeroTextCf } = exportsMod.buildProjectedTextTables(singleZeroProj);
+assert(
+  zeroTextCf.some(r => r[0] === 'Repayment of Borrowings & Financing' && r[1] === 0),
+  'Projected Word/PDF cfRows must retain Repayment of Borrowings & Financing even when value is 0'
+);
+assert(!zeroTextCf.some(r => r[0] === 'Loan Received' || r[0] === 'Inflows:'), 'Projected Word/PDF cfRows must omit nil Loan Received and empty Inflows:');
+
+// Precedence even when cf_borrow_repay is deselected in StatementConfig
+const deselectedRepayCfg = engine.DEFAULT_STATEMENT_CONFIG_ITEMS.map(item =>
+  item.id === 'cf_borrow_repay' ? { ...item, isVisible: false } : item
+);
+const deselectedRes = runPipeline(deselectedRepayCfg);
+const syncZeroRows = exportsMod.buildSyncCashFlowTextRows(deselectedRes.cf, { statementConfig: deselectedRepayCfg });
+assert(
+  syncZeroRows.some(r => r[0] === 'Repayment of Borrowings & Financing'),
+  'PRECEDENCE FAILED: Section 76 Word/PDF must include Repayment of Borrowings & Financing even when deselected'
+);
+
 xlsxCjs.writeFile = origWriteFile;
 console.log('ALL VERIFICATION CHECKS PASSED! Workbooks validated:', capturedWorkbooks.map(c => c.filename));
+
 
 

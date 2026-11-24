@@ -2517,7 +2517,7 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                     <td className="py-1.5 px-4 text-slate-700">
                       <div className="flex items-center gap-2">
                         {renderCheck('cf_borrow_repay')}
-                        <span>{lbl('cf', 'repaymentOfBorrowings', 'To Redeem Long Term Debt (Treasury Stock)')}</span>
+                        <span>{lbl('cf', 'repaymentOfBorrowings', 'Repayment of Borrowings & Financing')}</span>
                       </div>
                     </td>
                     {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfRedeemLongTermDebt)}</td>)}

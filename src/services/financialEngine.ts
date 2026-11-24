@@ -3273,31 +3273,16 @@ export function buildProjectedFormatData(
       cfSalePPE + cfInvestingCapitalInflow + cfPreliminaryExpenses + cfPurchasePPE + cfPurchaseInvestment + customCfInv
     );
 
-    // Financing (strictly reflects Repayment from Borrowings & Financing + debt delta;
+    // Financing (keeps gross Loan Received and Repayment of Borrowings & Financing separate without netting;
     // first projected year recognizes no fresh Loan Received since it models existing loan rescheduling)
     const isFirstProjectedYear = pIdx === 0;
-    const prevTotalDebt = prevProj
-      ? prevProj.longTermLoan + prevProj.shortTermLoan
-      : (prevBS ? prevBS.longTermBorrowings + prevBS.shortTermBorrowings : longTermLoan + shortTermLoan + repaymentOfBorrowings);
-    const currTotalDebt = r2(longTermLoan + shortTermLoan);
-    const netDebtDelta = r2(currTotalDebt - prevTotalDebt);
-    const cfLoanReceived = isFirstProjectedYear
-      ? 0
-      : netDebtDelta >= 0 && vis('cf_borrow_proceeds')
-      ? netDebtDelta
-      : 0;
-    const cfAdditionalCapital = vis('cf_shares_issue') ? eq.shareCapitalIssued : 0;
+    const cfLoanReceived = isFirstProjectedYear ? 0 : cf.financingProceedsBorrowings;
+    const cfAdditionalCapital = cf.financingProceedsShares;
     const cfIssuanceOfDebt = 0;
     const cfDividendsToStockholders = 0;
     const drawings = eq.dividendsPaid;
-    const cfDrawingsOutflow = vis('cf_dividends_paid') ? -drawings : 0;
-    const cfRedeemLongTermDebt = vis('cf_borrow_repay')
-      ? netDebtDelta < 0
-        ? netDebtDelta
-        : isFirstProjectedYear && repaymentOfBorrowings > 0
-        ? -repaymentOfBorrowings
-        : 0
-      : 0;
+    const cfDrawingsOutflow = cf.financingDividendsPaid;
+    const cfRedeemLongTermDebt = cf.financingRepaymentBorrowings;
     const cfIssuanceBondsPayable = 0;
     const cfNetCashFinancing = r2(
       cfLoanReceived +
