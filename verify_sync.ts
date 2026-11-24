@@ -632,6 +632,96 @@ assert(
   'PRECEDENCE FAILED: Section 76 Word/PDF must include Repayment of Borrowings & Financing even when deselected'
 );
 
+// 7. Irregular & Non-Uniform Proportional Variations (>= 1.2 percentage point minimum spread & natural ups/downs)
+const baseYoyPct = (curr: number, prev: number) => ((curr - prev) / Math.max(1, Math.abs(prev))) * 100;
+const basePairs: [string, (i: number) => number, (i: number) => number][] = [
+  ['Revenue vs COGS', i => baseYoyPct(baseline.inc[i].revenue, baseline.inc[i - 1].revenue), i => baseYoyPct(baseline.inc[i].costOfSales, baseline.inc[i - 1].costOfSales)],
+  ['Revenue vs OpEx', i => baseYoyPct(baseline.inc[i].revenue, baseline.inc[i - 1].revenue), i => baseYoyPct(baseline.inc[i].operatingExpenses, baseline.inc[i - 1].operatingExpenses)],
+  ['COGS vs OpEx', i => baseYoyPct(baseline.inc[i].costOfSales, baseline.inc[i - 1].costOfSales), i => baseYoyPct(baseline.inc[i].operatingExpenses, baseline.inc[i - 1].operatingExpenses)],
+  ['Revenue vs Net Profit', i => baseYoyPct(baseline.inc[i].revenue, baseline.inc[i - 1].revenue), i => baseYoyPct(baseline.inc[i].netProfit, baseline.inc[i - 1].netProfit)],
+  ['Inventory vs COGS', i => baseYoyPct(baseline.bs[i].closingInventory, baseline.bs[i - 1].closingInventory), i => baseYoyPct(baseline.inc[i].costOfSales, baseline.inc[i - 1].costOfSales)],
+  ['Inventory vs Trade Receivables', i => baseYoyPct(baseline.bs[i].closingInventory, baseline.bs[i - 1].closingInventory), i => baseYoyPct(baseline.bs[i].tradeReceivables, baseline.bs[i - 1].tradeReceivables)],
+  ['Trade Receivables vs Other Receivables', i => baseYoyPct(baseline.bs[i].tradeReceivables, baseline.bs[i - 1].tradeReceivables), i => baseYoyPct(baseline.bs[i].otherReceivables, baseline.bs[i - 1].otherReceivables)],
+  ['Trade Receivables vs Other Current Assets', i => baseYoyPct(baseline.bs[i].tradeReceivables, baseline.bs[i - 1].tradeReceivables), i => baseYoyPct(baseline.bs[i].otherCurrentAssets, baseline.bs[i - 1].otherCurrentAssets)],
+  ['Other Receivables vs Other Current Assets', i => baseYoyPct(baseline.bs[i].otherReceivables, baseline.bs[i - 1].otherReceivables), i => baseYoyPct(baseline.bs[i].otherCurrentAssets, baseline.bs[i - 1].otherCurrentAssets)],
+  ['Trade Payables vs Other Payables', i => baseYoyPct(baseline.bs[i].tradePayables, baseline.bs[i - 1].tradePayables), i => baseYoyPct(baseline.bs[i].otherPayables, baseline.bs[i - 1].otherPayables)],
+  ['Trade Payables vs COGS', i => baseYoyPct(baseline.bs[i].tradePayables, baseline.bs[i - 1].tradePayables), i => baseYoyPct(baseline.inc[i].costOfSales, baseline.inc[i - 1].costOfSales)],
+  ['Finance Cost vs Repayment of Borrowings', i => baseYoyPct(baseline.inc[i].financeCost, baseline.inc[i - 1].financeCost), i => baseYoyPct(baseAsc[i].repaymentOfBorrowings, baseAsc[i - 1].repaymentOfBorrowings)],
+  ['Net Profit vs Dividends Paid', i => baseYoyPct(baseline.inc[i].netProfit, baseline.inc[i - 1].netProfit), i => baseYoyPct(baseAsc[i].dividendsPaid, baseAsc[i - 1].dividendsPaid)],
+  ['Capex Additions vs Disposals', i => baseYoyPct(baseline.fa[i].totalAdditions, baseline.fa[i - 1].totalAdditions), i => baseYoyPct(baseline.fa[i].totalDisposals, baseline.fa[i - 1].totalDisposals)],
+  ['Gross Fixed Assets vs Depreciation', i => baseYoyPct(baseAsc[i].fixedAssetsGross, baseAsc[i - 1].fixedAssetsGross), i => baseYoyPct(baseline.inc[i].depreciationExpense, baseline.inc[i - 1].depreciationExpense)],
+];
+
+for (let i = 3; i < baseAsc.length; i++) {
+  assert(baseAsc[i].isProjected, `Expected projected year at index ${i}`);
+  for (const [label, fnA, fnB] of basePairs) {
+    const spread = Math.abs(fnA(i) - fnB(i));
+    assert(
+      spread >= 1.2,
+      `Baseline ${label} in ${baseAsc[i].year} spread ${spread.toFixed(2)}pp < 1.2pp`
+    );
+  }
+}
+
+// Verify natural ups and downs (both positive increases and negative decreases) across projected years
+const projIndicesBase = baseAsc.map((y, idx) => ({ y, idx })).filter(e => e.y.isProjected).map(e => e.idx);
+const checkHasBothUpAndDown = (name: string, seriesFn: (i: number) => number) => {
+  const rates = projIndicesBase.map(i => seriesFn(i));
+  assert(rates.some(r => r > 1.0), `${name} must include realistic growth years`);
+  assert(rates.some(r => r < -0.5), `${name} must include realistic contraction/reduction years`);
+};
+checkHasBothUpAndDown('Sales Revenue', i => baseYoyPct(baseline.inc[i].revenue, baseline.inc[i - 1].revenue));
+checkHasBothUpAndDown('Cost of Sales', i => baseYoyPct(baseline.inc[i].costOfSales, baseline.inc[i - 1].costOfSales));
+checkHasBothUpAndDown('Operating Expenses', i => baseYoyPct(baseline.inc[i].operatingExpenses, baseline.inc[i - 1].operatingExpenses));
+checkHasBothUpAndDown('Net Profit', i => baseYoyPct(baseline.inc[i].netProfit, baseline.inc[i - 1].netProfit));
+checkHasBothUpAndDown('Closing Inventory', i => baseYoyPct(baseline.bs[i].closingInventory, baseline.bs[i - 1].closingInventory));
+checkHasBothUpAndDown('Trade Receivables', i => baseYoyPct(baseline.bs[i].tradeReceivables, baseline.bs[i - 1].tradeReceivables));
+checkHasBothUpAndDown('Other Receivables', i => baseYoyPct(baseline.bs[i].otherReceivables, baseline.bs[i - 1].otherReceivables));
+checkHasBothUpAndDown('Other Current Assets', i => baseYoyPct(baseline.bs[i].otherCurrentAssets, baseline.bs[i - 1].otherCurrentAssets));
+checkHasBothUpAndDown('Trade Payables', i => baseYoyPct(baseline.bs[i].tradePayables, baseline.bs[i - 1].tradePayables));
+checkHasBothUpAndDown('Dividends Paid', i => baseYoyPct(baseAsc[i].dividendsPaid, baseAsc[i - 1].dividendsPaid));
+checkHasBothUpAndDown('Capex Additions', i => baseYoyPct(baseline.fa[i].totalAdditions, baseline.fa[i - 1].totalAdditions));
+
+// Projected Note 11 direct expenses also maintain >= 1.2pp spread between components
+for (let i = 1; i < baselineProjAsc.length; i++) {
+  const c = baselineProjAsc[i];
+  const p = baselineProjAsc[i - 1];
+  const directRates = [
+    baseYoyPct(c.note11LabourWages, p.note11LabourWages),
+    baseYoyPct(c.note11ElectricityBill, p.note11ElectricityBill),
+    baseYoyPct(c.note11CarriageInward, p.note11CarriageInward),
+    baseYoyPct(c.note11OtherDirectExpenses, p.note11OtherDirectExpenses),
+  ];
+  for (let a = 0; a < directRates.length; a++) {
+    for (let b = a + 1; b < directRates.length; b++) {
+      assert(
+        Math.abs(directRates[a] - directRates[b]) >= 1.2,
+        `Note 11 direct expenses spread < 1.2pp in ${c.year}: ${directRates.map(r => r.toFixed(2)).join(', ')}`
+      );
+    }
+  }
+}
+
+// Verify Rescheduled model preserves exact schedule locks AND >= 1.2pp spread across non-locked pairs
+for (let i = 3; i < reschedOrdered.length; i++) {
+  const rPairs: [string, number, number][] = [
+    ['Revenue vs COGS', baseYoyPct(rInc[i].revenue, rInc[i - 1].revenue), baseYoyPct(rInc[i].costOfSales, rInc[i - 1].costOfSales)],
+    ['Revenue vs OpEx', baseYoyPct(rInc[i].revenue, rInc[i - 1].revenue), baseYoyPct(rInc[i].operatingExpenses, rInc[i - 1].operatingExpenses)],
+    ['COGS vs OpEx', baseYoyPct(rInc[i].costOfSales, rInc[i - 1].costOfSales), baseYoyPct(rInc[i].operatingExpenses, rInc[i - 1].operatingExpenses)],
+    ['Inventory vs COGS', baseYoyPct(rBs[i].closingInventory, rBs[i - 1].closingInventory), baseYoyPct(rInc[i].costOfSales, rInc[i - 1].costOfSales)],
+    ['Trade Receivables vs Other Receivables', baseYoyPct(rBs[i].tradeReceivables, rBs[i - 1].tradeReceivables), baseYoyPct(rBs[i].otherReceivables, rBs[i - 1].otherReceivables)],
+    ['Trade Payables vs Other Payables', baseYoyPct(rBs[i].tradePayables, rBs[i - 1].tradePayables), baseYoyPct(rBs[i].otherPayables, rBs[i - 1].otherPayables)],
+    ['Capex Additions vs Disposals', baseYoyPct(rFa[i].totalAdditions, rFa[i - 1].totalAdditions), baseYoyPct(rFa[i].totalDisposals, rFa[i - 1].totalDisposals)],
+    ['Gross FA vs Depreciation', baseYoyPct(reschedOrdered[i].fixedAssetsGross, reschedOrdered[i - 1].fixedAssetsGross), baseYoyPct(rInc[i].depreciationExpense, rInc[i - 1].depreciationExpense)],
+  ];
+  for (const [label, a, b] of rPairs) {
+    assert(
+      Math.abs(a - b) >= 1.2,
+      `Rescheduled ${label} in ${reschedOrdered[i].year} spread ${Math.abs(a - b).toFixed(2)}pp < 1.2pp`
+    );
+  }
+}
+
 xlsxCjs.writeFile = origWriteFile;
 console.log('ALL VERIFICATION CHECKS PASSED! Workbooks validated:', capturedWorkbooks.map(c => c.filename));
 

@@ -391,17 +391,23 @@ export function calculateFinancialRatios(
 
 /**
  * Deterministic bounded cyclical wave in [-1, 1] seeded by year and component channel.
- * Produces realistic, non-uniform annual variations across financial line items while
- * guaranteeing 100% repeatable output across UI renders, previews, and exports.
+ * Combines 3 incommensurate frequencies for irregular, non-repetitive annual variations
+ * while guaranteeing 100% repeatable output across UI renders, previews, and exports.
  */
 function deterministicAnnualWave(year: number, channel: number): number {
-  const a = Math.sin(year * 1.37 + channel * 2.13);
-  const b = Math.cos(year * 0.79 + channel * 1.47);
-  return a * 0.62 + b * 0.38;
+  const a = Math.sin(year * 1.43 + channel * 2.17);
+  const b = Math.cos(year * 0.83 + channel * 1.53 + 0.41);
+  const c = Math.sin(year * 2.29 + channel * 3.11 + 0.92);
+  return Math.min(1, Math.max(-1, a * 0.48 + b * 0.31 + c * 0.21));
 }
 
 function clampVal(val: number, minVal: number, maxVal: number): number {
   return Math.min(maxVal, Math.max(minVal, val));
+}
+
+function yoyPct(curr: number, prev: number): number {
+  if (!Number.isFinite(prev) || Math.abs(prev) < 1e-6) return 0;
+  return ((curr - prev) / Math.abs(prev)) * 100;
 }
 
 function varyBounded(
@@ -415,14 +421,267 @@ function varyBounded(
   return clampVal(baseVal + deterministicAnnualWave(year, channel) * amplitude, minVal, maxVal);
 }
 
+/**
+ * Adjusts a candidate YoY percentage change so it differs by at least `minSpreadPct`
+ * percentage points from all `referenceGrowthPcts`, strictly within `[minAllowedPct, maxAllowedPct]`.
+ */
+function adjustGrowthPctForMinSpread(
+  candidateGrowthPct: number,
+  referenceGrowthPcts: number[],
+  minSpreadPct: number,
+  minAllowedPct: number,
+  maxAllowedPct: number,
+  preferredDir: number = 1
+): number {
+  const lo = Math.min(minAllowedPct, maxAllowedPct);
+  const hi = Math.max(minAllowedPct, maxAllowedPct);
+  const clampedCand = clampVal(candidateGrowthPct, lo, hi);
+  const refs = referenceGrowthPcts.filter(r => Number.isFinite(r));
+  if (refs.length === 0) return clampedCand;
+
+  const minDiffOf = (g: number): number => Math.min(...refs.map(r => Math.abs(g - r)));
+  if (minDiffOf(clampedCand) >= minSpreadPct) return clampedCand;
+
+  const candidates: number[] = [clampedCand, lo, hi];
+  for (const ref of refs) {
+    candidates.push(ref + minSpreadPct + 0.08);
+    candidates.push(ref - minSpreadPct - 0.08);
+    candidates.push(ref + minSpreadPct + 0.55);
+    candidates.push(ref - minSpreadPct - 0.55);
+  }
+  const span = Math.max(0.05, hi - lo);
+  for (let i = 0; i <= 28; i++) {
+    candidates.push(lo + (span * i) / 28);
+  }
+
+  const bounded = candidates.map(c => clampVal(c, lo, hi));
+  const valid = bounded.filter(c => minDiffOf(c) >= minSpreadPct);
+
+  if (valid.length > 0) {
+    valid.sort((a, b) => {
+      const da = Math.abs(a - clampedCand);
+      const db = Math.abs(b - clampedCand);
+      if (Math.abs(da - db) > 1e-4) return da - db;
+      return preferredDir >= 0 ? b - a : a - b;
+    });
+    return valid[0];
+  }
+
+  bounded.sort((a, b) => {
+    const diff = minDiffOf(b) - minDiffOf(a);
+    if (Math.abs(diff) > 1e-4) return diff;
+    return Math.abs(a - clampedCand) - Math.abs(b - clampedCand);
+  });
+  return bounded[0];
+}
+
+/**
+ * Computes a bounded non-uniform integer/decimal value whose YoY growth rate
+ * stays within `[minBoundVal, maxBoundVal]` while keeping at least `minSpreadPct` pp
+ * separation from `referenceGrowthPcts`.
+ */
+function computeSpreadValue(
+  targetVal: number,
+  prevVal: number | null | undefined,
+  minBoundVal: number,
+  maxBoundVal: number,
+  referenceGrowthPcts: number[],
+  year: number,
+  channel: number,
+  minSpreadPct: number = 1.48,
+  roundFn: (n: number) => number = Math.round
+): number {
+  const lo = Math.max(0, Math.min(minBoundVal, maxBoundVal));
+  const hi = Math.max(lo, maxBoundVal);
+  const clampedTarget = clampVal(targetVal, lo, hi);
+  if (!prevVal || prevVal <= 0) return roundFn(clampedTarget);
+
+  const candG = yoyPct(clampedTarget, prevVal);
+  const minG = yoyPct(lo, prevVal);
+  const maxG = yoyPct(hi, prevVal);
+  const prefDir = deterministicAnnualWave(year, channel + 31) >= 0 ? 1 : -1;
+  const chosenG = adjustGrowthPctForMinSpread(candG, referenceGrowthPcts, minSpreadPct, minG, maxG, prefDir);
+  return roundFn(clampVal(prevVal * (1 + chosenG / 100), lo, hi));
+}
+
+/**
+ * Computes irregular annual revenue growth % with natural expansions, slowdowns,
+ * and occasional mild cyclical contractions while maintaining overall assumption trajectory.
+ */
+function computeProjectedRevenueGrowthPct(
+  yearNumber: number,
+  baseGrowthPct: number,
+  stepIndex: number
+): number {
+  const wave1 = deterministicAnnualWave(yearNumber, 1);
+  const wave2 = deterministicAnnualWave(yearNumber, 27);
+  const maturityScale = stepIndex > 10 ? 0.87 : stepIndex > 6 ? 0.94 : 1.0;
+
+  if (baseGrowthPct <= 0) {
+    const amp = Math.max(1.8, Math.abs(baseGrowthPct) * 0.45);
+    return clampVal(baseGrowthPct + wave1 * amp, -12, 6);
+  }
+
+  // Natural cyclical inflection (occasional isolated single-year mild slowdown + subsequent rebound)
+  const cycleTrigger = Math.sin(stepIndex * 1.18 + 0.55);
+  const prevCycleTrigger = stepIndex > 1 ? Math.sin((stepIndex - 1) * 1.18 + 0.55) : 0;
+  const isIsolatedDip = stepIndex >= 4 && cycleTrigger < -0.78 && !(stepIndex - 1 >= 4 && prevCycleTrigger < -0.78);
+  const prevWasDip = stepIndex >= 5 && prevCycleTrigger < -0.78;
+
+  if (baseGrowthPct <= 11.5 && isIsolatedDip) {
+    // Realistic mild single-year contraction (-1.4% to -3.6%) during periodic industrial slowdown
+    return clampVal(-1.6 - Math.abs(wave2) * 1.9, -4.2, -1.25);
+  }
+
+  const amp = Math.max(1.85, Math.abs(baseGrowthPct) * 0.42);
+  const reboundBoost = baseGrowthPct <= 11.5 && prevWasDip ? 2.6 : 0;
+  return clampVal(baseGrowthPct * maturityScale + reboundBoost + wave1 * amp, -5.0, 28.0);
+}
+
+function computeProjectedDepRatePct(
+  baseDepRatePct: number,
+  yearNumber: number,
+  grossGrowthPct: number | null,
+  prevDepExpense: number | null,
+  prevGross: number,
+  currGross: number
+): number {
+  const compositeCenter = Number((baseDepRatePct * 0.935).toFixed(1));
+  const minR = Math.max(2.0, Number((baseDepRatePct - 1.8).toFixed(1)));
+  const maxR = Math.min(35.0, Number((baseDepRatePct + 0.5).toFixed(1)));
+  const waveRate = Number(
+    varyBounded(
+      compositeCenter,
+      yearNumber,
+      24,
+      Math.min(1.05, baseDepRatePct * 0.105),
+      minR,
+      maxR
+    ).toFixed(1)
+  );
+  if (grossGrowthPct === null || !prevDepExpense || prevDepExpense <= 0) return waveRate;
+
+  const avgGross = (prevGross + currGross) / 2;
+  if (avgGross <= 0) return waveRate;
+
+  let bestRate = waveRate;
+  let bestDist = Infinity;
+  let bestSpread = -1;
+
+  for (let rTenths = Math.round(minR * 10); rTenths <= Math.round(maxR * 10); rTenths++) {
+    const rCand = rTenths / 10;
+    const depCand = Math.round(avgGross * (rCand / 100));
+    const depG = yoyPct(depCand, prevDepExpense);
+    const spread = Math.abs(depG - grossGrowthPct);
+    const dist = Math.abs(rCand - waveRate);
+    if (spread >= 1.50) {
+      if (bestSpread < 1.50 || dist < bestDist) {
+        bestRate = rCand;
+        bestDist = dist;
+        bestSpread = spread;
+      }
+    } else if (bestSpread < 1.50 && spread > bestSpread) {
+      bestRate = rCand;
+      bestSpread = spread;
+    }
+  }
+  return Number(bestRate.toFixed(1));
+}
+
+/**
+ * Solves `costOfSales` inside realistic ratio bounds `[loCos, hiCos]` such that
+ * `operatingExpenses = totalOperatingCosts - costOfSales` stays inside `[loOpex, hiOpex]`
+ * and YoY rates of CoS and OpEx stay >= `minSpreadPct` apart from `refs` and from each other.
+ */
+function allocateOperatingCostsWithSpread(
+  totalOperatingCosts: number,
+  targetCos: number,
+  salesRevenue: number,
+  targetCosPct: number,
+  targetOpexPct: number,
+  prevYear: YearDataInput | null,
+  refsForBoth: number[],
+  minSpreadPct: number = 1.48
+): { costOfSales: number; operatingExpenses: number } {
+  const minCosRatio = clampVal((targetCosPct - 3.8) / 100, 0.14, 0.90);
+  const maxCosRatio = clampVal((targetCosPct + 3.8) / 100, minCosRatio + 0.02, 0.93);
+  const minOpexRatio = clampVal((targetOpexPct - 2.8) / 100, 0.025, 0.50);
+  const maxOpexRatio = clampVal((targetOpexPct + 2.8) / 100, minOpexRatio + 0.01, 0.56);
+
+  const minCos = Math.round(salesRevenue * minCosRatio);
+  const maxCos = Math.round(salesRevenue * maxCosRatio);
+  const minOpex = Math.round(salesRevenue * minOpexRatio);
+  const maxOpex = Math.round(salesRevenue * maxOpexRatio);
+
+  let loCos = Math.max(0, minCos, totalOperatingCosts - maxOpex);
+  let hiCos = Math.min(totalOperatingCosts, maxCos, totalOperatingCosts - minOpex);
+  if (loCos > hiCos) {
+    loCos = Math.max(0, Math.round(totalOperatingCosts * 0.55));
+    hiCos = Math.min(totalOperatingCosts, Math.round(totalOperatingCosts * 0.90));
+  }
+
+  const baseCos = Math.round(clampVal(targetCos, loCos, hiCos));
+  if (!prevYear || prevYear.costOfSales <= 0 || prevYear.operatingExpenses <= 0) {
+    return {
+      costOfSales: baseCos,
+      operatingExpenses: Math.max(0, totalOperatingCosts - baseCos),
+    };
+  }
+
+  const evalMinSpread = (cosCand: number): number => {
+    const opexCand = totalOperatingCosts - cosCand;
+    const gCos = yoyPct(cosCand, prevYear.costOfSales);
+    const gOpex = yoyPct(opexCand, prevYear.operatingExpenses);
+    let m = Math.abs(gCos - gOpex);
+    for (const r of refsForBoth) {
+      m = Math.min(m, Math.abs(gCos - r), Math.abs(gOpex - r));
+    }
+    return m;
+  };
+
+  if (evalMinSpread(baseCos) >= minSpreadPct) {
+    return {
+      costOfSales: baseCos,
+      operatingExpenses: Math.max(0, totalOperatingCosts - baseCos),
+    };
+  }
+
+  let bestCos = baseCos;
+  let bestDist = Infinity;
+  let bestSpread = evalMinSpread(baseCos);
+  const steps = 64;
+  const span = Math.max(1, hiCos - loCos);
+
+  for (let i = 0; i <= steps; i++) {
+    const cand = Math.round(loCos + (span * i) / steps);
+    const sp = evalMinSpread(cand);
+    const dist = Math.abs(cand - baseCos);
+    if (sp >= minSpreadPct) {
+      if (bestSpread < minSpreadPct || dist < bestDist) {
+        bestCos = cand;
+        bestDist = dist;
+        bestSpread = sp;
+      }
+    } else if (bestSpread < minSpreadPct && sp > bestSpread) {
+      bestCos = cand;
+      bestSpread = sp;
+    }
+  }
+
+  return {
+    costOfSales: bestCos,
+    operatingExpenses: Math.max(0, totalOperatingCosts - bestCos),
+  };
+}
+
 export function computeInterestIncomeRate(year: number, isProjected: boolean): number {
-  const amp = isProjected ? 0.00055 : 0.0004;
-  return Number(clampVal(0.005 + deterministicAnnualWave(year, 10) * amp, 0.0038, 0.0064).toFixed(6));
+  const amp = isProjected ? 0.00085 : 0.00045;
+  return Number(clampVal(0.005 + deterministicAnnualWave(year, 10) * amp, 0.0034, 0.0068).toFixed(6));
 }
 
 export function computeDepDisposalsRatio(year: number, isProjected: boolean): number {
-  const amp = isProjected ? 0.065 : 0.04;
-  return Number(clampVal(0.65 + deterministicAnnualWave(year, 16) * amp, 0.52, 0.78).toFixed(4));
+  const amp = isProjected ? 0.085 : 0.045;
+  return Number(clampVal(0.65 + deterministicAnnualWave(year, 16) * amp, 0.48, 0.82).toFixed(4));
 }
 
 function splitTotalNonUniform(
@@ -430,28 +689,75 @@ function splitTotalNonUniform(
   year: number,
   channel: number,
   baseWeights: number[],
-  amplitudes: number[]
+  amplitudes: number[],
+  prevParts?: number[],
+  minSpreadPct: number = 1.35
 ): number[] {
   if (total === 0) return baseWeights.map(() => 0);
-  const adjusted = baseWeights.map((w, idx) =>
-    Math.max(0.01, w + deterministicAnnualWave(year, channel + idx * 3) * (amplitudes[idx] ?? 0.02))
+
+  const buildFromWeights = (weights: number[]): number[] => {
+    const wSum = weights.reduce((acc, v) => acc + v, 0);
+    const out: number[] = [];
+    let running = 0;
+    for (let i = 0; i < weights.length - 1; i++) {
+      const val = Math.round(total * (weights[i] / wSum));
+      out.push(val);
+      running += val;
+    }
+    out.push(r2(total - running));
+    return out;
+  };
+
+  const baseAdjusted = baseWeights.map((w, idx) =>
+    Math.max(0.015, w + deterministicAnnualWave(year, channel + idx * 5) * (amplitudes[idx] ?? 0.03))
   );
-  const weightSum = adjusted.reduce((acc, v) => acc + v, 0);
-  const out: number[] = [];
-  let running = 0;
-  for (let i = 0; i < adjusted.length - 1; i++) {
-    const val = Math.round(total * (adjusted[i] / weightSum));
-    out.push(val);
-    running += val;
+  let bestParts = buildFromWeights(baseAdjusted);
+
+  if (!prevParts || prevParts.length !== baseWeights.length || prevParts.some(p => p <= 0)) {
+    return bestParts;
   }
-  out.push(r2(total - running));
-  return out;
+
+  const prevTotal = prevParts.reduce((a, b) => a + b, 0);
+  const pairSpread = (parts: number[]): number => {
+    const rates = parts.map((v, idx) => yoyPct(v, prevParts[idx]));
+    let minDiff = Infinity;
+    for (let i = 0; i < rates.length; i++) {
+      for (let j = i + 1; j < rates.length; j++) {
+        minDiff = Math.min(minDiff, Math.abs(rates[i] - rates[j]));
+      }
+    }
+    const shareShift = prevTotal > 0 && total !== 0 ? Math.abs(parts[0] / total - prevParts[0] / prevTotal) : 1;
+    if (shareShift < 0.0035) {
+      return Math.min(minDiff, shareShift * 100);
+    }
+    return minDiff;
+  };
+
+  let bestMinDiff = pairSpread(bestParts);
+  if (bestMinDiff >= minSpreadPct) return bestParts;
+
+  // Deterministically explore bounded local weight perturbations to separate clustered sub-item YoY rates
+  for (let attempt = 1; attempt <= 28; attempt++) {
+    const trialWeights = baseAdjusted.map((w, idx) => {
+      const nudge = deterministicAnnualWave(year + attempt * 7, channel + idx * 11 + attempt) * ((amplitudes[idx] ?? 0.03) * 0.85);
+      return Math.max(0.015, w + nudge);
+    });
+    const trialParts = buildFromWeights(trialWeights);
+    const diff = pairSpread(trialParts);
+    if (diff > bestMinDiff) {
+      bestMinDiff = diff;
+      bestParts = trialParts;
+      if (bestMinDiff >= minSpreadPct) break;
+    }
+  }
+
+  return bestParts;
 }
 
 /**
  * Automatically generates realistic, internally consistent year-wise figures
  * for the 6 primary financial drivers based on appropriate financial ratios,
- * historical trends, non-uniform annual business dynamics, and logical interconnections.
+ * historical trends, irregular annual business cycles, and logical interconnections.
  */
 export function generateAutomaticPrimaryDrivers(
   prevYear: YearDataInput,
@@ -468,83 +774,206 @@ export function generateAutomaticPrimaryDrivers(
   repaymentOfBorrowings: number;
   fixedAssetsGross: number;
 } {
-  // 1. Sales Revenue: non-uniform annual growth centered around user's revenueGrowthRate with gentle maturity curve
+  // 1. Sales Revenue: irregular business cycle centered on revenueGrowthRate with natural expansions & occasional mild contractions
   const baseGrowthPct = assumptions.revenueGrowthRate;
-  const revAmp = Math.max(0.45, Math.abs(baseGrowthPct) * 0.16);
-  const maturityScale = stepIndex > 9 ? 0.90 : stepIndex > 5 ? 0.95 : 1.0;
-  const effectiveGrowthPct = baseGrowthPct * maturityScale + deterministicAnnualWave(yearNumber, 1) * revAmp;
+  const effectiveGrowthPct = computeProjectedRevenueGrowthPct(yearNumber, baseGrowthPct, stepIndex);
   const salesRevenue = Math.max(100, Math.round(prevYear.salesRevenue * (1 + effectiveGrowthPct / 100)));
+  const gRev = yoyPct(salesRevenue, prevYear.salesRevenue);
 
-  // Cost of Sales smoothly converging from historical COGS % toward target gross margin with annual mix variation
+  // Cost of Sales fluctuating naturally around target gross margin while staying >= 1.5pp distinct from Revenue growth
   const targetCosPct = 100 - assumptions.grossMarginPct;
   const prevCosPct = prevYear.salesRevenue > 0 ? (prevYear.costOfSales / prevYear.salesRevenue) * 100 : targetCosPct;
-  const yearCosPct = varyBounded(
-    prevCosPct * 0.35 + targetCosPct * 0.65,
+  const rawCosPct = varyBounded(
+    prevCosPct * 0.25 + targetCosPct * 0.75,
     yearNumber,
     2,
-    0.65,
-    15,
-    92
+    2.1,
+    Math.max(15, targetCosPct - 3.6),
+    Math.min(92, targetCosPct + 3.6)
   );
-  const costOfSales = Math.round(salesRevenue * (yearCosPct / 100));
+  const minCosVal = Math.round(salesRevenue * (Math.max(15, targetCosPct - 3.6) / 100));
+  const maxCosVal = Math.round(salesRevenue * (Math.min(92, targetCosPct + 3.6) / 100));
+  const costOfSales = computeSpreadValue(
+    salesRevenue * (rawCosPct / 100),
+    prevYear.costOfSales,
+    minCosVal,
+    maxCosVal,
+    [gRev],
+    yearNumber,
+    2,
+    1.55
+  );
+  const gCos = yoyPct(costOfSales, prevYear.costOfSales);
 
-  // 2. Closing Inventory: smooth convergence from prior DIO toward target DIO + varied seasonal working-capital buffer
+  // 2. Closing Inventory: varied DIO cycles separated >= 1.5pp from Revenue & COGS growth
   const targetDIO = Math.max(5, assumptions.inventoryDays);
   const prevDIO = prevYear.costOfSales > 0 ? (prevYear.closingInventory / prevYear.costOfSales) * 365 : targetDIO;
-  const blendedDIO = prevDIO * 0.42 + targetDIO * 0.58;
-  const yearDIO = varyBounded(blendedDIO, yearNumber, 4, Math.max(1.4, targetDIO * 0.04), 5, 240);
-  const closingInventory = Math.round((costOfSales / 365) * yearDIO);
+  const blendedDIO = prevDIO * 0.30 + targetDIO * 0.70;
+  const dioAmp = Math.max(3.0, targetDIO * 0.095);
+  const minDIO = Math.max(5, targetDIO * 0.84);
+  const maxDIO = Math.min(240, targetDIO * 1.16);
+  const yearDIO = varyBounded(blendedDIO, yearNumber, 4, dioAmp, minDIO, maxDIO);
+  const closingInventory = computeSpreadValue(
+    (costOfSales / 365) * yearDIO,
+    prevYear.closingInventory,
+    Math.round((costOfSales / 365) * minDIO),
+    Math.round((costOfSales / 365) * maxDIO),
+    [gRev, gCos],
+    yearNumber,
+    4,
+    1.55
+  );
 
   // 3. Finance Cost: smooth rate transition from prior effective debt yield + non-uniform debt service timing
   const prevTotalDebt = Math.max(1, (prevYear.longTermBorrowings || 8000) + (prevYear.shortTermBorrowings || 2500));
   const rawPrevYield = prevYear.financeCost > 0 ? prevYear.financeCost / prevTotalDebt : 0.085;
   const clampedPrevYield = clampVal(rawPrevYield, 0.045, 0.155);
-  const blendedYield = clampedPrevYield * 0.45 + 0.085 * 0.55;
-  const effectiveInterestRate = varyBounded(blendedYield, yearNumber, 14, 0.0055, 0.045, 0.16);
-  const midYearDeleveragingAdj = varyBounded(0.955, yearNumber, 18, 0.02, 0.91, 0.99);
-  const financeCost = Math.max(350, Math.round(prevTotalDebt * effectiveInterestRate * midYearDeleveragingAdj));
+  const blendedYield = clampedPrevYield * 0.42 + 0.085 * 0.58;
+  const effectiveInterestRate = varyBounded(blendedYield, yearNumber, 14, 0.0085, 0.045, 0.16);
+  const midYearDeleveragingAdj = varyBounded(0.95, yearNumber, 18, 0.028, 0.89, 0.995);
+  const financeCost = Math.max(120, Math.round(prevTotalDebt * effectiveInterestRate * midYearDeleveragingAdj));
+  const gFin = yoyPct(financeCost, prevYear.financeCost);
 
-  // 4. Net Profit After Tax: operating leverage, non-uniform SG&A efficiency, depreciation, finance cost, and tax
-  const grossProfit = salesRevenue - costOfSales;
-  const prevOpexPct = prevYear.salesRevenue > 0 ? (prevYear.operatingExpenses / prevYear.salesRevenue) * 100 : assumptions.opexPctOfRevenue;
-  const yearOpexPct = varyBounded(
-    prevOpexPct * 0.30 + assumptions.opexPctOfRevenue * 0.70,
-    yearNumber,
-    3,
-    0.50,
-    3,
-    55
-  );
-  const operatingExpenses = Math.round(salesRevenue * (yearOpexPct / 100));
-  const depEstimate = Math.round(prevYear.fixedAssetsGross * (assumptions.depreciationRatePct / 100));
-  const operatingProfit = grossProfit - operatingExpenses - depEstimate;
-  const interestIncome = Math.round(salesRevenue * computeInterestIncomeRate(yearNumber, true));
-  const profitBeforeTax = operatingProfit + interestIncome - financeCost;
-  const taxExpense = Math.round(Math.max(0, profitBeforeTax) * (assumptions.taxRatePct / 100));
-  const netProfit = profitBeforeTax - taxExpense;
-
-  // 5. Repayment of Borrowings: smooth amortization transition with non-uniform facility reduction pacing
-  const prevLT = Math.max(500, prevYear.longTermBorrowings || 8000);
-  const rawPrevRepayRatio = prevYear.repaymentOfBorrowings > 0 ? prevYear.repaymentOfBorrowings / prevLT : 0.12;
-  const clampedPrevRepay = clampVal(rawPrevRepayRatio, 0.07, 0.22);
-  const yearRepayRatio = varyBounded(clampedPrevRepay * 0.42 + 0.125 * 0.58, yearNumber, 15, 0.014, 0.07, 0.23);
-  const repaymentOfBorrowings = Math.max(400, Math.round(prevLT * yearRepayRatio));
-
-  // 6. Fixed Assets (Gross Asset Base): non-uniform capex cycle less varied asset retirements
+  // 4. Fixed Assets Additions, Disposals & Asset-Mix Depreciation
   const prevCapexPct =
     prevYear.salesRevenue > 0 && prevYear.fixedAssetsAdditions > 0
-      ? clampVal((prevYear.fixedAssetsAdditions / prevYear.salesRevenue) * 100, 2.0, 14.0)
+      ? clampVal((prevYear.fixedAssetsAdditions / prevYear.salesRevenue) * 100, 2.0, 15.0)
       : assumptions.capexPctOfRevenue;
+  const blendedCapexPct = prevCapexPct * 0.22 + assumptions.capexPctOfRevenue * 0.78;
+  const minCapexPct = Math.max(1.5, assumptions.capexPctOfRevenue * 0.58);
+  const maxCapexPct = Math.min(24.0, assumptions.capexPctOfRevenue * 1.48);
   const yearCapexPct = clampVal(
-    (prevCapexPct * 0.25 + assumptions.capexPctOfRevenue * 0.75) *
-      (1 + deterministicAnnualWave(yearNumber, 11) * 0.18),
-    1.0,
-    25.0
+    blendedCapexPct * (1 + deterministicAnnualWave(yearNumber, 11) * 0.34),
+    minCapexPct,
+    maxCapexPct
   );
-  const capexAdditions = Math.round(salesRevenue * (yearCapexPct / 100));
-  const disposalRate = varyBounded(0.012, yearNumber, 12, 0.0042, 0.005, 0.022);
-  const disposals = Math.round(prevYear.fixedAssetsGross * disposalRate);
+  const rawCapexAdditions = Math.round(salesRevenue * (yearCapexPct / 100));
+  const capexAdditions = computeSpreadValue(
+    rawCapexAdditions,
+    prevYear.fixedAssetsAdditions,
+    Math.round(salesRevenue * (minCapexPct / 100)),
+    Math.round(salesRevenue * (maxCapexPct / 100)),
+    [gRev],
+    yearNumber,
+    11,
+    1.6
+  );
+  const gAdd = yoyPct(capexAdditions, prevYear.fixedAssetsAdditions);
+
+  const rawDispRate = varyBounded(0.012, yearNumber, 12, 0.0062, 0.0045, 0.024);
+  const disposals = computeSpreadValue(
+    prevYear.fixedAssetsGross * rawDispRate,
+    prevYear.fixedAssetsDisposals,
+    Math.round(prevYear.fixedAssetsGross * 0.0045),
+    Math.round(prevYear.fixedAssetsGross * 0.024),
+    [gAdd, gRev],
+    yearNumber,
+    12,
+    1.6
+  );
   const fixedAssetsGross = Math.max(100, prevYear.fixedAssetsGross + capexAdditions - disposals);
+  const gGrossFA = yoyPct(fixedAssetsGross, prevYear.fixedAssetsGross);
+  const prevOpeningGrossEst = Math.max(0, prevYear.fixedAssetsGross - (prevYear.fixedAssetsAdditions || 0) + (prevYear.fixedAssetsDisposals || 0));
+  const prevDepEst = prevYear.fixedAssetsGross > 0
+    ? Math.round(((prevOpeningGrossEst + prevYear.fixedAssetsGross) / 2) * ((prevYear.depreciationRate || 10) / 100))
+    : null;
+  const projDepRate = computeProjectedDepRatePct(
+    assumptions.depreciationRatePct || 10,
+    yearNumber,
+    gGrossFA,
+    prevDepEst,
+    prevYear.fixedAssetsGross,
+    fixedAssetsGross
+  );
+  const depEstimate = Math.round(((prevYear.fixedAssetsGross + fixedAssetsGross) / 2) * (projDepRate / 100));
+
+  // 5. Operating Expenses & Net Profit After Tax: maintain realistic spread across Rev, CoS, OpEx, and NP
+  const grossProfit = salesRevenue - costOfSales;
+  const prevOpexPct = prevYear.salesRevenue > 0 ? (prevYear.operatingExpenses / prevYear.salesRevenue) * 100 : assumptions.opexPctOfRevenue;
+  const rawOpexPct = varyBounded(
+    prevOpexPct * 0.25 + assumptions.opexPctOfRevenue * 0.75,
+    yearNumber,
+    3,
+    1.75,
+    Math.max(3, assumptions.opexPctOfRevenue - 2.6),
+    Math.min(55, assumptions.opexPctOfRevenue + 2.6)
+  );
+  const minOpexVal = Math.round(salesRevenue * (Math.max(3, assumptions.opexPctOfRevenue - 2.6) / 100));
+  const maxOpexVal = Math.round(salesRevenue * (Math.min(55, assumptions.opexPctOfRevenue + 2.6) / 100));
+  let operatingExpenses = computeSpreadValue(
+    salesRevenue * (rawOpexPct / 100),
+    prevYear.operatingExpenses,
+    minOpexVal,
+    maxOpexVal,
+    [gRev, gCos],
+    yearNumber,
+    3,
+    1.55
+  );
+
+  const interestIncome = Math.round(salesRevenue * computeInterestIncomeRate(yearNumber, true));
+  const calcNpFromOpex = (opexVal: number): number => {
+    const opProfit = grossProfit - opexVal - depEstimate;
+    const pbt = opProfit + interestIncome - financeCost;
+    const tax = Math.round(Math.max(0, pbt) * (assumptions.taxRatePct / 100));
+    return pbt - tax;
+  };
+
+  let netProfit = calcNpFromOpex(operatingExpenses);
+  if (prevYear.netProfit > 0) {
+    const gOpexCurr = yoyPct(operatingExpenses, prevYear.operatingExpenses);
+    const gNpCurr = yoyPct(netProfit, prevYear.netProfit);
+    const minNpDiff = Math.min(Math.abs(gNpCurr - gRev), Math.abs(gNpCurr - gCos), Math.abs(gNpCurr - gOpexCurr));
+    if (minNpDiff < 1.48) {
+      let bestOpex = operatingExpenses;
+      let bestDist = Infinity;
+      let bestMinSpread = minNpDiff;
+      const span = Math.max(1, maxOpexVal - minOpexVal);
+      for (let i = 0; i <= 40; i++) {
+        const candOpex = Math.round(minOpexVal + (span * i) / 40);
+        const gO = yoyPct(candOpex, prevYear.operatingExpenses);
+        const npCand = calcNpFromOpex(candOpex);
+        const gN = yoyPct(npCand, prevYear.netProfit);
+        const sp = Math.min(
+          Math.abs(gO - gRev),
+          Math.abs(gO - gCos),
+          Math.abs(gN - gRev),
+          Math.abs(gN - gCos),
+          Math.abs(gN - gO)
+        );
+        const dist = Math.abs(candOpex - operatingExpenses);
+        if (sp >= 1.48) {
+          if (bestMinSpread < 1.48 || dist < bestDist) {
+            bestOpex = candOpex;
+            bestDist = dist;
+            bestMinSpread = sp;
+          }
+        } else if (bestMinSpread < 1.48 && sp > bestMinSpread) {
+          bestOpex = candOpex;
+          bestMinSpread = sp;
+        }
+      }
+      operatingExpenses = bestOpex;
+      netProfit = calcNpFromOpex(operatingExpenses);
+    }
+  }
+
+  // 6. Repayment of Borrowings: non-uniform facility reduction pacing distinct from Finance Cost & NP
+  const prevLT = Math.max(500, prevYear.longTermBorrowings || 8000);
+  const rawPrevRepayRatio = prevYear.repaymentOfBorrowings > 0 ? prevYear.repaymentOfBorrowings / prevLT : 0.12;
+  const clampedPrevRepay = clampVal(rawPrevRepayRatio, 0.065, 0.23);
+  const yearRepayRatio = varyBounded(clampedPrevRepay * 0.38 + 0.125 * 0.62, yearNumber, 15, 0.022, 0.065, 0.24);
+  const gNp = yoyPct(netProfit, prevYear.netProfit);
+  const repaymentOfBorrowings = computeSpreadValue(
+    Math.max(400, prevLT * yearRepayRatio),
+    prevYear.repaymentOfBorrowings,
+    Math.max(400, Math.round(prevLT * 0.065)),
+    Math.max(450, Math.round(prevLT * 0.24)),
+    [gFin, gNp],
+    yearNumber,
+    15,
+    1.55
+  );
 
   return {
     year: yearNumber,
@@ -665,13 +1094,16 @@ export function calculateDriverAutoFillSeries(
 
   const sortedYears = [...allYears].sort((a, b) => a - b);
   const stepGrowthFor = (yr: number, rate: number, direction: 1 | -1, stepNum: number, channel: number): number => {
-    const absAmp = Math.max(0.0035, Math.abs(rate) * 0.16);
+    if (channel === 1 && direction === 1) {
+      return computeProjectedRevenueGrowthPct(yr, rate * 100, stepNum) / 100;
+    }
+    const absAmp = Math.max(0.012, Math.abs(rate) * 0.36);
     const wave = deterministicAnnualWave(yr, channel) * absAmp;
     if (direction === 1) {
-      const maturity = stepNum > 10 ? 0.88 : stepNum > 6 ? 0.94 : 1.0;
-      return rate * maturity + wave;
+      const maturity = stepNum > 10 ? 0.87 : stepNum > 6 ? 0.94 : 1.0;
+      return clampVal(rate * maturity + wave, -0.06, 0.35);
     }
-    return rate + wave;
+    return clampVal(rate + wave, -0.06, 0.35);
   };
 
   sortedYears.forEach(year => {
@@ -698,7 +1130,7 @@ export function calculateDriverAutoFillSeries(
           const backRate = Math.max(0.04, growthRate);
           for (let step = 1; step <= Math.abs(diff); step++) {
             const yrStep = baseYear - step + 1;
-            const g = Math.max(0.025, stepGrowthFor(yrStep, backRate, -1, step, 1));
+            const g = Math.max(0.02, stepGrowthFor(yrStep, backRate, -1, step, 1));
             val = val / (1 + g);
           }
           result[year] = Math.round(val);
@@ -712,7 +1144,7 @@ export function calculateDriverAutoFillSeries(
         if (baseSales && targetSales && baseSales > 0 && targetSales > 0) {
           const baseRatio = baseValue / baseSales;
           const efficiency = Math.pow(1 - 0.004, diff);
-          const dioWave = 1 + deterministicAnnualWave(year, 4) * 0.045;
+          const dioWave = 1 + deterministicAnnualWave(year, 4) * 0.095;
           result[year] = Math.max(0, Math.round(targetSales * baseRatio * efficiency * dioWave));
         } else {
           const rate = growthRate || 0.072;
@@ -737,16 +1169,16 @@ export function calculateDriverAutoFillSeries(
           let val = baseValue;
           for (let step = 1; step <= diff; step++) {
             const yrStep = baseYear + step;
-            const r = clampVal(reductionRate + deterministicAnnualWave(yrStep, 14) * 0.012, 0.015, 0.12);
+            const r = clampVal(reductionRate + deterministicAnnualWave(yrStep, 14) * 0.038, -0.04, 0.14);
             val = val * (1 - r);
           }
-          const minInterestFloor = Math.round(baseValue * 0.32);
+          const minInterestFloor = Math.round(baseValue * 0.30);
           result[year] = Math.max(minInterestFloor, Math.round(val));
         } else {
           let val = baseValue;
           for (let step = 1; step <= Math.abs(diff); step++) {
             const yrStep = baseYear - step + 1;
-            const r = clampVal(0.052 + deterministicAnnualWave(yrStep, 14) * 0.011, 0.025, 0.09);
+            const r = clampVal(0.052 + deterministicAnnualWave(yrStep, 14) * 0.018, 0.02, 0.10);
             val = val * (1 + r);
           }
           result[year] = Math.round(val);
@@ -763,7 +1195,7 @@ export function calculateDriverAutoFillSeries(
           }
         } else {
           for (let step = 1; step <= Math.abs(diff); step++) {
-            val = val / (1 + Math.max(0.025, stepGrowthFor(baseYear - step + 1, profitGrowth, -1, step, 21)));
+            val = val / (1 + Math.max(0.02, stepGrowthFor(baseYear - step + 1, profitGrowth, -1, step, 21)));
           }
         }
         result[year] = Math.round(val);
@@ -776,7 +1208,7 @@ export function calculateDriverAutoFillSeries(
           let val = baseValue;
           for (let step = 1; step <= diff; step++) {
             const yrStep = baseYear + step;
-            const r = clampVal(taperRate + deterministicAnnualWave(yrStep, 15) * 0.015, 0.02, 0.14);
+            const r = clampVal(taperRate + deterministicAnnualWave(yrStep, 15) * 0.048, -0.05, 0.16);
             val = val * (1 - r);
           }
           const minRepaymentFloor = Math.max(350, Math.round(baseValue * 0.30));
@@ -785,7 +1217,7 @@ export function calculateDriverAutoFillSeries(
           let val = baseValue;
           for (let step = 1; step <= Math.abs(diff); step++) {
             const yrStep = baseYear - step + 1;
-            const r = clampVal(0.068 + deterministicAnnualWave(yrStep, 15) * 0.014, 0.03, 0.12);
+            const r = clampVal(0.068 + deterministicAnnualWave(yrStep, 15) * 0.024, 0.025, 0.14);
             val = val * (1 + r);
           }
           result[year] = Math.round(val);
@@ -890,7 +1322,11 @@ export function deriveDependentFinancials(
 
   const yearStep = prevYear ? Math.max(1, year - prevYear.year) : 1;
   const taxRate = existingFullYear?.taxRate ?? assumptions.taxRatePct ?? 25;
-  const depreciationRate = existingFullYear?.depreciationRate ?? assumptions.depreciationRatePct ?? 10;
+  const gRev = prevYear && prevYear.salesRevenue > 0 ? yoyPct(salesRevenue, prevYear.salesRevenue) : 0;
+  const gInv = prevYear && prevYear.closingInventory > 0 ? yoyPct(closingInventory, prevYear.closingInventory) : 0;
+  const gFin = prevYear && prevYear.financeCost > 0 ? yoyPct(financeCost, prevYear.financeCost) : 0;
+  const gNp = prevYear && prevYear.netProfit > 0 ? yoyPct(netProfit, prevYear.netProfit) : 0;
+  const gRepay = prevYear && prevYear.repaymentOfBorrowings > 0 ? yoyPct(repaymentOfBorrowings, prevYear.repaymentOfBorrowings) : 0;
 
   // 1. Reconcile Profit Before Tax & Tax Expense strictly from fixed Net Profit After Tax (NPAT)
   const profitBeforeTax = netProfit >= 0
@@ -899,14 +1335,66 @@ export function deriveDependentFinancials(
   const taxExpense = profitBeforeTax - netProfit;
   const interestIncome = Math.round(salesRevenue * computeInterestIncomeRate(year, isProjected));
 
-  // 2. Fixed Assets Additions & Disposals preserving fixedAssetsGross strictly (with non-uniform disposal cycle)
+  // 2. Fixed Assets Additions, Disposals & asset-mix composite Depreciation preserving fixedAssetsGross strictly
   const prevGross = prevYear ? prevYear.fixedAssetsGross : Math.round(fixedAssetsGross * 0.9);
-  const disposalRate = varyBounded(0.012, year, 12, 0.0042, 0.005, 0.022);
-  const baselineDisposals = Math.round(prevGross * disposalRate * yearStep);
+  const gGrossFA = prevYear && prevGross > 0 ? yoyPct(fixedAssetsGross, prevGross) : null;
+  const baseDepRatePct = existingFullYear?.depreciationRate ?? assumptions.depreciationRatePct ?? 10;
+  const prevOpeningGross = prevYear
+    ? Math.max(0, prevGross - (prevYear.fixedAssetsAdditions || 0) + (prevYear.fixedAssetsDisposals || 0))
+    : 0;
+  const prevDepCharge = prevYear && prevGross > 0
+    ? Math.round(((prevOpeningGross + prevGross) / 2) * ((prevYear.depreciationRate || 10) / 100))
+    : null;
+  const depreciationRate =
+    isProjected && existingFullYear?.depreciationRate === undefined
+      ? computeProjectedDepRatePct(
+          baseDepRatePct,
+          year,
+          gGrossFA,
+          prevDepCharge,
+          prevGross,
+          fixedAssetsGross
+        )
+      : baseDepRatePct;
+
+  const rawDispRate = varyBounded(0.012, year, 12, 0.0062, 0.0045, 0.024);
+  const baselineDisposals = prevYear
+    ? computeSpreadValue(
+        prevGross * rawDispRate * yearStep,
+        prevYear.fixedAssetsDisposals,
+        Math.round(prevGross * 0.0045 * yearStep),
+        Math.round(prevGross * 0.024 * yearStep),
+        [gRev],
+        year,
+        12,
+        1.55
+      )
+    : Math.round(prevGross * rawDispRate * yearStep);
+
   let fixedAssetsAdditions = 0;
   let fixedAssetsDisposals = baselineDisposals;
   if (fixedAssetsGross >= prevGross - baselineDisposals) {
     fixedAssetsAdditions = fixedAssetsGross - prevGross + baselineDisposals;
+    if (prevYear && prevYear.fixedAssetsAdditions > 0 && prevYear.fixedAssetsDisposals > 0) {
+      const gAddNow = yoyPct(fixedAssetsAdditions, prevYear.fixedAssetsAdditions);
+      const gDispNow = yoyPct(fixedAssetsDisposals, prevYear.fixedAssetsDisposals);
+      if (Math.abs(gAddNow - gDispNow) < 1.45) {
+        const adjDisp = computeSpreadValue(
+          prevGross * rawDispRate * yearStep,
+          prevYear.fixedAssetsDisposals,
+          Math.round(prevGross * 0.0045 * yearStep),
+          Math.round(prevGross * 0.024 * yearStep),
+          [gAddNow, gRev],
+          year,
+          12,
+          1.6
+        );
+        if (fixedAssetsGross >= prevGross - adjDisp) {
+          fixedAssetsDisposals = adjDisp;
+          fixedAssetsAdditions = fixedAssetsGross - prevGross + adjDisp;
+        }
+      }
+    }
   } else {
     fixedAssetsAdditions = 0;
     fixedAssetsDisposals = Math.max(0, prevGross - fixedAssetsGross);
@@ -916,49 +1404,140 @@ export function deriveDependentFinancials(
   // 3. Operating Profit (EBIT) = PBT - interestIncome + financeCost
   const operatingProfit = profitBeforeTax - interestIncome + financeCost;
 
-  // 4. Total Operating Costs = Sales - EBIT - depCharge, allocated using non-uniform CoS vs OpEx mix
+  // 4. Total Operating Costs = Sales - EBIT - depCharge, allocated using non-uniform CoS vs OpEx mix with >= 1.2pp spread
   const totalOperatingCosts = Math.max(0, salesRevenue - operatingProfit - depCharge);
   const targetCosPct = 100 - (assumptions.grossMarginPct || 38);
+  const targetOpexPct = assumptions.opexPctOfRevenue || 17.5;
   const prevCosPct = prevYear && prevYear.salesRevenue > 0 ? (prevYear.costOfSales / prevYear.salesRevenue) * 100 : targetCosPct;
-  const yearCosPct = varyBounded(prevCosPct * 0.35 + targetCosPct * 0.65, year, 2, 0.65, 15, 92);
-  const prevOpexPct = prevYear && prevYear.salesRevenue > 0 ? (prevYear.operatingExpenses / prevYear.salesRevenue) * 100 : (assumptions.opexPctOfRevenue || 17.5);
-  const yearOpexPct = varyBounded(prevOpexPct * 0.30 + (assumptions.opexPctOfRevenue || 17.5) * 0.70, year, 3, 0.50, 3, 55);
+  const yearCosPct = varyBounded(
+    prevCosPct * 0.25 + targetCosPct * 0.75,
+    year,
+    2,
+    2.1,
+    Math.max(15, targetCosPct - 3.6),
+    Math.min(92, targetCosPct + 3.6)
+  );
+  const prevOpexPct = prevYear && prevYear.salesRevenue > 0 ? (prevYear.operatingExpenses / prevYear.salesRevenue) * 100 : targetOpexPct;
+  const yearOpexPct = varyBounded(
+    prevOpexPct * 0.25 + targetOpexPct * 0.75,
+    year,
+    3,
+    1.75,
+    Math.max(3, targetOpexPct - 2.6),
+    Math.min(55, targetOpexPct + 2.6)
+  );
   const targetCoSWeight = Math.max(0.1, yearCosPct / 100);
   const targetOpExWeight = Math.max(0.05, yearOpexPct / 100);
   const cosShare = targetCoSWeight / (targetCoSWeight + targetOpExWeight);
-  const costOfSales = Math.round(totalOperatingCosts * cosShare);
-  const operatingExpenses = Math.max(0, totalOperatingCosts - costOfSales);
+  const rawCos = Math.round(totalOperatingCosts * cosShare);
 
-  // 5. Working Capital balances derived using varied turnover days & smooth transition from prior periods
+  const refsCost = prevYear ? [gRev, ...(prevYear.closingInventory > 0 ? [gInv] : []), ...(prevYear.netProfit > 0 ? [gNp] : [])] : [];
+  const { costOfSales, operatingExpenses } = allocateOperatingCostsWithSpread(
+    totalOperatingCosts,
+    rawCos,
+    salesRevenue,
+    targetCosPct,
+    targetOpexPct,
+    prevYear,
+    refsCost,
+    1.48
+  );
+  const gCos = prevYear && prevYear.costOfSales > 0 ? yoyPct(costOfSales, prevYear.costOfSales) : 0;
+
+  // 5. Working Capital balances derived using varied turnover days & spread separation from related items
   const baseDSO = assumptions.receivableDays || 45;
   const prevDSO = prevYear && prevYear.salesRevenue > 0 ? (prevYear.tradeReceivables / prevYear.salesRevenue) * 365 : baseDSO;
-  const blendedDSO = isProjected && prevYear ? prevDSO * 0.35 + baseDSO * 0.65 : baseDSO;
-  const yearDSO = varyBounded(blendedDSO, year, 5, Math.max(1.1, baseDSO * 0.036), 5, 180);
-  const tradeReceivables = Math.round((salesRevenue / 365) * yearDSO);
+  const blendedDSO = isProjected && prevYear ? prevDSO * 0.30 + baseDSO * 0.70 : baseDSO;
+  const minDSO = Math.max(5, baseDSO * 0.84);
+  const maxDSO = Math.min(180, baseDSO * 1.16);
+  const yearDSO = varyBounded(blendedDSO, year, 5, Math.max(2.2, baseDSO * 0.095), minDSO, maxDSO);
+  const tradeReceivables = computeSpreadValue(
+    (salesRevenue / 365) * yearDSO,
+    prevYear?.tradeReceivables,
+    Math.round((salesRevenue / 365) * minDSO),
+    Math.round((salesRevenue / 365) * maxDSO),
+    prevYear ? [gRev, gInv, gCos] : [],
+    year,
+    5,
+    1.50
+  );
+  const gTrRec = prevYear && prevYear.tradeReceivables > 0 ? yoyPct(tradeReceivables, prevYear.tradeReceivables) : 0;
 
-  const prevOthRecRatio = prevYear && prevYear.tradeReceivables > 0 ? clampVal(prevYear.otherReceivables / prevYear.tradeReceivables, 0.12, 0.21) : 0.16;
-  const yearOthRecRatio = varyBounded(isProjected && prevYear ? prevOthRecRatio * 0.4 + 0.16 * 0.6 : 0.16, year, 7, 0.011, 0.12, 0.21);
-  const otherReceivables = Math.round(tradeReceivables * yearOthRecRatio);
+  const prevOthRecRatio = prevYear && prevYear.tradeReceivables > 0 ? clampVal(prevYear.otherReceivables / prevYear.tradeReceivables, 0.11, 0.23) : 0.16;
+  const yearOthRecRatio = varyBounded(isProjected && prevYear ? prevOthRecRatio * 0.35 + 0.16 * 0.65 : 0.16, year, 7, 0.028, 0.11, 0.23);
+  const otherReceivables = computeSpreadValue(
+    tradeReceivables * yearOthRecRatio,
+    prevYear?.otherReceivables,
+    Math.round(tradeReceivables * 0.105),
+    Math.round(tradeReceivables * 0.235),
+    prevYear ? [gTrRec, gInv, gRev] : [],
+    year,
+    7,
+    1.50
+  );
+  const gOthRec = prevYear && prevYear.otherReceivables > 0 ? yoyPct(otherReceivables, prevYear.otherReceivables) : 0;
 
   const baseDPO = assumptions.payableDays || 42;
   const prevDPO = prevYear && prevYear.costOfSales > 0 ? (prevYear.tradePayables / prevYear.costOfSales) * 365 : baseDPO;
-  const blendedDPO = isProjected && prevYear ? prevDPO * 0.38 + baseDPO * 0.62 : baseDPO;
-  const yearDPO = varyBounded(blendedDPO, year, 6, Math.max(1.1, baseDPO * 0.038), 5, 180);
-  const tradePayables = Math.round((costOfSales / 365) * yearDPO);
+  const blendedDPO = isProjected && prevYear ? prevDPO * 0.32 + baseDPO * 0.68 : baseDPO;
+  const minDPO = Math.max(5, baseDPO * 0.84);
+  const maxDPO = Math.min(180, baseDPO * 1.16);
+  const yearDPO = varyBounded(blendedDPO, year, 6, Math.max(2.2, baseDPO * 0.095), minDPO, maxDPO);
+  const tradePayables = computeSpreadValue(
+    (costOfSales / 365) * yearDPO,
+    prevYear?.tradePayables,
+    Math.round((costOfSales / 365) * minDPO),
+    Math.round((costOfSales / 365) * maxDPO),
+    prevYear ? [gCos, gInv, gTrRec] : [],
+    year,
+    6,
+    1.50
+  );
+  const gTrPay = prevYear && prevYear.tradePayables > 0 ? yoyPct(tradePayables, prevYear.tradePayables) : 0;
 
-  const prevOthPayRatio = prevYear && prevYear.tradePayables > 0 ? clampVal(prevYear.otherPayables / prevYear.tradePayables, 0.20, 0.31) : 0.25;
-  const yearOthPayRatio = varyBounded(isProjected && prevYear ? prevOthPayRatio * 0.4 + 0.25 * 0.6 : 0.25, year, 8, 0.014, 0.20, 0.31);
-  const otherPayables = Math.round(tradePayables * yearOthPayRatio);
+  const prevOthPayRatio = prevYear && prevYear.tradePayables > 0 ? clampVal(prevYear.otherPayables / prevYear.tradePayables, 0.18, 0.33) : 0.25;
+  const yearOthPayRatio = varyBounded(isProjected && prevYear ? prevOthPayRatio * 0.35 + 0.25 * 0.65 : 0.25, year, 8, 0.032, 0.18, 0.33);
+  const otherPayables = computeSpreadValue(
+    tradePayables * yearOthPayRatio,
+    prevYear?.otherPayables,
+    Math.round(tradePayables * 0.175),
+    Math.round(tradePayables * 0.335),
+    prevYear ? [gTrPay, gCos] : [],
+    year,
+    8,
+    1.50
+  );
 
-  const ocaGrowth = varyBounded(0.042, year, 9, 0.021, 0.012, 0.078);
+  const ocaGrowth = varyBounded(0.024, year, 9, 0.056, -0.045, 0.088);
   const otherCurrentAssets = prevYear
-    ? Math.max(100, Math.round(prevYear.otherCurrentAssets * Math.pow(1 + ocaGrowth, yearStep)))
-    : Math.round(salesRevenue * varyBounded(0.015, year, 9, 0.003, 0.008, 0.025));
+    ? computeSpreadValue(
+        prevYear.otherCurrentAssets * Math.pow(1 + ocaGrowth, yearStep),
+        prevYear.otherCurrentAssets,
+        Math.max(100, Math.round(prevYear.otherCurrentAssets * Math.pow(0.955, yearStep))),
+        Math.round(prevYear.otherCurrentAssets * Math.pow(1.088, yearStep)),
+        [gTrRec, gOthRec, gInv],
+        year,
+        9,
+        1.50
+      )
+    : Math.round(salesRevenue * varyBounded(0.015, year, 9, 0.004, 0.008, 0.025));
 
-  // 6. Equity & Dividends / Drawings with non-uniform annual payout pacing
+  // 6. Equity & Dividends / Drawings with non-uniform annual payout pacing separated from NP/Repay/FinCost
   const baseDivPct = assumptions.dividendPayoutRatio ?? 30;
-  const yearDivPct = baseDivPct > 0 ? varyBounded(baseDivPct, year, 13, Math.min(4.2, baseDivPct * 0.15), 2, 75) : 0;
-  const dividendsPaid = Math.round(Math.max(0, netProfit) * (yearDivPct / 100));
+  const yearDivPct = baseDivPct > 0 ? varyBounded(baseDivPct, year, 13, Math.min(6.8, baseDivPct * 0.24), 2, 75) : 0;
+  const dividendsPaid =
+    baseDivPct > 0 && netProfit > 0
+      ? computeSpreadValue(
+          netProfit * (yearDivPct / 100),
+          prevYear?.dividendsPaid,
+          Math.round(netProfit * (Math.max(2, baseDivPct * 0.72) / 100)),
+          Math.round(netProfit * (Math.min(75, baseDivPct * 1.28) / 100)),
+          prevYear ? [gNp, gRepay, gFin] : [],
+          year,
+          13,
+          1.50
+        )
+      : 0;
   const shareCapital = prevYear ? prevYear.shareCapital : (existingFullYear?.shareCapital ?? 12000);
 
   // 7. Borrowings & Financing Cash Flow preserving fixed repaymentOfBorrowings strictly
@@ -972,12 +1551,15 @@ export function deriveDependentFinancials(
   // First projected year represents existing loans proposed for rescheduling/restructuring (no fresh loan proceeds)
   const isFirstProjectedYear = Boolean(isProjected && (!prevYear || !prevYear.isProjected));
 
-  // Proportionate working-capital facility proceeds with varied annual utilization; top up only if debt would turn negative
-  const proceedsFactor = varyBounded(0.18, year, 19, 0.045, 0.09, 0.28);
+  // Proportionate working-capital facility proceeds with varied annual utilization; sustain operational credit headroom as business scales
+  const proceedsFactor = varyBounded(0.24, year, 19, 0.065, 0.12, 0.36);
+  const wcFacilityDraw = prevYear && prevTotalDebt < salesRevenue * 0.065
+    ? Math.round(salesRevenue * varyBounded(0.009, year, 29, 0.0035, 0.003, 0.016))
+    : 0;
   let financingProceedsBorrowings = isFirstProjectedYear
     ? 0
     : prevYear
-    ? Math.round(prevST * proceedsFactor)
+    ? Math.round(prevST * proceedsFactor) + wcFacilityDraw
     : Math.round(salesRevenue * varyBounded(0.02, year, 19, 0.004, 0.01, 0.03));
   if (!isFirstProjectedYear && prevTotalDebt + financingProceedsBorrowings < absRepayment) {
     financingProceedsBorrowings = absRepayment - prevTotalDebt + Math.round(salesRevenue * varyBounded(0.03, year, 20, 0.006, 0.018, 0.045));
@@ -986,8 +1568,20 @@ export function deriveDependentFinancials(
   const netDebtChange = financingProceedsBorrowings - absRepayment;
   const targetTotalDebt = Math.max(0, prevTotalDebt + netDebtChange);
   const baseLtShare = prevTotalDebt > 0 ? prevLT / prevTotalDebt : 0.72;
-  const ltShare = varyBounded(baseLtShare, year, 17, 0.018, 0.55, 0.86);
-  const longTermBorrowings = Math.round(targetTotalDebt * ltShare);
+  const ltShare = varyBounded(baseLtShare, year, 17, 0.032, 0.54, 0.86);
+  const longTermBorrowings =
+    prevYear && prevYear.longTermBorrowings > 0 && targetTotalDebt > 0
+      ? computeSpreadValue(
+          targetTotalDebt * ltShare,
+          prevYear.longTermBorrowings,
+          Math.round(targetTotalDebt * 0.54),
+          Math.round(targetTotalDebt * 0.86),
+          [gRepay, gFin],
+          year,
+          17,
+          1.45
+        )
+      : Math.round(targetTotalDebt * ltShare);
   const shortTermBorrowings = Math.max(0, targetTotalDebt - longTermBorrowings);
 
   const financingRepaymentBorrowings = -absRepayment;
@@ -995,7 +1589,7 @@ export function deriveDependentFinancials(
   const cashFlowFromFinancing =
     financingProceedsShares + financingProceedsBorrowings - absRepayment + financingDividendsPaid;
 
-  const amortStep = Math.round(varyBounded(100, year, 15, 22, 65, 145)) * yearStep;
+  const amortStep = Math.round(varyBounded(100, year, 15, 28, 55, 155)) * yearStep;
   const intangibleAssets = prevYear
     ? Math.max(0, prevYear.intangibleAssets - Math.min(prevYear.intangibleAssets, amortStep))
     : (existingFullYear?.intangibleAssets ?? Math.round(salesRevenue * 0.03));
@@ -1071,7 +1665,10 @@ export function generateYearDataForTargetYear(
     const steps = Math.abs(diff);
     for (let s = 1; s <= steps; s++) {
       const yr = diff >= 0 ? anchor.year + s : anchor.year - s + 1;
-      const r = clampVal(baseR + deterministicAnnualWave(yr, channel) * Math.max(0.004, Math.abs(baseR) * 0.16), -0.15, 0.35);
+      const r =
+        channel === 1 && diff >= 0 && !dirInvert
+          ? computeProjectedRevenueGrowthPct(yr, baseR * 100, s) / 100
+          : clampVal(baseR + deterministicAnnualWave(yr, channel) * Math.max(0.012, Math.abs(baseR) * 0.34), -0.15, 0.35);
       if ((diff >= 0 && !dirInvert) || (diff < 0 && dirInvert)) {
         mult *= 1 + r;
       } else {
@@ -1230,20 +1827,26 @@ export function calculateScheduleOfFixedAssets(
       });
     }
 
-    // Allocate Additions & Disposals with non-uniform year-specific capital investment weights
+    // Allocate Additions & Disposals with non-uniform year-specific capital investment weights & spread separation
+    const prevAddParts = prevBaseCategories ? prevBaseCategories.map(c => c.additions) : undefined;
+    const prevDispParts = prevBaseCategories ? prevBaseCategories.map(c => c.disposals) : undefined;
     const catAdditionsArr = splitTotalNonUniform(
       additions,
       input.year,
       30,
       [0.22, 0.44, 0.13, 0.11, 0.10],
-      [0.05, 0.06, 0.025, 0.025, 0.02]
+      [0.055, 0.065, 0.032, 0.03, 0.026],
+      prevAddParts,
+      1.35
     );
     const rawDisposalsArr = splitTotalNonUniform(
       disposals,
       input.year,
       45,
       [0.08, 0.46, 0.16, 0.18, 0.12],
-      [0.025, 0.055, 0.03, 0.03, 0.025]
+      [0.03, 0.06, 0.035, 0.035, 0.03],
+      prevDispParts,
+      1.35
     );
     // Cap each class disposal at available gross cost + additions; redistribute any excess to larger classes
     const catDisposalsArr = [...rawDisposalsArr];
@@ -2466,18 +3069,18 @@ export function generateNotesToFinancialStatements(
   const pCfDiff = r2(pCfClose - pCfStatedBS);
   const cCfReconciled = Math.abs(cCfDiff) < 0.01;
 
-  const cRevSplit = splitTotalNonUniform(cRevenue, currYear, 70, [0.72, 0.20, 0.08], [0.028, 0.022, 0.014]);
-  const pRevSplit = splitTotalNonUniform(pRevenue, prevYear, 70, [0.72, 0.20, 0.08], [0.028, 0.022, 0.014]);
-  const cCogsSplit = splitTotalNonUniform(cCogs, currYear, 80, [0.58, 0.22, 0.20], [0.025, 0.018, 0.016]);
-  const pCogsSplit = splitTotalNonUniform(pCogs, prevYear, 80, [0.58, 0.22, 0.20], [0.025, 0.018, 0.016]);
-  const cFinSplit = splitTotalNonUniform(cFinCost, currYear, 90, [0.65, 0.25, 0.10], [0.03, 0.022, 0.015]);
-  const pFinSplit = splitTotalNonUniform(pFinCost, prevYear, 90, [0.65, 0.25, 0.10], [0.03, 0.022, 0.015]);
-  const cInvSplit = splitTotalNonUniform(cInv, currYear, 100, [0.45, 0.20, 0.35], [0.028, 0.02, 0.025]);
-  const pInvSplit = splitTotalNonUniform(pInv, prevYear, 100, [0.45, 0.20, 0.35], [0.028, 0.02, 0.025]);
-  const cRecSplit = splitTotalNonUniform(cTrRec, currYear, 110, [0.65, 0.25, 0.10], [0.032, 0.022, 0.016]);
-  const pRecSplit = splitTotalNonUniform(pTrRec, prevYear, 110, [0.65, 0.25, 0.10], [0.032, 0.022, 0.016]);
-  const cCashSplit = splitTotalNonUniform(cCashBS, currYear, 120, [0.05, 0.70, 0.25], [0.01, 0.032, 0.028]);
-  const pCashSplit = splitTotalNonUniform(pCashBS, prevYear, 120, [0.05, 0.70, 0.25], [0.01, 0.032, 0.028]);
+  const pRevSplit = splitTotalNonUniform(pRevenue, prevYear, 70, [0.72, 0.20, 0.08], [0.032, 0.026, 0.016]);
+  const cRevSplit = splitTotalNonUniform(cRevenue, currYear, 70, [0.72, 0.20, 0.08], [0.032, 0.026, 0.016], pRevSplit, 1.35);
+  const pCogsSplit = splitTotalNonUniform(pCogs, prevYear, 80, [0.58, 0.22, 0.20], [0.028, 0.022, 0.020]);
+  const cCogsSplit = splitTotalNonUniform(cCogs, currYear, 80, [0.58, 0.22, 0.20], [0.028, 0.022, 0.020], pCogsSplit, 1.35);
+  const pFinSplit = splitTotalNonUniform(pFinCost, prevYear, 90, [0.65, 0.25, 0.10], [0.035, 0.026, 0.018]);
+  const cFinSplit = splitTotalNonUniform(cFinCost, currYear, 90, [0.65, 0.25, 0.10], [0.035, 0.026, 0.018], pFinSplit, 1.35);
+  const pInvSplit = splitTotalNonUniform(pInv, prevYear, 100, [0.45, 0.20, 0.35], [0.032, 0.024, 0.028]);
+  const cInvSplit = splitTotalNonUniform(cInv, currYear, 100, [0.45, 0.20, 0.35], [0.032, 0.024, 0.028], pInvSplit, 1.35);
+  const pRecSplit = splitTotalNonUniform(pTrRec, prevYear, 110, [0.65, 0.25, 0.10], [0.036, 0.026, 0.018]);
+  const cRecSplit = splitTotalNonUniform(cTrRec, currYear, 110, [0.65, 0.25, 0.10], [0.036, 0.026, 0.018], pRecSplit, 1.35);
+  const pCashSplit = splitTotalNonUniform(pCashBS, prevYear, 120, [0.06, 0.69, 0.25], [0.018, 0.036, 0.030]);
+  const cCashSplit = splitTotalNonUniform(cCashBS, currYear, 120, [0.06, 0.69, 0.25], [0.018, 0.036, 0.030], pCashSplit, 1.35);
 
   return [
     {
@@ -3334,14 +3937,19 @@ export function buildProjectedFormatData(
 
     const note11OpeningStock = prevInv;
     const note11ClosingStock = inventories;
-    const directShareRate = varyBounded(0.0155, inp.year, 195, 0.0032, 0.0105, 0.022);
+    const directShareRate = varyBounded(0.0155, inp.year, 195, 0.0042, 0.0095, 0.024);
     const directTotal = Math.round(costOfGoodsSold * directShareRate);
+    const prevDirectParts = prevProj
+      ? [prevProj.note11LabourWages, prevProj.note11ElectricityBill, prevProj.note11CarriageInward, prevProj.note11OtherDirectExpenses]
+      : undefined;
     const directSplit = splitTotalNonUniform(
       directTotal,
       inp.year,
       200,
       [0.18, 0.36, 0.21, 0.25],
-      [0.03, 0.045, 0.03, 0.035]
+      [0.038, 0.055, 0.038, 0.044],
+      prevDirectParts,
+      1.45
     );
     const note11LabourWages = directSplit[0];
     const note11ElectricityBill = directSplit[1];
@@ -3925,11 +4533,9 @@ export function implementRepaymentScheduleIntoModel({
   const ebitdaMargin = Math.max(0.14, (gmPct - opexPct) / 100);
   const firstProjYear = projYears[0] || (maxHistYear + 1);
   const lastHistInput = nextHistStore[histYears[histYears.length - 1]] || INITIAL_HISTORICAL_INPUTS[INITIAL_HISTORICAL_INPUTS.length - 1];
-  const revAmp = Math.max(0.004, Math.abs(revRate) * 0.15);
   const projRevRateForYear = (yr: number): number => {
     const step = Math.max(1, yr - firstProjYear + 1);
-    const maturityScale = step > 9 ? 0.90 : step > 5 ? 0.95 : 1.0;
-    return clampVal(revRate * maturityScale + deterministicAnnualWave(yr, 1) * revAmp, -0.05, 0.35);
+    return computeProjectedRevenueGrowthPct(yr, assumptions.revenueGrowthRate || 8.5, step) / 100;
   };
   const cumRevMult = (fromYr: number, toYr: number): number => {
     if (toYr === fromYr) return 1;
@@ -3952,11 +4558,11 @@ export function implementRepaymentScheduleIntoModel({
 
   for (const s of schedSummaries) {
     const annualDS = s.totalPrincipal + s.totalProfit;
-    // Sustainable business EBITDA must comfortably cover 1.52x Debt Service plus working capital / capex cushion
+    // Sustainable business EBITDA must comfortably cover 1.55x Debt Service plus working capital / capex cushion
     const taxAllowance = Math.max(0, (annualDS * 1.48 - s.totalProfit) * (taxPct / 100));
-    const reqEBITDA = Math.max(annualDS * 1.52 + taxAllowance * 0.45, investmentMade * 0.30);
-    // Account for minor year-by-year EBITDA margin variation (-0.015 worst-case safety buffer)
-    const reqRevThisYear = reqEBITDA / Math.max(0.12, ebitdaMargin - 0.015);
+    const reqEBITDA = Math.max(annualDS * 1.55 + taxAllowance * 0.45, investmentMade * 0.30);
+    // Account for realistic cyclical GM & OpEx margin swings (-0.042 worst-case safety buffer)
+    const reqRevThisYear = reqEBITDA / Math.max(0.10, ebitdaMargin - 0.042);
     const backDiscountedRev = reqRevThisYear / Math.max(0.1, cumRevMult(firstProjYear, s.financialYear));
     if (backDiscountedRev > requiredAnchorProjRev) {
       requiredAnchorProjRev = backDiscountedRev;
@@ -3981,7 +4587,7 @@ export function implementRepaymentScheduleIntoModel({
     const sched = schedMap.get(yr);
     const nextYrSched = schedMap.get(yr + 1);
 
-    // Determine Sales Revenue on smooth non-uniform business curve
+    // Determine Sales Revenue on irregular non-uniform business curve
     let salesRevenue: number;
     if (!isProjected) {
       if (shouldScaleHist) {
@@ -3995,6 +4601,7 @@ export function implementRepaymentScheduleIntoModel({
         salesRevenue = customProjectedOverrides[yr].salesRevenue;
       }
     }
+    const gRev = prevYear && prevYear.salesRevenue > 0 ? yoyPct(salesRevenue, prevYear.salesRevenue) : 0;
 
     // Productive Fixed Assets base scales with revenue & non-uniform capex/disposal cycles
     const prevGross = prevYear
@@ -4017,58 +4624,269 @@ export function implementRepaymentScheduleIntoModel({
       fixedAssetsDisposals = Math.round(existingInput.fixedAssetsDisposals * scaleFactorApplied);
     } else {
       const disbBoost = !isFirstProjYear && sched && sched.disbursementAmount > 0 ? Math.round(sched.disbursementAmount * 0.45) : 0;
-      const yearCapexPct = clampVal(capexPct * (1 + deterministicAnnualWave(yr, 11) * 0.14), 1.5, 22);
-      const capexBase = Math.round(salesRevenue * (yearCapexPct / 100));
+      const minCapexPct = Math.max(1.5, capexPct * 0.58);
+      const maxCapexPct = Math.min(22, capexPct * 1.48);
+      const yearCapexPct = clampVal(capexPct * (1 + deterministicAnnualWave(yr, 11) * 0.34), minCapexPct, maxCapexPct);
+      const capexBase = prevYear && prevYear.fixedAssetsAdditions > 0
+        ? computeSpreadValue(
+            salesRevenue * (yearCapexPct / 100),
+            prevYear.fixedAssetsAdditions,
+            Math.round(salesRevenue * (minCapexPct / 100)),
+            Math.round(salesRevenue * (maxCapexPct / 100)),
+            [gRev],
+            yr,
+            11,
+            1.6
+          )
+        : Math.round(salesRevenue * (yearCapexPct / 100));
       fixedAssetsAdditions = capexBase + disbBoost;
-      const yearDispRate = varyBounded(0.011, yr, 12, 0.0032, 0.005, 0.02);
-      fixedAssetsDisposals = Math.round(prevGross * yearDispRate);
+      const gAdd = prevYear && prevYear.fixedAssetsAdditions > 0 ? yoyPct(fixedAssetsAdditions, prevYear.fixedAssetsAdditions) : 0;
+      const yearDispRate = varyBounded(0.011, yr, 12, 0.0058, 0.0045, 0.023);
+      fixedAssetsDisposals = prevYear && prevYear.fixedAssetsDisposals > 0
+        ? computeSpreadValue(
+            prevGross * yearDispRate,
+            prevYear.fixedAssetsDisposals,
+            Math.round(prevGross * 0.0045),
+            Math.round(prevGross * 0.023),
+            [gAdd, gRev],
+            yr,
+            12,
+            1.6
+          )
+        : Math.round(prevGross * yearDispRate);
       fixedAssetsGross = Math.max(100, prevGross + fixedAssetsAdditions - fixedAssetsDisposals);
     }
 
-    const depCharge = Math.round(((prevGross + fixedAssetsGross) / 2) * (depPct / 100));
-    const yearGmPct = varyBounded(gmPct, yr, 2, 0.65, 18, 82);
-    const yearOpexPct = varyBounded(opexPct, yr, 3, 0.50, 3, 50);
-    const costOfSales = Math.round(salesRevenue * (1 - yearGmPct / 100));
-    const operatingExpenses = Math.round(salesRevenue * (yearOpexPct / 100));
+    const gGrossFA = prevYear && prevGross > 0 ? yoyPct(fixedAssetsGross, prevGross) : null;
+    const prevOpeningGrossOpt = prevYear
+      ? Math.max(0, prevGross - (prevYear.fixedAssetsAdditions || 0) + (prevYear.fixedAssetsDisposals || 0))
+      : 0;
+    const prevDepChargeOpt = prevYear && prevGross > 0
+      ? Math.round(((prevOpeningGrossOpt + prevGross) / 2) * ((prevYear.depreciationRate || depPct) / 100))
+      : null;
+    const effectiveDepPct = isProjected
+      ? computeProjectedDepRatePct(
+          depPct,
+          yr,
+          gGrossFA,
+          prevDepChargeOpt,
+          prevGross,
+          fixedAssetsGross
+        )
+      : depPct;
+
+    const depCharge = Math.round(((prevGross + fixedAssetsGross) / 2) * (effectiveDepPct / 100));
+    const targetCosPct = 100 - gmPct;
+    const prevCosPct = prevYear && prevYear.salesRevenue > 0 ? (prevYear.costOfSales / prevYear.salesRevenue) * 100 : targetCosPct;
+    const rawCosPct = varyBounded(
+      isProjected && prevYear ? prevCosPct * 0.25 + targetCosPct * 0.75 : targetCosPct,
+      yr,
+      2,
+      2.1,
+      Math.max(18, targetCosPct - 3.4),
+      Math.min(82, targetCosPct + 3.4)
+    );
+    const costOfSales = isProjected && prevYear
+      ? computeSpreadValue(
+          salesRevenue * (rawCosPct / 100),
+          prevYear.costOfSales,
+          Math.round(salesRevenue * (Math.max(18, targetCosPct - 3.4) / 100)),
+          Math.round(salesRevenue * (Math.min(82, targetCosPct + 3.4) / 100)),
+          [gRev],
+          yr,
+          2,
+          1.55
+        )
+      : Math.round(salesRevenue * (rawCosPct / 100));
+    const gCos = prevYear && prevYear.costOfSales > 0 ? yoyPct(costOfSales, prevYear.costOfSales) : 0;
+
+    const prevOpexPct = prevYear && prevYear.salesRevenue > 0 ? (prevYear.operatingExpenses / prevYear.salesRevenue) * 100 : opexPct;
+    const rawOpexPct = varyBounded(
+      isProjected && prevYear ? prevOpexPct * 0.25 + opexPct * 0.75 : opexPct,
+      yr,
+      3,
+      1.75,
+      Math.max(3, opexPct - 2.4),
+      Math.min(50, opexPct + 2.4)
+    );
+    const minOpexVal = Math.round(salesRevenue * (Math.max(3, opexPct - 2.4) / 100));
+    const maxOpexVal = Math.round(salesRevenue * (Math.min(50, opexPct + 2.4) / 100));
+    let operatingExpenses = isProjected && prevYear
+      ? computeSpreadValue(
+          salesRevenue * (rawOpexPct / 100),
+          prevYear.operatingExpenses,
+          minOpexVal,
+          maxOpexVal,
+          [gRev, gCos],
+          yr,
+          3,
+          1.55
+        )
+      : Math.round(salesRevenue * (rawOpexPct / 100));
     const interestIncome = Math.round(salesRevenue * computeInterestIncomeRate(yr, isProjected));
 
     // Exact Schedule Locks for Principal & Profit! NEVER altered!
     const exactFinanceCost = sched
       ? sched.totalProfit
-      : (existingInput ? (shouldScaleHist && !isProjected ? Math.round(existingInput.financeCost * scaleFactorApplied) : existingInput.financeCost) : Math.max(100, Math.round((prevYear ? prevYear.longTermBorrowings + prevYear.shortTermBorrowings : salesRevenue * 0.15) * varyBounded(0.085, yr, 14, 0.005, 0.05, 0.14))));
+      : (existingInput ? (shouldScaleHist && !isProjected ? Math.round(existingInput.financeCost * scaleFactorApplied) : existingInput.financeCost) : Math.max(100, Math.round((prevYear ? prevYear.longTermBorrowings + prevYear.shortTermBorrowings : salesRevenue * 0.15) * varyBounded(0.085, yr, 14, 0.0085, 0.045, 0.15))));
 
     const exactRepayment = sched
       ? sched.totalPrincipal
-      : (existingInput ? (shouldScaleHist && !isProjected ? Math.round(existingInput.repaymentOfBorrowings * scaleFactorApplied) : existingInput.repaymentOfBorrowings) : Math.round((prevYear ? prevYear.longTermBorrowings : salesRevenue * 0.1) * varyBounded(0.12, yr, 15, 0.014, 0.07, 0.21)));
+      : (existingInput ? (shouldScaleHist && !isProjected ? Math.round(existingInput.repaymentOfBorrowings * scaleFactorApplied) : existingInput.repaymentOfBorrowings) : Math.round((prevYear ? prevYear.longTermBorrowings : salesRevenue * 0.1) * varyBounded(0.12, yr, 15, 0.022, 0.065, 0.22)));
 
-    // P&L forward calculation incorporating exact Finance Cost
-    const operatingProfit = salesRevenue - costOfSales - operatingExpenses - depCharge;
-    const profitBeforeTax = r2(operatingProfit + interestIncome - exactFinanceCost);
-    const taxExpense = profitBeforeTax > 0 ? r2(profitBeforeTax * (taxPct / 100)) : 0;
+    // P&L forward calculation incorporating exact Finance Cost, keeping NP spread distinct from Rev/CoS/OpEx
+    const calcNp = (opexArg: number): { pbt: number; tax: number; np: number } => {
+      const opProf = salesRevenue - costOfSales - opexArg - depCharge;
+      const pbtVal = r2(opProf + interestIncome - exactFinanceCost);
+      const taxVal = pbtVal > 0 ? r2(pbtVal * (taxPct / 100)) : 0;
+      const npVal = r2(pbtVal - taxVal);
+      return { pbt: pbtVal, tax: taxVal, np: npVal };
+    };
+
+    let { np: computedNp } = calcNp(operatingExpenses);
+    if (isProjected && prevYear && prevYear.netProfit > 0) {
+      const gOp0 = yoyPct(operatingExpenses, prevYear.operatingExpenses);
+      const gNp0 = yoyPct(computedNp, prevYear.netProfit);
+      const minSp = Math.min(Math.abs(gNp0 - gRev), Math.abs(gNp0 - gCos), Math.abs(gNp0 - gOp0));
+      if (minSp < 1.48) {
+        let bestOpex = operatingExpenses;
+        let bestDist = Infinity;
+        let bestMinSp = minSp;
+        const span = Math.max(1, maxOpexVal - minOpexVal);
+        for (let i = 0; i <= 40; i++) {
+          const candOpex = Math.round(minOpexVal + (span * i) / 40);
+          const gO = yoyPct(candOpex, prevYear.operatingExpenses);
+          const { np: candNp } = calcNp(candOpex);
+          const gN = yoyPct(candNp, prevYear.netProfit);
+          const sp = Math.min(
+            Math.abs(gO - gRev),
+            Math.abs(gO - gCos),
+            Math.abs(gN - gRev),
+            Math.abs(gN - gCos),
+            Math.abs(gN - gO)
+          );
+          const dist = Math.abs(candOpex - operatingExpenses);
+          if (sp >= 1.48) {
+            if (bestMinSp < 1.48 || dist < bestDist) {
+              bestOpex = candOpex;
+              bestDist = dist;
+              bestMinSp = sp;
+            }
+          } else if (bestMinSp < 1.48 && sp > bestMinSp) {
+            bestOpex = candOpex;
+            bestMinSp = sp;
+          }
+        }
+        operatingExpenses = bestOpex;
+        computedNp = calcNp(operatingExpenses).np;
+      }
+    }
+
     const netProfit = sched || isProjected || shouldScaleHist
-      ? r2(profitBeforeTax - taxExpense)
-      : (existingInput?.netProfit ?? r2(profitBeforeTax - taxExpense));
+      ? computedNp
+      : (existingInput?.netProfit ?? computedNp);
 
-    // Working capital items aligned logically to Sales / CoS with smooth non-uniform annual turnover variations
+    // Working capital items aligned logically to Sales / CoS with non-uniform turnover & >= 1.2pp spreads
     const prevDio = prevYear && prevYear.costOfSales > 0 ? (prevYear.closingInventory / prevYear.costOfSales) * 365 : dio;
-    const yearDio = varyBounded(isProjected && prevYear ? prevDio * 0.38 + dio * 0.62 : dio, yr, 4, Math.max(1.4, dio * 0.04), 5, 220);
+    const minDio = Math.max(5, dio * 0.84);
+    const maxDio = Math.min(220, dio * 1.16);
+    const yearDio = varyBounded(isProjected && prevYear ? prevDio * 0.30 + dio * 0.70 : dio, yr, 4, Math.max(3.0, dio * 0.095), minDio, maxDio);
     const closingInventory = (!isProjected && existingInput && !shouldScaleHist)
       ? existingInput.closingInventory
+      : isProjected && prevYear
+      ? computeSpreadValue(
+          (costOfSales / 365) * yearDio,
+          prevYear.closingInventory,
+          Math.round((costOfSales / 365) * minDio),
+          Math.round((costOfSales / 365) * maxDio),
+          [gRev, gCos],
+          yr,
+          4,
+          1.50
+        )
       : Math.round((costOfSales / 365) * yearDio);
+    const gInv = prevYear && prevYear.closingInventory > 0 ? yoyPct(closingInventory, prevYear.closingInventory) : 0;
+
     const prevDso = prevYear && prevYear.salesRevenue > 0 ? (prevYear.tradeReceivables / prevYear.salesRevenue) * 365 : dso;
-    const yearDso = varyBounded(isProjected && prevYear ? prevDso * 0.35 + dso * 0.65 : dso, yr, 5, Math.max(1.2, dso * 0.036), 5, 180);
-    const tradeReceivables = Math.round((salesRevenue / 365) * yearDso);
-    const otherRecRatio = varyBounded(0.16, yr, 7, 0.011, 0.11, 0.23);
-    const otherReceivables = Math.round(tradeReceivables * otherRecRatio);
+    const minDso = Math.max(5, dso * 0.84);
+    const maxDso = Math.min(180, dso * 1.16);
+    const yearDso = varyBounded(isProjected && prevYear ? prevDso * 0.30 + dso * 0.70 : dso, yr, 5, Math.max(2.2, dso * 0.095), minDso, maxDso);
+    const tradeReceivables = isProjected && prevYear
+      ? computeSpreadValue(
+          (salesRevenue / 365) * yearDso,
+          prevYear.tradeReceivables,
+          Math.round((salesRevenue / 365) * minDso),
+          Math.round((salesRevenue / 365) * maxDso),
+          [gRev, gInv, gCos],
+          yr,
+          5,
+          1.50
+        )
+      : Math.round((salesRevenue / 365) * yearDso);
+    const gTrRec = prevYear && prevYear.tradeReceivables > 0 ? yoyPct(tradeReceivables, prevYear.tradeReceivables) : 0;
+
+    const otherRecRatio = varyBounded(0.16, yr, 7, 0.028, 0.11, 0.23);
+    const otherReceivables = isProjected && prevYear
+      ? computeSpreadValue(
+          tradeReceivables * otherRecRatio,
+          prevYear.otherReceivables,
+          Math.round(tradeReceivables * 0.105),
+          Math.round(tradeReceivables * 0.235),
+          [gTrRec, gInv, gRev],
+          yr,
+          7,
+          1.50
+        )
+      : Math.round(tradeReceivables * otherRecRatio);
+    const gOthRec = prevYear && prevYear.otherReceivables > 0 ? yoyPct(otherReceivables, prevYear.otherReceivables) : 0;
+
     const prevDpo = prevYear && prevYear.costOfSales > 0 ? (prevYear.tradePayables / prevYear.costOfSales) * 365 : dpo;
-    const yearDpo = varyBounded(isProjected && prevYear ? prevDpo * 0.38 + dpo * 0.62 : dpo, yr, 6, Math.max(1.2, dpo * 0.038), 5, 180);
-    const tradePayables = Math.round((costOfSales / 365) * yearDpo);
-    const otherPayRatio = varyBounded(0.25, yr, 8, 0.014, 0.18, 0.33);
-    const otherPayables = Math.round(tradePayables * otherPayRatio);
-    const ocaGrowth = varyBounded(0.042, yr, 9, 0.015, 0.015, 0.075);
+    const minDpo = Math.max(5, dpo * 0.84);
+    const maxDpo = Math.min(180, dpo * 1.16);
+    const yearDpo = varyBounded(isProjected && prevYear ? prevDpo * 0.32 + dpo * 0.68 : dpo, yr, 6, Math.max(2.2, dpo * 0.095), minDpo, maxDpo);
+    const tradePayables = isProjected && prevYear
+      ? computeSpreadValue(
+          (costOfSales / 365) * yearDpo,
+          prevYear.tradePayables,
+          Math.round((costOfSales / 365) * minDpo),
+          Math.round((costOfSales / 365) * maxDpo),
+          [gCos, gInv, gTrRec],
+          yr,
+          6,
+          1.50
+        )
+      : Math.round((costOfSales / 365) * yearDpo);
+    const gTrPay = prevYear && prevYear.tradePayables > 0 ? yoyPct(tradePayables, prevYear.tradePayables) : 0;
+
+    const otherPayRatio = varyBounded(0.25, yr, 8, 0.032, 0.18, 0.33);
+    const otherPayables = isProjected && prevYear
+      ? computeSpreadValue(
+          tradePayables * otherPayRatio,
+          prevYear.otherPayables,
+          Math.round(tradePayables * 0.175),
+          Math.round(tradePayables * 0.335),
+          [gTrPay, gCos],
+          yr,
+          8,
+          1.50
+        )
+      : Math.round(tradePayables * otherPayRatio);
+
+    const ocaGrowth = varyBounded(0.024, yr, 9, 0.056, -0.045, 0.088);
     const otherCurrentAssets = prevYear
-      ? Math.round(prevYear.otherCurrentAssets * (1 + ocaGrowth))
-      : Math.round(salesRevenue * varyBounded(0.015, yr, 9, 0.003, 0.008, 0.025));
+      ? isProjected
+        ? computeSpreadValue(
+            prevYear.otherCurrentAssets * (1 + ocaGrowth),
+            prevYear.otherCurrentAssets,
+            Math.max(100, Math.round(prevYear.otherCurrentAssets * 0.955)),
+            Math.round(prevYear.otherCurrentAssets * 1.088),
+            [gTrRec, gOthRec, gInv],
+            yr,
+            9,
+            1.50
+          )
+        : Math.round(prevYear.otherCurrentAssets * (1 + ocaGrowth))
+      : Math.round(salesRevenue * varyBounded(0.015, yr, 9, 0.004, 0.008, 0.025));
 
     // Borrowings & Financing Cash Flow synchronized cleanly with Schedule Balance & Disbursement
     const prevLT = prevYear
@@ -4085,14 +4903,14 @@ export function implementRepaymentScheduleIntoModel({
       financingProceedsBorrowings = 0;
     } else if (sched) {
       if (sched.disbursementAmount > 0) {
-        financingProceedsBorrowings = r2(sched.disbursementAmount + Math.round(salesRevenue * varyBounded(0.015, yr, 19, 0.003, 0.009, 0.022)));
+        financingProceedsBorrowings = r2(sched.disbursementAmount + Math.round(salesRevenue * varyBounded(0.015, yr, 19, 0.004, 0.008, 0.023)));
       } else {
         financingProceedsBorrowings = 0;
       }
     } else if (existingInput && !isProjected) {
       financingProceedsBorrowings = Math.round((existingInput.financingProceedsBorrowings || 0) * (shouldScaleHist ? scaleFactorApplied : 1));
     } else {
-      financingProceedsBorrowings = Math.round(prevST * varyBounded(0.12, yr, 19, 0.032, 0.06, 0.20));
+      financingProceedsBorrowings = Math.round(prevST * varyBounded(0.12, yr, 19, 0.042, 0.055, 0.21));
     }
 
     // Ensure total debt never drops below remaining scheduled balance + stays non-negative
@@ -4101,12 +4919,29 @@ export function implementRepaymentScheduleIntoModel({
     }
     const targetTotalDebt = Math.max(sched?.closingBalance ?? 0, r2(prevTotalDebt + financingProceedsBorrowings - exactRepayment));
     const currentMatOfLT = nextYrSched ? nextYrSched.totalPrincipal : 0;
-    const stSalesFloor = Math.round(salesRevenue * varyBounded(0.03, yr, 17, 0.006, 0.018, 0.042));
+    const stSalesFloor = Math.round(salesRevenue * varyBounded(0.03, yr, 17, 0.009, 0.015, 0.045));
     const shortTermBorrowings = r2(Math.min(targetTotalDebt, Math.max(currentMatOfLT, stSalesFloor)));
     const longTermBorrowings = r2(Math.max(0, targetTotalDebt - shortTermBorrowings));
 
-    const yearDivPayout = divPayout > 0 ? varyBounded(divPayout, yr, 13, Math.min(3.5, divPayout * 0.14), 2, 40) : 0;
-    const dividendsPaid = Math.round(Math.max(0, netProfit) * (yearDivPayout / 100));
+    const yearDivPayout = divPayout > 0 ? varyBounded(divPayout, yr, 13, Math.min(5.5, divPayout * 0.22), 2, 40) : 0;
+    const gNp = prevYear && prevYear.netProfit > 0 ? yoyPct(netProfit, prevYear.netProfit) : 0;
+    const gRepay = prevYear && prevYear.repaymentOfBorrowings > 0 ? yoyPct(exactRepayment, prevYear.repaymentOfBorrowings) : 0;
+    const gFin = prevYear && prevYear.financeCost > 0 ? yoyPct(exactFinanceCost, prevYear.financeCost) : 0;
+    const dividendsPaid =
+      divPayout > 0 && netProfit > 0
+        ? isProjected && prevYear
+          ? computeSpreadValue(
+              netProfit * (yearDivPayout / 100),
+              prevYear.dividendsPaid,
+              Math.round(netProfit * (Math.max(2, divPayout * 0.72) / 100)),
+              Math.round(netProfit * (Math.min(40, divPayout * 1.28) / 100)),
+              [gNp, gRepay, gFin],
+              yr,
+              13,
+              1.50
+            )
+          : Math.round(netProfit * (yearDivPayout / 100))
+        : 0;
     const shareCapital = prevYear
       ? prevYear.shareCapital
       : Math.round((existingInput?.shareCapital || 12000) * (shouldScaleHist ? scaleFactorApplied : 1));
@@ -4129,7 +4964,7 @@ export function implementRepaymentScheduleIntoModel({
       cashFlowFromFinancing,
       fixedAssetsAdditions,
       fixedAssetsDisposals,
-      depreciationRate: depPct,
+      depreciationRate: effectiveDepPct,
       costOfSales,
       operatingExpenses,
       taxRate: taxPct,
@@ -4140,7 +4975,7 @@ export function implementRepaymentScheduleIntoModel({
       cashAndEquivalentsBS,
       otherCurrentAssets,
       intangibleAssets: prevYear
-        ? Math.max(0, prevYear.intangibleAssets - Math.min(prevYear.intangibleAssets, Math.round(salesRevenue * varyBounded(0.002, yr, 15, 0.0005, 0.001, 0.003))))
+        ? Math.max(0, prevYear.intangibleAssets - Math.min(prevYear.intangibleAssets, Math.round(salesRevenue * varyBounded(0.002, yr, 15, 0.0007, 0.0008, 0.0034))))
         : Math.round((existingInput?.intangibleAssets || 1400) * (shouldScaleHist ? scaleFactorApplied : 1)),
       otherNonCurrentAssets: prevYear
         ? prevYear.otherNonCurrentAssets
