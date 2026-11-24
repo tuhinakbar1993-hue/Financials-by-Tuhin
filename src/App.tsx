@@ -93,7 +93,7 @@ export default function App() {
   // Statement-level cell & label overrides for universal inline editing
   const [cellOverrides, setCellOverrides] = useState<StatementCellOverrides>({});
   const [labelOverrides, setLabelOverrides] = useState<StatementLabelOverrides>({});
-  const [customNotes, setCustomNotes] = useState<FinancialNoteItem[] | null>(null);
+  const [noteEdits, setNoteEdits] = useState<Record<number, { title?: string; textDescription?: string }>>({});
 
   // Modals state
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
@@ -135,7 +135,18 @@ export default function App() {
   const baseYearInput = activeHistoricalInputs[activeHistoricalInputs.length - 1] || INITIAL_HISTORICAL_INPUTS[INITIAL_HISTORICAL_INPUTS.length - 1];
   const generatedProjected = useMemo(() => {
     const raw = generateProjectedYears(baseYearInput, assumptions);
-    return raw.map(y => customProjectedOverrides[y.year] || y);
+    return raw.map((y, idx) => {
+      const resolved = customProjectedOverrides[y.year] || y;
+      if (idx === 0 && (resolved.financingProceedsBorrowings || 0) !== 0) {
+        const removed = resolved.financingProceedsBorrowings || 0;
+        return {
+          ...resolved,
+          financingProceedsBorrowings: 0,
+          cashFlowFromFinancing: Math.round(((resolved.cashFlowFromFinancing || 0) - removed + Number.EPSILON) * 100) / 100,
+        };
+      }
+      return resolved;
+    });
   }, [baseYearInput, assumptions, customProjectedOverrides]);
 
   // Combined All Years (Selected Historical + Selected Projected)
@@ -188,7 +199,12 @@ export default function App() {
     );
   }, [companyProfile, allYearsInputs, incomeStatements, balanceSheets, cashFlowStatements, fixedAssetsSchedule, statementConfig, labelOverrides, cellOverrides]);
 
-  const effectiveNotes = customNotes || defaultNotes;
+  const effectiveNotes = useMemo(() => {
+    return defaultNotes.map(note => {
+      const edit = noteEdits[note.noteNumber];
+      return edit ? { ...note, ...edit } : note;
+    });
+  }, [defaultNotes, noteEdits]);
 
   // Exact Compliance Format Datasets (Previous Financials & Projected Financials)
   const previousFormatData = useMemo(() => {
@@ -710,7 +726,7 @@ export default function App() {
 
     // Custom statement item value edit (id passed as field when statement === 'custom' or field starts with 'custom_')
     if (statement === 'custom' || field.startsWith('custom_')) {
-      const targetId = field.startsWith('custom_') ? field : field;
+      const targetId = field;
       setStatementConfig(prev =>
         prev.map(item =>
           item.id === targetId
@@ -718,7 +734,7 @@ export default function App() {
                 ...item,
                 customValues: {
                   ...(item.customValues || {}),
-                  [year]: val,
+                  [year]: item.sign === 'negative' ? Math.abs(val) : val,
                 },
               }
             : item
@@ -755,6 +771,12 @@ export default function App() {
     };
 
     const targetField = fieldMapping[field];
+    const firstProjYear = generatedProjected[0]?.year;
+
+    // Restrict fresh Loan Received / Proceeds from Borrowings in the first projected year (existing loan rescheduling)
+    if (targetField === 'financingProceedsBorrowings' && firstProjYear !== undefined && year === firstProjYear && val !== 0) {
+      return;
+    }
 
     // Check Repayment Schedule lock BEFORE modifying state
     if (
@@ -775,11 +797,14 @@ export default function App() {
       if (targetField === 'repaymentOfBorrowings') {
         const absVal = Math.abs(val);
         const diff = absVal - (yearObj.repaymentOfBorrowings || 0);
+        const effectiveBorrowProceeds =
+          firstProjYear !== undefined && year === firstProjYear ? 0 : (updatedYear.financingProceedsBorrowings || 0);
         updatedYear.repaymentOfBorrowings = absVal;
         updatedYear.financingRepaymentBorrowings = -absVal;
+        updatedYear.financingProceedsBorrowings = effectiveBorrowProceeds;
         updatedYear.cashFlowFromFinancing =
           (updatedYear.financingProceedsShares || 0) +
-          (updatedYear.financingProceedsBorrowings || 0) -
+          effectiveBorrowProceeds -
           absVal -
           updatedYear.dividendsPaid;
         updatedYear.longTermBorrowings = Math.max(0, (yearObj.longTermBorrowings || 0) - diff);
@@ -900,11 +925,31 @@ export default function App() {
     });
   };
 
+  // Handler: Update Note title/text edits while keeping live numeric tables & Note 12 calculations dynamic
+  const handleUpdateNotes = (updatedNotes: FinancialNoteItem[]) => {
+    setNoteEdits(prev => {
+      const next = { ...prev };
+      updatedNotes.forEach(un => {
+        const def = defaultNotes.find(d => d.noteNumber === un.noteNumber);
+        if (!def) return;
+        const editEntry: { title?: string; textDescription?: string } = {};
+        if (un.title !== def.title) editEntry.title = un.title;
+        if (un.textDescription !== def.textDescription) editEntry.textDescription = un.textDescription;
+        if (editEntry.title !== undefined || editEntry.textDescription !== undefined) {
+          next[un.noteNumber] = editEntry;
+        } else {
+          delete next[un.noteNumber];
+        }
+      });
+      return next;
+    });
+  };
+
   // Reset all custom overrides back to pure calculation engine defaults
   const handleResetOverrides = () => {
     setCellOverrides({});
     setLabelOverrides({});
-    setCustomNotes(null);
+    setNoteEdits({});
     const defaultLabelMap = new Map(DEFAULT_STATEMENT_CONFIG_ITEMS.map(d => [d.id, d.label]));
     setStatementConfig(prev =>
       prev.map(item =>
@@ -1089,7 +1134,7 @@ export default function App() {
               onUpdateStatementLabel={handleUpdateStatementLabel}
               onUpdateFixedAssetsCategory={handleUpdateFixedAssetsCategory}
               onResetOverrides={handleResetOverrides}
-              onUpdateNotes={setCustomNotes}
+              onUpdateNotes={handleUpdateNotes}
               previousFormatData={previousFormatData}
               previousComparativePairs={previousComparativePairs}
               getPairScopedNotes={getPairScopedNotes}

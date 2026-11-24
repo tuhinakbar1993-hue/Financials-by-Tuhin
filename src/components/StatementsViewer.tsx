@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   FileSpreadsheet,
   FileText,
@@ -65,7 +65,7 @@ import {
   exportProjectedFinancialsPdf,
   resolveFACategoriesForExport,
 } from '../services/exportService';
-import { getCustomItemYearValue, FIXED_ASSET_CATEGORY_CONFIG_IDS } from '../services/financialEngine';
+import { getCustomItemYearValue, FIXED_ASSET_CATEGORY_CONFIG_IDS, generateNotesToFinancialStatements } from '../services/financialEngine';
 import { PreviousFormatSuiteView, ProjectedFormatSuiteView } from './FormatStatementsViews';
 import { YearSelectorControl } from './YearSelectorControl';
 
@@ -190,9 +190,9 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
   };
 
   const getCustomItems = (stmt: StatementConfigItem['statement'], section?: string) =>
-    statementConfig.filter(
-      c => c.isCustom && c.statement === stmt && (!section || c.section === section)
-    );
+    statementConfig
+      .filter(c => c.isCustom && c.statement === stmt && (!section || c.section === section))
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 
   const exportSyncOptions = { statementConfig, labelOverrides, cellOverrides };
   const totalConfigCount = statementConfig.length;
@@ -229,6 +229,59 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
   const filteredFixedAssets = filterYears(fixedAssetsData);
   const activeYearSet = new Set(filteredIncome.map(d => d.year));
   const filteredDscr = debtServiceCoverage.filter(d => activeYearSet.has(d.year));
+
+  const filteredNotes = useMemo(() => {
+    if (yearViewMode === 'all' || filteredIncome.length === 0) {
+      return notes;
+    }
+    const baseOpts = { statementConfig, labelOverrides, cellOverrides };
+    const unfilteredDefaults = generateNotesToFinancialStatements(
+      companyProfile,
+      incomeData.map(y => y.year),
+      incomeData,
+      balanceData,
+      cashFlowData,
+      fixedAssetsData,
+      baseOpts
+    );
+    const scoped = generateNotesToFinancialStatements(
+      companyProfile,
+      filteredIncome.map(y => y.year),
+      filteredIncome,
+      filteredBalance,
+      filteredCashFlow,
+      filteredFixedAssets,
+      baseOpts
+    );
+    return scoped.map(sn => {
+      const userNote = notes.find(n => n.noteNumber === sn.noteNumber);
+      const defNote = unfilteredDefaults.find(n => n.noteNumber === sn.noteNumber);
+      if (!userNote || !defNote) return sn;
+      return {
+        ...sn,
+        title: userNote.title !== defNote.title ? userNote.title : sn.title,
+        textDescription:
+          userNote.textDescription !== defNote.textDescription
+            ? userNote.textDescription
+            : sn.textDescription,
+      };
+    });
+  }, [
+    yearViewMode,
+    notes,
+    companyProfile,
+    incomeData,
+    balanceData,
+    cashFlowData,
+    fixedAssetsData,
+    filteredIncome,
+    filteredBalance,
+    filteredCashFlow,
+    filteredFixedAssets,
+    statementConfig,
+    labelOverrides,
+    cellOverrides,
+  ]);
 
   // Helper to get effective cell value (checks cellOverrides first, falls back to original)
   const getVal = (stmt: string, field: string, year: number, fallback: number): number => {
@@ -271,7 +324,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         exportFixedAssetsExcel(companyProfile, filteredFixedAssets, exportSyncOptions);
         break;
       case 'notes':
-        exportNotesExcel(companyProfile, notes);
+        exportNotesExcel(companyProfile, filteredNotes);
         break;
       case 'complete':
         exportCompletePackageExcel(
@@ -281,7 +334,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
           filteredCashFlow,
           filteredEquity,
           filteredFixedAssets,
-          notes,
+          filteredNotes,
           undefined,
           isScheduleImplemented ? filteredDscr : undefined,
           exportSyncOptions
@@ -299,7 +352,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         filteredCashFlow,
         filteredEquity,
         filteredFixedAssets,
-        notes,
+        filteredNotes,
         undefined,
         isScheduleImplemented ? filteredDscr : undefined,
         exportSyncOptions
@@ -307,7 +360,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
       return;
     }
     if (activeStatement === 'notes') {
-      exportNotesWord(companyProfile, notes);
+      exportNotesWord(companyProfile, filteredNotes);
       return;
     }
     const { title, headers, rows } = getTableDataForExport(activeStatement);
@@ -323,7 +376,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         filteredCashFlow,
         filteredEquity,
         filteredFixedAssets,
-        notes,
+        filteredNotes,
         undefined,
         isScheduleImplemented ? filteredDscr : undefined,
         exportSyncOptions
@@ -331,7 +384,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
       return;
     }
     if (activeStatement === 'notes') {
-      exportNotesPdf(companyProfile, notes);
+      exportNotesPdf(companyProfile, filteredNotes);
       return;
     }
     const { title, headers, rows } = getTableDataForExport(activeStatement);
@@ -345,13 +398,15 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         const stdIncomeSections = ['Revenue & Gross Margin', 'Operating Expenses', 'Non-Operating & Tax'];
         const visCustRev = getCustomItems('income', 'Revenue & Gross Margin').filter(c => c.isVisible);
         const visCustOpex = getCustomItems('income', 'Operating Expenses').filter(c => c.isVisible);
-        const visCustNonOp = statementConfig.filter(
-          c =>
-            c.isCustom &&
-            c.isVisible &&
-            c.statement === 'income' &&
-            (c.section === 'Non-Operating & Tax' || !stdIncomeSections.includes(c.section))
-        );
+        const visCustNonOp = statementConfig
+          .filter(
+            c =>
+              c.isCustom &&
+              c.isVisible &&
+              c.statement === 'income' &&
+              (c.section === 'Non-Operating & Tax' || !stdIncomeSections.includes(c.section))
+          )
+          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
         if (isElemVisible('inc_revenue')) {
           rows.push([
             getLbl('income', 'revenue', 'Sales Revenue', 'inc_revenue'),
@@ -452,6 +507,14 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         });
         rows.push([getLbl('bs', 'totalEquity', 'TOTAL EQUITY'), ...filteredBalance.map(d => getVal('bs', 'totalEquity', d.year, d.totalEquity))]);
         rows.push([getLbl('bs', 'totalLiabilitiesAndEquity', 'TOTAL LIABILITIES & EQUITY'), ...filteredBalance.map(d => getVal('bs', 'totalLiabilitiesAndEquity', d.year, d.totalLiabilitiesAndEquity))]);
+        rows.push([
+          'Balance Check',
+          ...filteredBalance.map(d => {
+            const totA = getVal('bs', 'totalAssets', d.year, d.totalAssets);
+            const totLE = getVal('bs', 'totalLiabilitiesAndEquity', d.year, d.totalLiabilitiesAndEquity);
+            return Math.round((totA - totLE) * 100) / 100;
+          }),
+        ]);
         return {
           title: 'Statement of Financial Position',
           headers: ['Line Item', ...filteredBalance.map(d => `${d.year}${d.isProjected ? ' (P)' : ''}`)],
@@ -473,6 +536,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         getCustomItems('equity').filter(c => c.isVisible).forEach(ci => {
           rows.push([ci.label, ...filteredEquity.map(d => getCustomItemYearValue(ci, d.year))]);
         });
+        rows.push([getLbl('eq', 'totalOpeningEquity', 'TOTAL OPENING EQUITY'), ...filteredEquity.map(d => getVal('eq', 'totalOpeningEquity', d.year, d.totalOpeningEquity))]);
         rows.push([getLbl('eq', 'totalClosingEquity', 'TOTAL CLOSING SHAREHOLDERS EQUITY'), ...filteredEquity.map(d => getVal('eq', 'totalClosingEquity', d.year, d.totalClosingEquity))]);
         return {
           title: 'Statement of Changes in Equity',
@@ -488,7 +552,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         const cats = resolveFACategoriesForExport(latest, exportSyncOptions);
         return {
           title: `Schedule of Fixed Assets — FY ${latest.year}`,
-          headers: ['Asset Class', 'Dep %', 'Opening Cost', 'Additions', 'Disposals', 'Closing Cost', 'Opening Dep', 'Charge', 'Closing Dep', 'Net Book Value'],
+          headers: ['Asset Class', 'Dep %', 'Opening Cost', 'Additions', 'Disposals', 'Closing Cost', 'Opening Dep', 'Charge', 'Dep. Disposals', 'Closing Dep', 'Net Book Value'],
           rows: [
             ...cats.map(c => [
               c.name,
@@ -499,6 +563,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
               c.costClosing,
               c.depOpening,
               c.depCharge,
+              c.depDisposals,
               c.depClosing,
               c.netBookValue,
             ]),
@@ -511,6 +576,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
               latest.totalCostClosing,
               latest.totalDepOpening,
               latest.totalDepCharge,
+              latest.totalDepDisposals,
               latest.totalDepClosing,
               latest.totalNetBookValue,
             ],
@@ -521,7 +587,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         return {
           title: 'Notes to the Financial Statements (Notes 1 to 12)',
           headers: ['Note #', 'Title', 'Category', 'Disclosure Summary'],
-          rows: notes.map(n => [`Note ${n.noteNumber}`, n.title, n.category, n.textDescription]),
+          rows: filteredNotes.map(n => [`Note ${n.noteNumber}`, n.title, n.category, n.textDescription]),
         };
       }
       case 'cashFlow':
@@ -569,6 +635,22 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         rows.push([getLbl('cf', 'openingCash', 'Opening Cash and Cash Equivalents'), ...filteredCashFlow.map(d => getVal('cf', 'openingCash', d.year, d.openingCash))]);
         rows.push([getLbl('cf', 'closingCashCalculated', 'Closing Cash & Cash Equivalents (Calculated)'), ...filteredCashFlow.map(d => getVal('cf', 'closingCashCalculated', d.year, d.closingCashCalculated))]);
         rows.push([getLbl('cf', 'balanceSheetCash', 'Stated Cash in Balance Sheet'), ...filteredCashFlow.map(d => getVal('cf', 'balanceSheetCash', d.year, d.balanceSheetCash))]);
+        rows.push([
+          'Reconciliation Difference',
+          ...filteredCashFlow.map(d => {
+            const closeVal = getVal('cf', 'closingCashCalculated', d.year, d.closingCashCalculated);
+            const bsCashVal = getVal('cf', 'balanceSheetCash', d.year, d.balanceSheetCash);
+            return Math.round((closeVal - bsCashVal) * 100) / 100;
+          }),
+        ]);
+        rows.push([
+          'Audit Reconciliation Status',
+          ...filteredCashFlow.map(d => {
+            const closeVal = getVal('cf', 'closingCashCalculated', d.year, d.closingCashCalculated);
+            const bsCashVal = getVal('cf', 'balanceSheetCash', d.year, d.balanceSheetCash);
+            return Math.abs(closeVal - bsCashVal) < 0.01 ? 'RECONCILED' : 'VARIANCE_IDENTIFIED';
+          }),
+        ]);
         return {
           title: 'Statement of Cash Flows (Indirect Method)',
           headers: ['Cash Flow Item', ...filteredCashFlow.map(d => `${d.year}${d.isProjected ? ' (P)' : ''}`)],
@@ -970,6 +1052,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
           onUpdateStatementConfig={onUpdateStatementConfig}
           onResetStatementConfig={onResetStatementConfig}
           labelOverrides={labelOverrides}
+          cellOverrides={cellOverrides}
         />
       )}
 
@@ -983,6 +1066,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
           onUpdateStatementConfig={onUpdateStatementConfig}
           onResetStatementConfig={onResetStatementConfig}
           labelOverrides={labelOverrides}
+          cellOverrides={cellOverrides}
         />
       )}
 
@@ -1203,7 +1287,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
 
           {activeStatement === 'notes' && (
             <NotesViewer
-              notes={notes}
+              notes={filteredNotes}
               currency={companyProfile.reportingCurrency}
               isEditMode={isEditMode}
               onUpdateNotes={onUpdateNotes}
@@ -1218,7 +1302,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
               cashFlowData={filteredCashFlow}
               equityData={filteredEquity}
               fixedAssetsData={filteredFixedAssets}
-              notes={notes}
+              notes={filteredNotes}
               debtServiceCoverage={isScheduleImplemented ? filteredDscr : []}
               onExportExcel={handleExportExcel}
               onExportWord={handleExportWord}
@@ -2658,6 +2742,25 @@ function EquityStatementTable({
                 </tr>
               ))}
 
+            <tr className="bg-slate-100/90 font-semibold text-slate-900 border-t border-slate-300">
+              <td className="py-2.5 px-4 font-sans">
+                <EditableLabel
+                  label={getLbl('eq', 'totalOpeningEquity', 'TOTAL OPENING EQUITY')}
+                  isEditMode={isEditMode}
+                  onSave={(lbl) => onUpdateLabel('eq', 'totalOpeningEquity', lbl)}
+                />
+              </td>
+              {equityData.map(d => (
+                <td key={d.year} className="py-2.5 px-3 text-right font-bold text-slate-800">
+                  <EditableCell
+                    val={getVal('eq', 'totalOpeningEquity', d.year, d.totalOpeningEquity)}
+                    isEditMode={isEditMode}
+                    onSave={(val) => onUpdateValue('eq', 'totalOpeningEquity', d.year, val)}
+                  />
+                </td>
+              ))}
+            </tr>
+
             <tr className="bg-emerald-50/85 font-bold text-emerald-800 border-t-2 border-emerald-300 border-b-4 border-double border-emerald-600 text-sm">
               <td className="py-3 px-4 font-sans">
                 <EditableLabel
@@ -2736,6 +2839,7 @@ function FixedAssetsScheduleTable({
               <th className="py-3 px-3 text-right text-slate-900 font-semibold">Closing Cost</th>
               <th className="py-3 px-3 text-right font-semibold">Opening Dep</th>
               <th className="py-3 px-3 text-right text-rose-700 font-semibold">Charge</th>
+              <th className="py-3 px-3 text-right text-emerald-700 font-semibold">Dep. Disposals</th>
               <th className="py-3 px-3 text-right text-slate-900 font-semibold">Closing Dep</th>
               <th className="py-3 px-4 text-right text-emerald-700 font-bold">Net Book Value</th>
             </tr>
@@ -2813,6 +2917,13 @@ function FixedAssetsScheduleTable({
                       onSave={(v) => onUpdateCategory(latest.year, idx, 'depCharge', v)}
                     />
                   </td>
+                  <td className="py-2.5 px-3 text-right text-emerald-700">
+                    <EditableCell
+                      val={c.depDisposals}
+                      isEditMode={isEditMode}
+                      onSave={(v) => onUpdateCategory(latest.year, idx, 'depDisposals', v)}
+                    />
+                  </td>
                   <td className="py-2.5 px-3 text-right text-slate-700">
                     {c.depClosing.toLocaleString()}
                   </td>
@@ -2863,6 +2974,7 @@ function FixedAssetsScheduleTable({
                     <td className="py-2.5 px-3 text-right text-slate-500">0</td>
                     <td className="py-2.5 px-3 text-right text-slate-500">0</td>
                     <td className="py-2.5 px-3 text-right text-slate-500">0</td>
+                    <td className="py-2.5 px-3 text-right text-slate-500">0</td>
                     <td className="py-2.5 px-4 text-right text-indigo-800 font-bold">{val.toLocaleString()}</td>
                   </tr>
                 );
@@ -2880,6 +2992,7 @@ function FixedAssetsScheduleTable({
               <td className="py-3 px-3 text-right text-slate-900 font-bold">{latest.totalCostClosing.toLocaleString()}</td>
               <td className="py-3 px-3 text-right text-slate-600">{latest.totalDepOpening.toLocaleString()}</td>
               <td className="py-3 px-3 text-right text-rose-700">{latest.totalDepCharge.toLocaleString()}</td>
+              <td className="py-3 px-3 text-right text-emerald-700">{latest.totalDepDisposals.toLocaleString()}</td>
               <td className="py-3 px-3 text-right text-slate-900">{latest.totalDepClosing.toLocaleString()}</td>
               <td className="py-3 px-4 text-right text-emerald-800 font-extrabold text-sm font-mono">
                 {latest.totalNetBookValue.toLocaleString()}

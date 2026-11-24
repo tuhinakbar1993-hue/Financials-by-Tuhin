@@ -21,6 +21,7 @@ import {
   PreviousComparativePair,
   ProjectedFormatYearData,
   StatementConfigItem,
+  StatementCellOverrides,
   StatementLabelOverrides,
   YearDataInput,
 } from '../types/financial';
@@ -110,6 +111,7 @@ interface PreviousFormatSuiteViewProps {
   onUpdateStatementConfig?: (items: StatementConfigItem[]) => void;
   onResetStatementConfig?: () => void;
   labelOverrides?: StatementLabelOverrides;
+  cellOverrides?: StatementCellOverrides;
 }
 
 export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = ({
@@ -124,6 +126,7 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
   onUpdateStatementConfig,
   onResetStatementConfig,
   labelOverrides = {},
+  cellOverrides = {},
 }) => {
   const [subTab, setSubTab] = useState<'all' | 'bs' | 'is' | 'cf' | 'eq' | 'fa'>('all');
   const [selectedPairId, setSelectedPairId] = useState<string>(() => comparativePairs[0]?.id || 'all');
@@ -164,7 +167,9 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
 
   const stdIncomeSections = ['Revenue & Gross Margin', 'Operating Expenses', 'Non-Operating & Tax'];
   const getCustom = (stmt: StatementConfigItem['statement'], section?: string) =>
-    statementConfig.filter(c => c.isCustom && c.statement === stmt && (!section || c.section === section));
+    statementConfig
+      .filter(c => c.isCustom && c.statement === stmt && (!section || c.section === section))
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   const customBsNca = getCustom('balanceSheet', 'Non-Current Assets');
   const customBsCa = getCustom('balanceSheet', 'Current Assets');
   const customBsNcl = getCustom('balanceSheet', 'Non-Current Liabilities');
@@ -172,9 +177,11 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
   const customBsEq = getCustom('balanceSheet', 'Equity');
   const customIncRev = getCustom('income', 'Revenue & Gross Margin');
   const customIncOpex = getCustom('income', 'Operating Expenses');
-  const customIncNonOp = statementConfig.filter(
-    c => c.isCustom && c.statement === 'income' && (c.section === 'Non-Operating & Tax' || !stdIncomeSections.includes(c.section))
-  );
+  const customIncNonOp = statementConfig
+    .filter(
+      c => c.isCustom && c.statement === 'income' && (c.section === 'Non-Operating & Tax' || !stdIncomeSections.includes(c.section))
+    )
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   const visIncRev = customIncRev.filter(c => c.isVisible);
   const visIncOpex = customIncOpex.filter(c => c.isVisible);
   const visIncNonOp = customIncNonOp.filter(c => c.isVisible);
@@ -183,7 +190,7 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
   const customCfFin = getCustom('cashFlow', 'Financing Activities');
   const customEq = getCustom('equity');
 
-  const exportSyncOptions = { statementConfig, labelOverrides };
+  const exportSyncOptions = { statementConfig, labelOverrides, cellOverrides };
 
   useEffect(() => {
     if (selectedPairId !== 'all' && !comparativePairs.some(p => p.id === selectedPairId)) {
@@ -1311,7 +1318,12 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                   [lbl('eq', 'closingRetainedEarnings', 'Closing Retained Earnings'), 'eqClosingRetainedEarnings', null],
                   [lbl('eq', 'closingReserves', 'Closing Reserves'), 'eqClosingReserves', 'eq_openingReserves'],
                 ] as const).map(([label, key, cfgId]) => {
-                  const vis = cfgId ? isElemVisible(cfgId) : true;
+                  const vis =
+                    key === 'eqClosingReserves'
+                      ? isElemVisible('eq_openingReserves') || isElemVisible('eq_otherComprehensiveIncome')
+                      : cfgId
+                      ? isElemVisible(cfgId)
+                      : true;
                   if (!vis && !isCustomizeMode) return null;
                   return (
                     <tr key={key} className={!vis ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/70'}>
@@ -1489,6 +1501,7 @@ interface ProjectedFormatSuiteViewProps {
   onUpdateStatementConfig?: (items: StatementConfigItem[]) => void;
   onResetStatementConfig?: () => void;
   labelOverrides?: StatementLabelOverrides;
+  cellOverrides?: StatementCellOverrides;
 }
 
 export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> = ({
@@ -1500,6 +1513,7 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
   onUpdateStatementConfig,
   onResetStatementConfig,
   labelOverrides = {},
+  cellOverrides = {},
 }) => {
   const [subTab, setSubTab] = useState<'all' | 'bs' | 'pl' | 'cf' | 'notes' | 'sched'>('all');
   const [isCustomizeMode, setIsCustomizeMode] = useState<boolean>(false);
@@ -1539,7 +1553,9 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
 
   const stdIncomeSections = ['Revenue & Gross Margin', 'Operating Expenses', 'Non-Operating & Tax'];
   const getCustom = (stmt: StatementConfigItem['statement'], section?: string) =>
-    statementConfig.filter(c => c.isCustom && c.statement === stmt && (!section || c.section === section));
+    statementConfig
+      .filter(c => c.isCustom && c.statement === stmt && (!section || c.section === section))
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   const customBsNca = getCustom('balanceSheet', 'Non-Current Assets');
   const customBsCa = getCustom('balanceSheet', 'Current Assets');
   const customBsNcl = getCustom('balanceSheet', 'Non-Current Liabilities');
@@ -1550,9 +1566,11 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
 
   const customIncRev = getCustom('income', 'Revenue & Gross Margin');
   const customIncOpex = getCustom('income', 'Operating Expenses');
-  const customIncNonOp = statementConfig.filter(
-    c => c.isCustom && c.statement === 'income' && (c.section === 'Non-Operating & Tax' || !stdIncomeSections.includes(c.section))
-  );
+  const customIncNonOp = statementConfig
+    .filter(
+      c => c.isCustom && c.statement === 'income' && (c.section === 'Non-Operating & Tax' || !stdIncomeSections.includes(c.section))
+    )
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   const visIncRev = customIncRev.filter(c => c.isVisible);
   const visIncOpex = customIncOpex.filter(c => c.isVisible);
   const visIncNonOp = customIncNonOp.filter(c => c.isVisible);
@@ -1562,7 +1580,7 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
   const customCfInv = getCustom('cashFlow', 'Investing Activities');
   const customCfFin = getCustom('cashFlow', 'Financing Activities');
 
-  const exportSyncOptions = { statementConfig, labelOverrides };
+  const exportSyncOptions = { statementConfig, labelOverrides, cellOverrides };
 
   if (projData.length === 0) {
     return (

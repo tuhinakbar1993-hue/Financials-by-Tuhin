@@ -93,25 +93,29 @@ function getCustomRows(
   statement: StatementConfigItem['statement'],
   section?: string
 ): StatementConfigItem[] {
-  return (options?.statementConfig || []).filter(
-    item =>
-      item.isCustom &&
-      item.isVisible &&
-      item.statement === statement &&
-      (!section || item.section === section)
-  );
+  return (options?.statementConfig || [])
+    .filter(
+      item =>
+        item.isCustom &&
+        item.isVisible &&
+        item.statement === statement &&
+        (!section || item.section === section)
+    )
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 }
 
 function getUnscopedCustomIncomeRows(options: ExportSyncOptions | undefined): StatementConfigItem[] {
-  return (options?.statementConfig || []).filter(
-    item =>
-      item.isCustom &&
-      item.isVisible &&
-      item.statement === 'income' &&
-      item.section !== 'Revenue & Gross Margin' &&
-      item.section !== 'Operating Expenses' &&
-      item.section !== 'Non-Operating & Tax'
-  );
+  return (options?.statementConfig || [])
+    .filter(
+      item =>
+        item.isCustom &&
+        item.isVisible &&
+        item.statement === 'income' &&
+        item.section !== 'Revenue & Gross Margin' &&
+        item.section !== 'Operating Expenses' &&
+        item.section !== 'Non-Operating & Tax'
+    )
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 }
 
 /**
@@ -1525,6 +1529,7 @@ function buildSyncEquityTextRows(equityData: EquityStatementYear[], options?: Ex
   if (isVis(options, 'eq_otherComprehensiveIncome')) rows.push([lbl(options, 'eq', 'otherComprehensiveIncome', 'Other Comprehensive Income'), ...equityData.map(d => ovVal(options, 'eq', 'otherComprehensiveIncome', d.year, d.otherComprehensiveIncome))]);
   rows.push([lbl(options, 'eq', 'closingReserves', 'Closing Reserves'), ...equityData.map(d => ovVal(options, 'eq', 'closingReserves', d.year, d.closingReserves))]);
   getCustomRows(options, 'equity').forEach(ci => rows.push([ci.label, ...equityData.map(d => getCustomItemYearValue(ci, d.year))]));
+  rows.push([lbl(options, 'eq', 'totalOpeningEquity', 'TOTAL OPENING EQUITY'), ...equityData.map(d => ovVal(options, 'eq', 'totalOpeningEquity', d.year, d.totalOpeningEquity))]);
   rows.push([lbl(options, 'eq', 'totalClosingEquity', 'TOTAL CLOSING EQUITY'), ...equityData.map(d => ovVal(options, 'eq', 'totalClosingEquity', d.year, d.totalClosingEquity))]);
   return rows;
 }
@@ -1555,13 +1560,13 @@ export async function exportCompletePackageWord(
   const eqRows = buildSyncEquityTextRows(equityData, options);
 
   const latestFA = fixedAssetsData[fixedAssetsData.length - 1];
-  const faHeaders = ['Asset Class', 'Dep %', 'Opening Cost', 'Additions', 'Disposals', 'Closing Cost', 'Opening Dep.', 'Dep. Charge', 'Closing Dep.', 'Net Book Value'];
+  const faHeaders = ['Asset Class', 'Dep %', 'Opening Cost', 'Additions', 'Disposals', 'Closing Cost', 'Opening Dep.', 'Dep. Charge', 'Dep. Disposals', 'Closing Dep.', 'Net Book Value'];
   const faCats = latestFA ? resolveFACategoriesForExport(latestFA, options) : [];
   const faRows: (string | number)[][] = faCats.map(c => [
-    c.name, `${c.depRate}%`, c.costOpening, c.additions, c.disposals, c.costClosing, c.depOpening, c.depCharge, c.depClosing, c.netBookValue
+    c.name, `${c.depRate}%`, c.costOpening, c.additions, c.disposals, c.costClosing, c.depOpening, c.depCharge, c.depDisposals, c.depClosing, c.netBookValue
   ]);
   if (latestFA) {
-    faRows.push(['TOTAL', '-', latestFA.totalCostOpening, latestFA.totalAdditions, latestFA.totalDisposals, latestFA.totalCostClosing, latestFA.totalDepOpening, latestFA.totalDepCharge, latestFA.totalDepClosing, latestFA.totalNetBookValue]);
+    faRows.push(['TOTAL', '-', latestFA.totalCostOpening, latestFA.totalAdditions, latestFA.totalDisposals, latestFA.totalCostClosing, latestFA.totalDepOpening, latestFA.totalDepCharge, latestFA.totalDepDisposals, latestFA.totalDepClosing, latestFA.totalNetBookValue]);
   }
 
   const doc = new Document({
@@ -1898,13 +1903,13 @@ export function exportCompletePackagePdf(
   doc.addPage();
   const latestFA = fixedAssetsData[fixedAssetsData.length - 1];
   renderPdfHeader(doc, company, `5. SCHEDULE OF FIXED ASSETS (${latestFA?.year ?? ''})`);
-  const faHeaders = ['Category', 'Dep %', 'Opening Cost', 'Additions', 'Disposals', 'Closing Cost', 'Opening Dep.', 'Charge', 'Closing Dep.', 'Net Book Value'];
+  const faHeaders = ['Category', 'Dep %', 'Opening Cost', 'Additions', 'Disposals', 'Closing Cost', 'Opening Dep.', 'Charge', 'Dep. Disposals', 'Closing Dep.', 'Net Book Value'];
   const faCats = latestFA ? resolveFACategoriesForExport(latestFA, options) : [];
   const faRows: (string | number)[][] = faCats.map(c => [
-    c.name, `${c.depRate}%`, c.costOpening, c.additions, c.disposals, c.costClosing, c.depOpening, c.depCharge, c.depClosing, c.netBookValue
+    c.name, `${c.depRate}%`, c.costOpening, c.additions, c.disposals, c.costClosing, c.depOpening, c.depCharge, c.depDisposals, c.depClosing, c.netBookValue
   ]);
   if (latestFA) {
-    faRows.push(['TOTAL PPE', '-', latestFA.totalCostOpening, latestFA.totalAdditions, latestFA.totalDisposals, latestFA.totalCostClosing, latestFA.totalDepOpening, latestFA.totalDepCharge, latestFA.totalDepClosing, latestFA.totalNetBookValue]);
+    faRows.push(['TOTAL PPE', '-', latestFA.totalCostOpening, latestFA.totalAdditions, latestFA.totalDisposals, latestFA.totalCostClosing, latestFA.totalDepOpening, latestFA.totalDepCharge, latestFA.totalDepDisposals, latestFA.totalDepClosing, latestFA.totalNetBookValue]);
   }
   autoTable(doc, {
     head: [faHeaders],
@@ -2247,7 +2252,7 @@ function buildPreviousTextTables(
       ? [[lbl(options, 'eq', 'dividendsPaid', 'Dividends Paid'), ...prevData.map(d => -d.eqDividendsPaid)]]
       : []),
     [lbl(options, 'eq', 'closingRetainedEarnings', 'Closing Retained Earnings'), ...prevData.map(d => d.eqClosingRetainedEarnings)],
-    ...(isVis(options, 'eq_openingReserves')
+    ...(isVis(options, 'eq_openingReserves') || isVis(options, 'eq_otherComprehensiveIncome')
       ? [[lbl(options, 'eq', 'closingReserves', 'Closing Reserves'), ...prevData.map(d => d.eqClosingReserves)]]
       : []),
     ...customEq.map(ci => [ci.label, ...prevData.map(d => getCustomItemYearValue(ci, d.year))]),
@@ -2672,7 +2677,7 @@ export function exportPreviousFinancialsExcel(
     ...prevData.map((d, i) => fCell(excelSumRows(colLetter(i + 1), reInputs), d.eqClosingRetainedEarnings)),
   ]);
   const eqTotalInputs = [closeScRow, closeReRow];
-  if (isVis(options, 'eq_openingReserves')) {
+  if (isVis(options, 'eq_openingReserves') || isVis(options, 'eq_otherComprehensiveIncome')) {
     eqTotalInputs.push(nextEqRow());
     eqRows.push([lbl(options, 'eq', 'closingReserves', 'Closing Reserves'), ...prevData.map(d => nCell(d.eqClosingReserves))]);
   }

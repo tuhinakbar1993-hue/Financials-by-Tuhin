@@ -171,6 +171,7 @@ export function getVisibleCustomItemsSum(
         item.statement === statement &&
         (!section || item.section === section)
     )
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
     .reduce((sum, item) => sum + getCustomItemYearValue(item, year), 0);
 }
 
@@ -792,11 +793,16 @@ export function deriveDependentFinancials(
   const prevST = prevYear ? prevYear.shortTermBorrowings : Math.max(2500, Math.round(salesRevenue * 0.06));
   const prevTotalDebt = prevLT + prevST;
 
+  // First projected year represents existing loans proposed for rescheduling/restructuring (no fresh loan proceeds)
+  const isFirstProjectedYear = Boolean(isProjected && (!prevYear || !prevYear.isProjected));
+
   // Proportionate working-capital facility proceeds; top up only if total debt would otherwise turn negative
-  let financingProceedsBorrowings = prevYear
+  let financingProceedsBorrowings = isFirstProjectedYear
+    ? 0
+    : prevYear
     ? Math.round(prevST * 0.18)
     : Math.round(salesRevenue * 0.02);
-  if (prevTotalDebt + financingProceedsBorrowings < absRepayment) {
+  if (!isFirstProjectedYear && prevTotalDebt + financingProceedsBorrowings < absRepayment) {
     financingProceedsBorrowings = absRepayment - prevTotalDebt + Math.round(salesRevenue * 0.03);
   }
 
@@ -1142,6 +1148,7 @@ export function calculateScheduleOfFixedAssets(
 
     const customFACategories: FixedAssetCategory[] = (options?.statementConfig || [])
       .filter(item => item.isCustom && item.isVisible && item.statement === 'fixedAssets')
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
       .map(item => {
         const val = getCustomItemYearValue(item, input.year);
         return {
@@ -1409,9 +1416,11 @@ export function calculateCashFlowStatement(
 
   // Track unfiltered base first-year Net Change in Cash so Year 0 opening cash stays anchored when elements are deselected
   let baseFirstNetChangeInCash = 0;
+  const firstProjectedIdx = inputs.findIndex(y => y.isProjected);
 
   inputs.forEach((input, index) => {
     const isFirst = index === 0;
+    const isFirstProjectedYear = firstProjectedIdx !== -1 && index === firstProjectedIdx;
     const prevInput = isFirst ? null : inputs[index - 1];
     const income = incomeStatements[index];
     const fixedAssets = fixedAssetsSchedule[index];
@@ -1611,13 +1620,15 @@ export function calculateCashFlowStatement(
       r2(purchasePPE + salePPE + purchaseIntangibles + interestReceived + dividendsReceived + customInvesting);
 
     // C. Financing Activities
+    const rawBorrowProc = input.financingProceedsBorrowings || 0;
+    const staleFirstProjBorrowProc = isFirstProjectedYear ? rawBorrowProc : 0;
     const rawDirectFinancing =
       getCellOverride(cellOverrides, 'cf', 'directlyEnteredFinancingCashFlow', input.year) ??
-      input.cashFlowFromFinancing;
+      r2(input.cashFlowFromFinancing - staleFirstProjBorrowProc);
     const directlyEnteredFinancingCashFlow = vis('cf_direct_financing') ? rawDirectFinancing : 0;
 
     const fullShares = input.financingProceedsShares || 0;
-    const fullBorrowProc = input.financingProceedsBorrowings || 0;
+    const fullBorrowProc = isFirstProjectedYear ? 0 : rawBorrowProc;
     const fullRepayment =
       input.repaymentOfBorrowings !== undefined
         ? input.repaymentOfBorrowings
@@ -1630,7 +1641,9 @@ export function calculateCashFlowStatement(
     const financingProceedsShares = vis('cf_shares_issue')
       ? getCellOverride(cellOverrides, 'cf', 'financingProceedsShares', input.year) ?? fullShares
       : 0;
-    const financingProceedsBorrowings = vis('cf_borrow_proceeds')
+    const financingProceedsBorrowings = isFirstProjectedYear
+      ? 0
+      : vis('cf_borrow_proceeds')
       ? getCellOverride(cellOverrides, 'cf', 'financingProceedsBorrowings', input.year) ?? fullBorrowProc
       : 0;
     const ovRepayPos = getCellOverride(cellOverrides, 'cf', 'repaymentOfBorrowings', input.year);
@@ -1674,7 +1687,8 @@ export function calculateCashFlowStatement(
       ovRepayPos === undefined &&
       ovRepayNeg === undefined &&
       getCellOverride(cellOverrides, 'cf', 'financingProceedsShares', input.year) === undefined &&
-      getCellOverride(cellOverrides, 'cf', 'financingProceedsBorrowings', input.year) === undefined &&
+      (isFirstProjectedYear ||
+        getCellOverride(cellOverrides, 'cf', 'financingProceedsBorrowings', input.year) === undefined) &&
       getCellOverride(cellOverrides, 'cf', 'financingDividendsPaid', input.year) === undefined &&
       customFinancing === 0;
 
@@ -2082,8 +2096,18 @@ export function generateNotesToFinancialStatements(
   const nLbl = (stmt: string, field: string, def: string) =>
     resolveEffectiveLabel(stmt, field, def, lblOv, cfg);
 
-  const noteVal = (stmt: string, field: string, year: number, fallback: number) =>
-    getCellOverride(cellOv, stmt, field, year) ?? fallback;
+  const noteVal = (
+    stmt: string,
+    field: string,
+    year: number,
+    fallback: number,
+    cfgId?: string,
+    customSum = 0
+  ) => {
+    if (cfgId && !vis(cfgId)) return r2(customSum);
+    const ov = getCellOverride(cellOv, stmt, field, year);
+    return ov !== undefined ? r2(ov + customSum) : fallback;
+  };
 
   // Resolve Note 5 PPE categories using visibility + label overrides + custom fixed asset classes
   const stdFACats = (cFA.allCategories || cFA.categories.slice(0, FIXED_ASSET_CATEGORY_CONFIG_IDS.length))
@@ -2098,6 +2122,7 @@ export function generateNotesToFinancialStatements(
     .map(e => e.cat);
   const customFACats: FixedAssetCategory[] = (cfg || [])
     .filter(item => item.isCustom && item.isVisible && item.statement === 'fixedAssets')
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
     .map(item => {
       const val = getCustomItemYearValue(item, currYear);
       return {
@@ -2118,6 +2143,7 @@ export function generateNotesToFinancialStatements(
 
   const customEquityRows = (cfg || [])
     .filter(item => item.isCustom && item.isVisible && item.statement === 'balanceSheet' && item.section === 'Equity')
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
     .map(item => ({
       label: item.label,
       values: [
@@ -2126,44 +2152,51 @@ export function generateNotesToFinancialStatements(
       ],
     }));
 
-  const cRevenue = noteVal('income', 'revenue', currYear, cIS.revenue);
-  const pRevenue = noteVal('income', 'revenue', prevYear, pIS.revenue);
-  const cCogs = noteVal('income', 'costOfSales', currYear, cIS.costOfSales);
-  const pCogs = noteVal('income', 'costOfSales', prevYear, pIS.costOfSales);
-  const cFinCost = noteVal('income', 'financeCost', currYear, cIS.financeCost);
-  const pFinCost = noteVal('income', 'financeCost', prevYear, pIS.financeCost);
+  const cCustomRev = getVisibleCustomItemsSum(cfg, 'income', currYear, 'Revenue & Gross Margin');
+  const pCustomRev = getVisibleCustomItemsSum(cfg, 'income', prevYear, 'Revenue & Gross Margin');
+  const cCustomEqBs = getVisibleCustomItemsSum(cfg, 'balanceSheet', currYear, 'Equity');
+  const pCustomEqBs = getVisibleCustomItemsSum(cfg, 'balanceSheet', prevYear, 'Equity');
 
-  const cInv = noteVal('bs', 'closingInventory', currYear, cBS.closingInventory);
-  const pInv = noteVal('bs', 'closingInventory', prevYear, pBS.closingInventory);
-  const cTrRec = noteVal('bs', 'tradeReceivables', currYear, cBS.tradeReceivables);
-  const pTrRec = noteVal('bs', 'tradeReceivables', prevYear, pBS.tradeReceivables);
-  const cOthRec = noteVal('bs', 'otherReceivables', currYear, cBS.otherReceivables);
-  const pOthRec = noteVal('bs', 'otherReceivables', prevYear, pBS.otherReceivables);
-  const cCashBS = noteVal('bs', 'cashAndEquivalents', currYear, cBS.cashAndEquivalents);
-  const pCashBS = noteVal('bs', 'cashAndEquivalents', prevYear, pBS.cashAndEquivalents);
-  const cSC = noteVal('bs', 'shareCapital', currYear, cBS.shareCapital);
-  const pSC = noteVal('bs', 'shareCapital', prevYear, pBS.shareCapital);
-  const cRE = noteVal('bs', 'retainedEarnings', currYear, cBS.retainedEarnings);
-  const pRE = noteVal('bs', 'retainedEarnings', prevYear, pBS.retainedEarnings);
-  const cRes = noteVal('bs', 'reserves', currYear, cBS.reserves);
-  const pRes = noteVal('bs', 'reserves', prevYear, pBS.reserves);
-  const cTotEq = noteVal('bs', 'totalEquity', currYear, cBS.totalEquity);
-  const pTotEq = noteVal('bs', 'totalEquity', prevYear, pBS.totalEquity);
-  const cLTB = noteVal('bs', 'longTermBorrowings', currYear, cBS.longTermBorrowings);
-  const pLTB = noteVal('bs', 'longTermBorrowings', prevYear, pBS.longTermBorrowings);
-  const cSTB = noteVal('bs', 'shortTermBorrowings', currYear, cBS.shortTermBorrowings);
-  const pSTB = noteVal('bs', 'shortTermBorrowings', prevYear, pBS.shortTermBorrowings);
-  const cTrPay = noteVal('bs', 'tradePayables', currYear, cBS.tradePayables);
-  const pTrPay = noteVal('bs', 'tradePayables', prevYear, pBS.tradePayables);
-  const cOthPay = noteVal('bs', 'otherPayables', currYear, cBS.otherPayables);
-  const pOthPay = noteVal('bs', 'otherPayables', prevYear, pBS.otherPayables);
+  const cRevenue = noteVal('income', 'revenue', currYear, cIS.revenue, 'inc_revenue', cCustomRev);
+  const pRevenue = noteVal('income', 'revenue', prevYear, pIS.revenue, 'inc_revenue', pCustomRev);
+  const cCogs = noteVal('income', 'costOfSales', currYear, cIS.costOfSales, 'inc_costOfSales');
+  const pCogs = noteVal('income', 'costOfSales', prevYear, pIS.costOfSales, 'inc_costOfSales');
+  const cFinCost = noteVal('income', 'financeCost', currYear, cIS.financeCost, 'inc_financeCost');
+  const pFinCost = noteVal('income', 'financeCost', prevYear, pIS.financeCost, 'inc_financeCost');
+
+  const cInv = noteVal('bs', 'closingInventory', currYear, cBS.closingInventory, 'bs_closingInventory');
+  const pInv = noteVal('bs', 'closingInventory', prevYear, pBS.closingInventory, 'bs_closingInventory');
+  const cTrRec = noteVal('bs', 'tradeReceivables', currYear, cBS.tradeReceivables, 'bs_tradeReceivables');
+  const pTrRec = noteVal('bs', 'tradeReceivables', prevYear, pBS.tradeReceivables, 'bs_tradeReceivables');
+  const cOthRec = noteVal('bs', 'otherReceivables', currYear, cBS.otherReceivables, 'bs_otherReceivables');
+  const pOthRec = noteVal('bs', 'otherReceivables', prevYear, pBS.otherReceivables, 'bs_otherReceivables');
+  const cCashBS = noteVal('bs', 'cashAndEquivalents', currYear, cBS.cashAndEquivalents, 'bs_cashAndEquivalents');
+  const pCashBS = noteVal('bs', 'cashAndEquivalents', prevYear, pBS.cashAndEquivalents, 'bs_cashAndEquivalents');
+  const cSC = noteVal('bs', 'shareCapital', currYear, cBS.shareCapital, 'bs_shareCapital');
+  const pSC = noteVal('bs', 'shareCapital', prevYear, pBS.shareCapital, 'bs_shareCapital');
+  const cRE = noteVal('bs', 'retainedEarnings', currYear, cBS.retainedEarnings, 'bs_retainedEarnings');
+  const pRE = noteVal('bs', 'retainedEarnings', prevYear, pBS.retainedEarnings, 'bs_retainedEarnings');
+  const cRes = noteVal('bs', 'reserves', currYear, cBS.reserves, 'bs_reserves');
+  const pRes = noteVal('bs', 'reserves', prevYear, pBS.reserves, 'bs_reserves');
+  const cTotEq = noteVal('bs', 'totalEquity', currYear, cBS.totalEquity, undefined, 0);
+  const pTotEq = noteVal('bs', 'totalEquity', prevYear, pBS.totalEquity, undefined, 0);
+  void cCustomEqBs;
+  void pCustomEqBs;
+  const cLTB = noteVal('bs', 'longTermBorrowings', currYear, cBS.longTermBorrowings, 'bs_longTermBorrowings');
+  const pLTB = noteVal('bs', 'longTermBorrowings', prevYear, pBS.longTermBorrowings, 'bs_longTermBorrowings');
+  const cSTB = noteVal('bs', 'shortTermBorrowings', currYear, cBS.shortTermBorrowings, 'bs_shortTermBorrowings');
+  const pSTB = noteVal('bs', 'shortTermBorrowings', prevYear, pBS.shortTermBorrowings, 'bs_shortTermBorrowings');
+  const cTrPay = noteVal('bs', 'tradePayables', currYear, cBS.tradePayables, 'bs_tradePayables');
+  const pTrPay = noteVal('bs', 'tradePayables', prevYear, pBS.tradePayables, 'bs_tradePayables');
+  const cOthPay = noteVal('bs', 'otherPayables', currYear, cBS.otherPayables, 'bs_otherPayables');
+  const pOthPay = noteVal('bs', 'otherPayables', prevYear, pBS.otherPayables, 'bs_otherPayables');
 
   const cCfOp = noteVal('cf', 'netCashFromOperating', currYear, cCF.netCashFromOperating);
   const pCfOp = noteVal('cf', 'netCashFromOperating', prevYear, pCF.netCashFromOperating);
   const cCfInv = noteVal('cf', 'netCashFromInvesting', currYear, cCF.netCashFromInvesting);
   const pCfInv = noteVal('cf', 'netCashFromInvesting', prevYear, pCF.netCashFromInvesting);
-  const cCfFinDirect = noteVal('cf', 'directlyEnteredFinancingCashFlow', currYear, cCF.directlyEnteredFinancingCashFlow);
-  const pCfFinDirect = noteVal('cf', 'directlyEnteredFinancingCashFlow', prevYear, pCF.directlyEnteredFinancingCashFlow);
+  const cCfFinDirect = noteVal('cf', 'directlyEnteredFinancingCashFlow', currYear, cCF.directlyEnteredFinancingCashFlow, 'cf_direct_financing');
+  const pCfFinDirect = noteVal('cf', 'directlyEnteredFinancingCashFlow', prevYear, pCF.directlyEnteredFinancingCashFlow, 'cf_direct_financing');
   const cCfChange = noteVal('cf', 'netChangeInCash', currYear, cCF.netChangeInCash);
   const pCfChange = noteVal('cf', 'netChangeInCash', prevYear, pCF.netChangeInCash);
   const cCfOpen = noteVal('cf', 'openingCash', currYear, cCF.openingCash);
@@ -2924,7 +2957,7 @@ export function buildProjectedFormatData(
     const cfChangeReceivables =
       vis('cf_wc_receivables') && vis('bs_tradeReceivables') ? r2(-(tradeAndOtherReceivables - prevRec)) : 0;
     const cfChangeAdvanceDeposit =
-      vis('cf_wc_other_rec') || vis('cf_wc_other_ca') ? r2(-(advanceDepositPrepayments - prevAdv)) : 0;
+      vis('cf_wc_other_rec') && vis('bs_otherReceivables') ? r2(-(advanceDepositPrepayments - prevAdv)) : 0;
     const cfChangeCurrentAssets = 0;
     const cfChangeCurrentLiabilities = 0;
     const cfChangeTradePayables =
@@ -2962,19 +2995,31 @@ export function buildProjectedFormatData(
       cfSalePPE + cfInvestingCapitalInflow + cfPreliminaryExpenses + cfPurchasePPE + cfPurchaseInvestment + customCfInv
     );
 
-    // Financing (strictly reflects Repayment from Borrowings & Financing + debt delta)
+    // Financing (strictly reflects Repayment from Borrowings & Financing + debt delta;
+    // first projected year recognizes no fresh Loan Received since it models existing loan rescheduling)
+    const isFirstProjectedYear = pIdx === 0;
     const prevTotalDebt = prevProj
       ? prevProj.longTermLoan + prevProj.shortTermLoan
       : (prevBS ? prevBS.longTermBorrowings + prevBS.shortTermBorrowings : longTermLoan + shortTermLoan + repaymentOfBorrowings);
     const currTotalDebt = r2(longTermLoan + shortTermLoan);
     const netDebtDelta = r2(currTotalDebt - prevTotalDebt);
-    const cfLoanReceived = netDebtDelta >= 0 && vis('cf_borrow_proceeds') ? netDebtDelta : 0;
+    const cfLoanReceived = isFirstProjectedYear
+      ? 0
+      : netDebtDelta >= 0 && vis('cf_borrow_proceeds')
+      ? netDebtDelta
+      : 0;
     const cfAdditionalCapital = vis('cf_shares_issue') ? eq.shareCapitalIssued : 0;
     const cfIssuanceOfDebt = 0;
     const cfDividendsToStockholders = 0;
     const drawings = eq.dividendsPaid;
     const cfDrawingsOutflow = vis('cf_dividends_paid') ? -drawings : 0;
-    const cfRedeemLongTermDebt = netDebtDelta < 0 && vis('cf_borrow_repay') ? netDebtDelta : 0;
+    const cfRedeemLongTermDebt = vis('cf_borrow_repay')
+      ? netDebtDelta < 0
+        ? netDebtDelta
+        : isFirstProjectedYear && repaymentOfBorrowings > 0
+        ? -repaymentOfBorrowings
+        : 0
+      : 0;
     const cfIssuanceBondsPayable = 0;
     const cfNetCashFinancing = r2(
       cfLoanReceived +
@@ -3277,7 +3322,9 @@ export function buildProjectedQuantNoteRows(
       configId: 'inc_operatingExpenses',
       isBold: true,
       isSubtotal: true,
-      values: projData.map(d => d.adminAndSellingExpenses),
+      values: projData.map(d =>
+        r2(d.adminAndSellingExpenses + getVisibleCustomItemsSum(cfg, 'income', d.year, 'Operating Expenses'))
+      ),
     });
   }
 
@@ -3667,6 +3714,8 @@ export function implementRepaymentScheduleIntoModel({
     let fixedAssetsAdditions: number;
     let fixedAssetsDisposals: number;
 
+    const isFirstProjYear = isProjected && yr === firstProjYear;
+
     if (!isProjected && existingInput && !shouldScaleHist) {
       fixedAssetsGross = existingInput.fixedAssetsGross;
       fixedAssetsAdditions = existingInput.fixedAssetsAdditions;
@@ -3676,7 +3725,7 @@ export function implementRepaymentScheduleIntoModel({
       fixedAssetsAdditions = Math.round(existingInput.fixedAssetsAdditions * scaleFactorApplied);
       fixedAssetsDisposals = Math.round(existingInput.fixedAssetsDisposals * scaleFactorApplied);
     } else {
-      const disbBoost = sched && sched.disbursementAmount > 0 ? Math.round(sched.disbursementAmount * 0.45) : 0;
+      const disbBoost = !isFirstProjYear && sched && sched.disbursementAmount > 0 ? Math.round(sched.disbursementAmount * 0.45) : 0;
       const capexBase = Math.round(salesRevenue * (capexPct / 100));
       fixedAssetsAdditions = capexBase + disbBoost;
       fixedAssetsDisposals = Math.round(prevGross * 0.01);
@@ -3727,7 +3776,10 @@ export function implementRepaymentScheduleIntoModel({
     const prevTotalDebt = r2(prevLT + prevST);
 
     let financingProceedsBorrowings = 0;
-    if (sched) {
+    if (isFirstProjYear) {
+      // First projected year models existing loan rescheduling/restructuring with no fresh loan proceeds
+      financingProceedsBorrowings = 0;
+    } else if (sched) {
       if (sched.disbursementAmount > 0) {
         financingProceedsBorrowings = r2(sched.disbursementAmount + Math.round(salesRevenue * 0.015));
       } else {
@@ -3740,7 +3792,7 @@ export function implementRepaymentScheduleIntoModel({
     }
 
     // Ensure total debt never drops below remaining scheduled balance + stays non-negative
-    if (prevTotalDebt + financingProceedsBorrowings < exactRepayment) {
+    if (!isFirstProjYear && prevTotalDebt + financingProceedsBorrowings < exactRepayment) {
       financingProceedsBorrowings = r2(exactRepayment - prevTotalDebt + (sched?.closingBalance || 0));
     }
     const targetTotalDebt = Math.max(sched?.closingBalance ?? 0, r2(prevTotalDebt + financingProceedsBorrowings - exactRepayment));
