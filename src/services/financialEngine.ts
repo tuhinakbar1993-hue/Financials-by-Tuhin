@@ -1481,9 +1481,11 @@ export function calculateCashFlowStatement(
       ? getCellOverride(cellOverrides, 'cf', 'adjLossGainDisposal', input.year) ?? -fixedAssets.totalDepDisposals
       : 0;
 
-    const operatingProfitBeforeWC = r2(
-      profitBeforeTax + adjDepreciation + adjAmortization + adjFinanceCost + adjInterestIncome + adjLossGainDisposal
-    );
+    const operatingProfitBeforeWC =
+      getCellOverride(cellOverrides, 'cf', 'operatingProfitBeforeWC', input.year) ??
+      r2(
+        profitBeforeTax + adjDepreciation + adjAmortization + adjFinanceCost + adjInterestIncome + adjLossGainDisposal
+      );
 
     const baseInvChg = prevInput
       ? -(input.closingInventory - prevInput.closingInventory)
@@ -1552,16 +1554,18 @@ export function calculateCashFlowStatement(
       'Operating Activities'
     );
 
-    const cashGeneratedFromOperations = r2(
-      operatingProfitBeforeWC +
-        changeInInventory +
-        changeInReceivables +
-        changeInOtherReceivables +
-        changeInOtherCA +
-        changeInPayables +
-        changeInOtherPayables +
-        customOperating
-    );
+    const cashGeneratedFromOperations =
+      getCellOverride(cellOverrides, 'cf', 'cashGeneratedFromOperations', input.year) ??
+      r2(
+        operatingProfitBeforeWC +
+          changeInInventory +
+          changeInReceivables +
+          changeInOtherReceivables +
+          changeInOtherCA +
+          changeInPayables +
+          changeInOtherPayables +
+          customOperating
+      );
 
     const incomeTaxPaid = vis('cf_tax_paid')
       ? getCellOverride(cellOverrides, 'cf', 'incomeTaxPaid', input.year) ?? (-income.taxExpense + changeInTaxPayable)
@@ -1685,19 +1689,29 @@ export function calculateCashFlowStatement(
       computedNetCashFromFinancing;
 
     // D. Net Increase / Decrease in Cash and Cash Equivalents
-    const netChangeInCash = r2(netCashFromOperating + netCashFromInvesting + netCashFromFinancing);
+    const netChangeInCash =
+      getCellOverride(cellOverrides, 'cf', 'netChangeInCash', input.year) ??
+      r2(netCashFromOperating + netCashFromInvesting + netCashFromFinancing);
 
-    let openingCash = isFirst
+    const ovOpeningCash = getCellOverride(cellOverrides, 'cf', 'openingCash', input.year);
+    let openingCash = ovOpeningCash !== undefined
+      ? ovOpeningCash
+      : isFirst
       ? r2(input.cashAndEquivalentsBS - baseFirstNetChangeInCash)
       : result[index - 1].closingCashCalculated;
-    if (openingCash < 0 && isFirst) {
+    if (ovOpeningCash === undefined && openingCash < 0 && isFirst) {
       openingCash = Math.max(200, Math.round(input.salesRevenue * 0.05));
     }
 
-    const closingCashCalculated = r2(openingCash + netChangeInCash);
+    const closingCashCalculated =
+      getCellOverride(cellOverrides, 'cf', 'closingCashCalculated', input.year) ??
+      r2(openingCash + netChangeInCash);
 
+    const ovCFBSCash = getCellOverride(cellOverrides, 'cf', 'balanceSheetCash', input.year);
     const ovBSCash = getCellOverride(cellOverrides, 'bs', 'cashAndEquivalents', input.year);
-    const balanceSheetCash = !vis('bs_cashAndEquivalents')
+    const balanceSheetCash = ovCFBSCash !== undefined
+      ? ovCFBSCash
+      : !vis('bs_cashAndEquivalents')
       ? 0
       : ovBSCash !== undefined
       ? ovBSCash
@@ -2046,6 +2060,7 @@ export function generateNotesToFinancialStatements(
   options?: {
     statementConfig?: StatementConfigItem[];
     labelOverrides?: StatementLabelOverrides;
+    cellOverrides?: StatementCellOverrides;
   }
 ): FinancialNoteItem[] {
   const latestIdx = years.length - 1;
@@ -2061,10 +2076,14 @@ export function generateNotesToFinancialStatements(
 
   const cfg = options?.statementConfig;
   const lblOv = options?.labelOverrides;
+  const cellOv = options?.cellOverrides;
   const configMap = buildConfigVisibilityMap(cfg);
   const vis = (id: string) => isConfigElementVisible(configMap, id);
   const nLbl = (stmt: string, field: string, def: string) =>
     resolveEffectiveLabel(stmt, field, def, lblOv, cfg);
+
+  const noteVal = (stmt: string, field: string, year: number, fallback: number) =>
+    getCellOverride(cellOv, stmt, field, year) ?? fallback;
 
   // Resolve Note 5 PPE categories using visibility + label overrides + custom fixed asset classes
   const stdFACats = (cFA.allCategories || cFA.categories.slice(0, FIXED_ASSET_CATEGORY_CONFIG_IDS.length))
@@ -2095,7 +2114,7 @@ export function generateNotesToFinancialStatements(
         depRate: 0,
       };
     });
-  const note5Categories = cFA.allCategories ? [...stdFACats, ...customFACats] : cFA.categories;
+  const note5Categories = [...stdFACats, ...customFACats];
 
   const customEquityRows = (cfg || [])
     .filter(item => item.isCustom && item.isVisible && item.statement === 'balanceSheet' && item.section === 'Equity')
@@ -2106,6 +2125,56 @@ export function generateNotesToFinancialStatements(
         getCustomItemYearValue(item, prevYear).toLocaleString(),
       ],
     }));
+
+  const cRevenue = noteVal('income', 'revenue', currYear, cIS.revenue);
+  const pRevenue = noteVal('income', 'revenue', prevYear, pIS.revenue);
+  const cCogs = noteVal('income', 'costOfSales', currYear, cIS.costOfSales);
+  const pCogs = noteVal('income', 'costOfSales', prevYear, pIS.costOfSales);
+  const cFinCost = noteVal('income', 'financeCost', currYear, cIS.financeCost);
+  const pFinCost = noteVal('income', 'financeCost', prevYear, pIS.financeCost);
+
+  const cInv = noteVal('bs', 'closingInventory', currYear, cBS.closingInventory);
+  const pInv = noteVal('bs', 'closingInventory', prevYear, pBS.closingInventory);
+  const cTrRec = noteVal('bs', 'tradeReceivables', currYear, cBS.tradeReceivables);
+  const pTrRec = noteVal('bs', 'tradeReceivables', prevYear, pBS.tradeReceivables);
+  const cOthRec = noteVal('bs', 'otherReceivables', currYear, cBS.otherReceivables);
+  const pOthRec = noteVal('bs', 'otherReceivables', prevYear, pBS.otherReceivables);
+  const cCashBS = noteVal('bs', 'cashAndEquivalents', currYear, cBS.cashAndEquivalents);
+  const pCashBS = noteVal('bs', 'cashAndEquivalents', prevYear, pBS.cashAndEquivalents);
+  const cSC = noteVal('bs', 'shareCapital', currYear, cBS.shareCapital);
+  const pSC = noteVal('bs', 'shareCapital', prevYear, pBS.shareCapital);
+  const cRE = noteVal('bs', 'retainedEarnings', currYear, cBS.retainedEarnings);
+  const pRE = noteVal('bs', 'retainedEarnings', prevYear, pBS.retainedEarnings);
+  const cRes = noteVal('bs', 'reserves', currYear, cBS.reserves);
+  const pRes = noteVal('bs', 'reserves', prevYear, pBS.reserves);
+  const cTotEq = noteVal('bs', 'totalEquity', currYear, cBS.totalEquity);
+  const pTotEq = noteVal('bs', 'totalEquity', prevYear, pBS.totalEquity);
+  const cLTB = noteVal('bs', 'longTermBorrowings', currYear, cBS.longTermBorrowings);
+  const pLTB = noteVal('bs', 'longTermBorrowings', prevYear, pBS.longTermBorrowings);
+  const cSTB = noteVal('bs', 'shortTermBorrowings', currYear, cBS.shortTermBorrowings);
+  const pSTB = noteVal('bs', 'shortTermBorrowings', prevYear, pBS.shortTermBorrowings);
+  const cTrPay = noteVal('bs', 'tradePayables', currYear, cBS.tradePayables);
+  const pTrPay = noteVal('bs', 'tradePayables', prevYear, pBS.tradePayables);
+  const cOthPay = noteVal('bs', 'otherPayables', currYear, cBS.otherPayables);
+  const pOthPay = noteVal('bs', 'otherPayables', prevYear, pBS.otherPayables);
+
+  const cCfOp = noteVal('cf', 'netCashFromOperating', currYear, cCF.netCashFromOperating);
+  const pCfOp = noteVal('cf', 'netCashFromOperating', prevYear, pCF.netCashFromOperating);
+  const cCfInv = noteVal('cf', 'netCashFromInvesting', currYear, cCF.netCashFromInvesting);
+  const pCfInv = noteVal('cf', 'netCashFromInvesting', prevYear, pCF.netCashFromInvesting);
+  const cCfFinDirect = noteVal('cf', 'directlyEnteredFinancingCashFlow', currYear, cCF.directlyEnteredFinancingCashFlow);
+  const pCfFinDirect = noteVal('cf', 'directlyEnteredFinancingCashFlow', prevYear, pCF.directlyEnteredFinancingCashFlow);
+  const cCfChange = noteVal('cf', 'netChangeInCash', currYear, cCF.netChangeInCash);
+  const pCfChange = noteVal('cf', 'netChangeInCash', prevYear, pCF.netChangeInCash);
+  const cCfOpen = noteVal('cf', 'openingCash', currYear, cCF.openingCash);
+  const pCfOpen = noteVal('cf', 'openingCash', prevYear, pCF.openingCash);
+  const cCfClose = noteVal('cf', 'closingCashCalculated', currYear, cCF.closingCashCalculated);
+  const pCfClose = noteVal('cf', 'closingCashCalculated', prevYear, pCF.closingCashCalculated);
+  const cCfStatedBS = noteVal('cf', 'balanceSheetCash', currYear, cCF.balanceSheetCash);
+  const pCfStatedBS = noteVal('cf', 'balanceSheetCash', prevYear, pCF.balanceSheetCash);
+  const cCfDiff = r2(cCfClose - cCfStatedBS);
+  const pCfDiff = r2(pCfClose - pCfStatedBS);
+  const cCfReconciled = Math.abs(cCfDiff) < 0.01;
 
   return [
     {
@@ -2122,11 +2191,11 @@ export function generateNotesToFinancialStatements(
       tableData: {
         headers: ['Revenue Streams', `${currYear} (${company.reportingCurrency})`, `${prevYear} (${company.reportingCurrency})`],
         rows: [
-          { label: 'Commercial Contract Deliverables', values: [Math.round(cIS.revenue * 0.72).toLocaleString(), Math.round(pIS.revenue * 0.72).toLocaleString()] },
-          { label: 'Institutional & Direct Enterprise Sales', values: [Math.round(cIS.revenue * 0.20).toLocaleString(), Math.round(pIS.revenue * 0.20).toLocaleString()] },
-          { label: 'Technical Services & Ancillary Revenue', values: [Math.round(cIS.revenue * 0.08).toLocaleString(), Math.round(pIS.revenue * 0.08).toLocaleString()] },
+          { label: 'Commercial Contract Deliverables', values: [Math.round(cRevenue * 0.72).toLocaleString(), Math.round(pRevenue * 0.72).toLocaleString()] },
+          { label: 'Institutional & Direct Enterprise Sales', values: [Math.round(cRevenue * 0.20).toLocaleString(), Math.round(pRevenue * 0.20).toLocaleString()] },
+          { label: 'Technical Services & Ancillary Revenue', values: [Math.round(cRevenue * 0.08).toLocaleString(), Math.round(pRevenue * 0.08).toLocaleString()] },
         ],
-        totalRow: { label: `Total ${nLbl('income', 'revenue', 'Revenue from Contracts')}`, values: [cIS.revenue.toLocaleString(), pIS.revenue.toLocaleString()] },
+        totalRow: { label: `Total ${nLbl('income', 'revenue', 'Revenue from Contracts')}`, values: [cRevenue.toLocaleString(), pRevenue.toLocaleString()] },
       },
     },
     {
@@ -2137,11 +2206,11 @@ export function generateNotesToFinancialStatements(
       tableData: {
         headers: ['Component Breakdown', `${currYear} (${company.reportingCurrency})`, `${prevYear} (${company.reportingCurrency})`],
         rows: [
-          { label: 'Raw Materials & Components Consumed', values: [Math.round(cIS.costOfSales * 0.58).toLocaleString(), Math.round(pIS.costOfSales * 0.58).toLocaleString()] },
-          { label: 'Direct Labor & Industrial Staff Costs', values: [Math.round(cIS.costOfSales * 0.22).toLocaleString(), Math.round(pIS.costOfSales * 0.22).toLocaleString()] },
-          { label: 'Factory Overheads, Fuel & Power', values: [Math.round(cIS.costOfSales * 0.20).toLocaleString(), Math.round(pIS.costOfSales * 0.20).toLocaleString()] },
+          { label: 'Raw Materials & Components Consumed', values: [Math.round(cCogs * 0.58).toLocaleString(), Math.round(pCogs * 0.58).toLocaleString()] },
+          { label: 'Direct Labor & Industrial Staff Costs', values: [Math.round(cCogs * 0.22).toLocaleString(), Math.round(pCogs * 0.22).toLocaleString()] },
+          { label: 'Factory Overheads, Fuel & Power', values: [Math.round(cCogs * 0.20).toLocaleString(), Math.round(pCogs * 0.20).toLocaleString()] },
         ],
-        totalRow: { label: `Total ${nLbl('income', 'costOfSales', 'Cost of Sales')}`, values: [cIS.costOfSales.toLocaleString(), pIS.costOfSales.toLocaleString()] },
+        totalRow: { label: `Total ${nLbl('income', 'costOfSales', 'Cost of Sales')}`, values: [cCogs.toLocaleString(), pCogs.toLocaleString()] },
       },
     },
     {
@@ -2152,11 +2221,11 @@ export function generateNotesToFinancialStatements(
       tableData: {
         headers: ['Financing Facility Charges', `${currYear} (${company.reportingCurrency})`, `${prevYear} (${company.reportingCurrency})`],
         rows: [
-          { label: 'Interest on Long-Term Credit Facilities', values: [Math.round(cIS.financeCost * 0.65).toLocaleString(), Math.round(pIS.financeCost * 0.65).toLocaleString()] },
-          { label: 'Interest on Working Capital & Short-Term Debt', values: [Math.round(cIS.financeCost * 0.25).toLocaleString(), Math.round(pIS.financeCost * 0.25).toLocaleString()] },
-          { label: 'Bank Charges, LC Fees & Financing Commissions', values: [Math.round(cIS.financeCost * 0.10).toLocaleString(), Math.round(pIS.financeCost * 0.10).toLocaleString()] },
+          { label: 'Interest on Long-Term Credit Facilities', values: [Math.round(cFinCost * 0.65).toLocaleString(), Math.round(pFinCost * 0.65).toLocaleString()] },
+          { label: 'Interest on Working Capital & Short-Term Debt', values: [Math.round(cFinCost * 0.25).toLocaleString(), Math.round(pFinCost * 0.25).toLocaleString()] },
+          { label: 'Bank Charges, LC Fees & Financing Commissions', values: [Math.round(cFinCost * 0.10).toLocaleString(), Math.round(pFinCost * 0.10).toLocaleString()] },
         ],
-        totalRow: { label: `Total ${nLbl('income', 'financeCost', 'Finance Cost')}`, values: [cIS.financeCost.toLocaleString(), pIS.financeCost.toLocaleString()] },
+        totalRow: { label: `Total ${nLbl('income', 'financeCost', 'Finance Cost')}`, values: [cFinCost.toLocaleString(), pFinCost.toLocaleString()] },
       },
     },
     {
@@ -2184,11 +2253,11 @@ export function generateNotesToFinancialStatements(
       tableData: {
         headers: ['Inventory Classes', `${currYear} (${company.reportingCurrency})`, `${prevYear} (${company.reportingCurrency})`],
         rows: [
-          { label: 'Raw Materials & Imported Spares', values: [Math.round(cBS.closingInventory * 0.45).toLocaleString(), Math.round(pBS.closingInventory * 0.45).toLocaleString()] },
-          { label: 'Work-in-Progress (WIP)', values: [Math.round(cBS.closingInventory * 0.20).toLocaleString(), Math.round(pBS.closingInventory * 0.20).toLocaleString()] },
-          { label: 'Finished Goods Inventory', values: [Math.round(cBS.closingInventory * 0.35).toLocaleString(), Math.round(pBS.closingInventory * 0.35).toLocaleString()] },
+          { label: 'Raw Materials & Imported Spares', values: [Math.round(cInv * 0.45).toLocaleString(), Math.round(pInv * 0.45).toLocaleString()] },
+          { label: 'Work-in-Progress (WIP)', values: [Math.round(cInv * 0.20).toLocaleString(), Math.round(pInv * 0.20).toLocaleString()] },
+          { label: 'Finished Goods Inventory', values: [Math.round(cInv * 0.35).toLocaleString(), Math.round(pInv * 0.35).toLocaleString()] },
         ],
-        totalRow: { label: `Total ${nLbl('bs', 'closingInventory', 'Closing Inventory')}`, values: [cBS.closingInventory.toLocaleString(), pBS.closingInventory.toLocaleString()] },
+        totalRow: { label: `Total ${nLbl('bs', 'closingInventory', 'Closing Inventory')}`, values: [cInv.toLocaleString(), pInv.toLocaleString()] },
       },
     },
     {
@@ -2199,12 +2268,12 @@ export function generateNotesToFinancialStatements(
       tableData: {
         headers: ['Receivable Category', `${currYear} (${company.reportingCurrency})`, `${prevYear} (${company.reportingCurrency})`],
         rows: [
-          { label: `${nLbl('bs', 'tradeReceivables', 'Trade Debtors')} (within 30 days)`, values: [Math.round(cBS.tradeReceivables * 0.65).toLocaleString(), Math.round(pBS.tradeReceivables * 0.65).toLocaleString()] },
-          { label: `${nLbl('bs', 'tradeReceivables', 'Trade Debtors')} (31 - 90 days)`, values: [Math.round(cBS.tradeReceivables * 0.25).toLocaleString(), Math.round(pBS.tradeReceivables * 0.25).toLocaleString()] },
-          { label: `${nLbl('bs', 'tradeReceivables', 'Trade Debtors')} (over 90 days, secured)`, values: [Math.round(cBS.tradeReceivables * 0.10).toLocaleString(), Math.round(pBS.tradeReceivables * 0.10).toLocaleString()] },
-          { label: nLbl('bs', 'otherReceivables', 'Advance Deposits & Prepayments'), values: [cBS.otherReceivables.toLocaleString(), pBS.otherReceivables.toLocaleString()] },
+          { label: `${nLbl('bs', 'tradeReceivables', 'Trade Debtors')} (within 30 days)`, values: [Math.round(cTrRec * 0.65).toLocaleString(), Math.round(pTrRec * 0.65).toLocaleString()] },
+          { label: `${nLbl('bs', 'tradeReceivables', 'Trade Debtors')} (31 - 90 days)`, values: [Math.round(cTrRec * 0.25).toLocaleString(), Math.round(pTrRec * 0.25).toLocaleString()] },
+          { label: `${nLbl('bs', 'tradeReceivables', 'Trade Debtors')} (over 90 days, secured)`, values: [Math.round(cTrRec * 0.10).toLocaleString(), Math.round(pTrRec * 0.10).toLocaleString()] },
+          { label: nLbl('bs', 'otherReceivables', 'Advance Deposits & Prepayments'), values: [cOthRec.toLocaleString(), pOthRec.toLocaleString()] },
         ],
-        totalRow: { label: 'Total Receivables', values: [(cBS.tradeReceivables + cBS.otherReceivables).toLocaleString(), (pBS.tradeReceivables + pBS.otherReceivables).toLocaleString()] },
+        totalRow: { label: 'Total Receivables', values: [(cTrRec + cOthRec).toLocaleString(), (pTrRec + pOthRec).toLocaleString()] },
       },
     },
     {
@@ -2215,11 +2284,11 @@ export function generateNotesToFinancialStatements(
       tableData: {
         headers: ['Liquid Asset Classes', `${currYear} (${company.reportingCurrency})`, `${prevYear} (${company.reportingCurrency})`],
         rows: [
-          { label: 'Cash in Hand (Corporate & Branches)', values: [Math.round(cBS.cashAndEquivalents * 0.05).toLocaleString(), Math.round(pBS.cashAndEquivalents * 0.05).toLocaleString()] },
-          { label: 'Balances with Commercial Banks', values: [Math.round(cBS.cashAndEquivalents * 0.70).toLocaleString(), Math.round(pBS.cashAndEquivalents * 0.70).toLocaleString()] },
-          { label: 'Short-Term Liquid Placements (< 90 Days)', values: [Math.round(cBS.cashAndEquivalents * 0.25).toLocaleString(), Math.round(pBS.cashAndEquivalents * 0.25).toLocaleString()] },
+          { label: 'Cash in Hand (Corporate & Branches)', values: [Math.round(cCashBS * 0.05).toLocaleString(), Math.round(pCashBS * 0.05).toLocaleString()] },
+          { label: 'Balances with Commercial Banks', values: [Math.round(cCashBS * 0.70).toLocaleString(), Math.round(pCashBS * 0.70).toLocaleString()] },
+          { label: 'Short-Term Liquid Placements (< 90 Days)', values: [Math.round(cCashBS * 0.25).toLocaleString(), Math.round(pCashBS * 0.25).toLocaleString()] },
         ],
-        totalRow: { label: `Total Balance Sheet ${nLbl('bs', 'cashAndEquivalents', 'Cash & Cash Equivalents')}`, values: [cBS.cashAndEquivalents.toLocaleString(), pBS.cashAndEquivalents.toLocaleString()] },
+        totalRow: { label: `Total Balance Sheet ${nLbl('bs', 'cashAndEquivalents', 'Cash & Cash Equivalents')}`, values: [cCashBS.toLocaleString(), pCashBS.toLocaleString()] },
       },
     },
     {
@@ -2230,12 +2299,12 @@ export function generateNotesToFinancialStatements(
       tableData: {
         headers: ['Equity Component', `${currYear} (${company.reportingCurrency})`, `${prevYear} (${company.reportingCurrency})`],
         rows: [
-          { label: nLbl('bs', 'shareCapital', 'Paid-Up Ordinary Share Capital'), values: [cBS.shareCapital.toLocaleString(), pBS.shareCapital.toLocaleString()] },
-          { label: nLbl('bs', 'retainedEarnings', 'Retained Earnings Balance'), values: [cBS.retainedEarnings.toLocaleString(), pBS.retainedEarnings.toLocaleString()] },
-          { label: nLbl('bs', 'reserves', 'Capital & Asset Revaluation Reserves'), values: [cBS.reserves.toLocaleString(), pBS.reserves.toLocaleString()] },
+          { label: nLbl('bs', 'shareCapital', 'Paid-Up Ordinary Share Capital'), values: [cSC.toLocaleString(), pSC.toLocaleString()] },
+          { label: nLbl('bs', 'retainedEarnings', 'Retained Earnings Balance'), values: [cRE.toLocaleString(), pRE.toLocaleString()] },
+          { label: nLbl('bs', 'reserves', 'Capital & Asset Revaluation Reserves'), values: [cRes.toLocaleString(), pRes.toLocaleString()] },
           ...customEquityRows,
         ],
-        totalRow: { label: 'Total Shareholders Equity', values: [cBS.totalEquity.toLocaleString(), pBS.totalEquity.toLocaleString()] },
+        totalRow: { label: 'Total Shareholders Equity', values: [cTotEq.toLocaleString(), pTotEq.toLocaleString()] },
       },
     },
     {
@@ -2246,10 +2315,10 @@ export function generateNotesToFinancialStatements(
       tableData: {
         headers: ['Credit Facility Type', `${currYear} (${company.reportingCurrency})`, `${prevYear} (${company.reportingCurrency})`],
         rows: [
-          { label: nLbl('bs', 'longTermBorrowings', 'Secured Long-Term Term Loans'), values: [cBS.longTermBorrowings.toLocaleString(), pBS.longTermBorrowings.toLocaleString()] },
-          { label: nLbl('bs', 'shortTermBorrowings', 'Short-Term Working Capital & Overdraft Facilities'), values: [cBS.shortTermBorrowings.toLocaleString(), pBS.shortTermBorrowings.toLocaleString()] },
+          { label: nLbl('bs', 'longTermBorrowings', 'Secured Long-Term Term Loans'), values: [cLTB.toLocaleString(), pLTB.toLocaleString()] },
+          { label: nLbl('bs', 'shortTermBorrowings', 'Short-Term Working Capital & Overdraft Facilities'), values: [cSTB.toLocaleString(), pSTB.toLocaleString()] },
         ],
-        totalRow: { label: 'Total Financial Debt Obligations', values: [(cBS.longTermBorrowings + cBS.shortTermBorrowings).toLocaleString(), (pBS.longTermBorrowings + pBS.shortTermBorrowings).toLocaleString()] },
+        totalRow: { label: 'Total Financial Debt Obligations', values: [(cLTB + cSTB).toLocaleString(), (pLTB + pSTB).toLocaleString()] },
       },
     },
     {
@@ -2260,31 +2329,31 @@ export function generateNotesToFinancialStatements(
       tableData: {
         headers: ['Payable Type', `${currYear} (${company.reportingCurrency})`, `${prevYear} (${company.reportingCurrency})`],
         rows: [
-          { label: nLbl('bs', 'tradePayables', 'Trade Creditors & Raw Material Suppliers'), values: [cBS.tradePayables.toLocaleString(), pBS.tradePayables.toLocaleString()] },
-          { label: nLbl('bs', 'otherPayables', 'Accrued Expenses & Statutory Withholdings'), values: [cBS.otherPayables.toLocaleString(), pBS.otherPayables.toLocaleString()] },
+          { label: nLbl('bs', 'tradePayables', 'Trade Creditors & Raw Material Suppliers'), values: [cTrPay.toLocaleString(), pTrPay.toLocaleString()] },
+          { label: nLbl('bs', 'otherPayables', 'Accrued Expenses & Statutory Withholdings'), values: [cOthPay.toLocaleString(), pOthPay.toLocaleString()] },
         ],
-        totalRow: { label: 'Total Current Payables', values: [(cBS.tradePayables + cBS.otherPayables).toLocaleString(), (pBS.tradePayables + pBS.otherPayables).toLocaleString()] },
+        totalRow: { label: 'Total Current Payables', values: [(cTrPay + cOthPay).toLocaleString(), (pTrPay + pOthPay).toLocaleString()] },
       },
     },
     {
       noteNumber: 12,
       title: 'Cash Flow Disclosures & Balance Sheet Reconciliation',
       category: 'Cash Flow Reconciliation',
-      textDescription: `Pursuant to Section 76.3 and 76.4, the Statement of Cash Flows directly incorporates the user-entered Cash Flow from Financing Activities (${cCF.directlyEnteredFinancingCashFlow.toLocaleString()} ${company.reportingCurrency}) without automatic derivations or assumptions. Closing cash is reconciled with the Statement of Financial Position: Closing Calculated Cash is ${cCF.closingCashCalculated.toLocaleString()} vs Balance Sheet Cash of ${cCF.balanceSheetCash.toLocaleString()}. Audit status: ${cCF.reconciliationStatus === 'RECONCILED' ? 'COMPLETELY RECONCILED (Variance 0)' : `VARIANCE OF ${cCF.reconciliationDifference.toLocaleString()} IDENTIFIED`}. ${cCF.reconciliationExplanation}`,
+      textDescription: `Pursuant to Section 76.3 and 76.4, the Statement of Cash Flows directly incorporates the user-entered Cash Flow from Financing Activities (${cCfFinDirect.toLocaleString()} ${company.reportingCurrency}) without automatic derivations or assumptions. Closing cash is reconciled with the Statement of Financial Position: Closing Calculated Cash is ${cCfClose.toLocaleString()} vs Balance Sheet Cash of ${cCfStatedBS.toLocaleString()}. Audit status: ${cCfReconciled ? 'COMPLETELY RECONCILED (Variance 0)' : `VARIANCE OF ${cCfDiff.toLocaleString()} IDENTIFIED`}. ${cCfReconciled ? 'Fully reconciled with Balance Sheet Cash & Cash Equivalents.' : cCF.reconciliationExplanation}`,
       tableData: {
         headers: ['Reconciliation Parameter', `${currYear} (${company.reportingCurrency})`, `${prevYear} (${company.reportingCurrency})`],
         rows: [
-          { label: 'Net Cash Generated from Operating Activities', values: [cCF.netCashFromOperating.toLocaleString(), pCF.netCashFromOperating.toLocaleString()] },
-          { label: 'Net Cash Generated from / (Used in) Investing Activities', values: [cCF.netCashFromInvesting.toLocaleString(), pCF.netCashFromInvesting.toLocaleString()] },
-          { label: 'Directly Entered Cash Flow from Financing Activities', values: [cCF.directlyEnteredFinancingCashFlow.toLocaleString(), pCF.directlyEnteredFinancingCashFlow.toLocaleString()] },
-          { label: 'Net Change in Cash and Cash Equivalents', values: [cCF.netChangeInCash.toLocaleString(), pCF.netChangeInCash.toLocaleString()] },
-          { label: 'Opening Cash and Cash Equivalents', values: [cCF.openingCash.toLocaleString(), pCF.openingCash.toLocaleString()] },
-          { label: 'Closing Cash Derived from Cash Flow Statement', values: [cCF.closingCashCalculated.toLocaleString(), pCF.closingCashCalculated.toLocaleString()] },
-          { label: 'Stated Cash & Equivalents in Statement of Financial Position', values: [cCF.balanceSheetCash.toLocaleString(), pCF.balanceSheetCash.toLocaleString()] },
+          { label: 'Net Cash Generated from Operating Activities', values: [cCfOp.toLocaleString(), pCfOp.toLocaleString()] },
+          { label: 'Net Cash Generated from / (Used in) Investing Activities', values: [cCfInv.toLocaleString(), pCfInv.toLocaleString()] },
+          { label: 'Directly Entered Cash Flow from Financing Activities', values: [cCfFinDirect.toLocaleString(), pCfFinDirect.toLocaleString()] },
+          { label: 'Net Change in Cash and Cash Equivalents', values: [cCfChange.toLocaleString(), pCfChange.toLocaleString()] },
+          { label: 'Opening Cash and Cash Equivalents', values: [cCfOpen.toLocaleString(), pCfOpen.toLocaleString()] },
+          { label: 'Closing Cash Derived from Cash Flow Statement', values: [cCfClose.toLocaleString(), pCfClose.toLocaleString()] },
+          { label: 'Stated Cash & Equivalents in Statement of Financial Position', values: [cCfStatedBS.toLocaleString(), pCfStatedBS.toLocaleString()] },
         ],
         totalRow: {
           label: 'Audit Reconciliation Variance',
-          values: [cCF.reconciliationDifference.toLocaleString(), pCF.reconciliationDifference.toLocaleString()],
+          values: [cCfDiff.toLocaleString(), pCfDiff.toLocaleString()],
         },
       },
     },
@@ -2730,6 +2799,7 @@ export function buildPreviousPairScopedNotes(
   options?: {
     statementConfig?: StatementConfigItem[];
     labelOverrides?: StatementLabelOverrides;
+    cellOverrides?: StatementCellOverrides;
   }
 ): FinancialNoteItem[] {
   const pairAsc = [...pairYearsDesc].sort((a, b) => a - b);
@@ -2899,7 +2969,7 @@ export function buildProjectedFormatData(
     const currTotalDebt = r2(longTermLoan + shortTermLoan);
     const netDebtDelta = r2(currTotalDebt - prevTotalDebt);
     const cfLoanReceived = netDebtDelta >= 0 && vis('cf_borrow_proceeds') ? netDebtDelta : 0;
-    const cfAdditionalCapital = eq.shareCapitalIssued;
+    const cfAdditionalCapital = vis('cf_shares_issue') ? eq.shareCapitalIssued : 0;
     const cfIssuanceOfDebt = 0;
     const cfDividendsToStockholders = 0;
     const drawings = eq.dividendsPaid;
@@ -3056,6 +3126,169 @@ export function buildProjectedFormatData(
 
   // Sort descending by year (e.g. 2030, 2029, ..., 2026) to match Projected_Financials PDF column order
   return projResults.sort((a, b) => b.year - a.year);
+}
+
+export interface ProjectedQuantNoteRow {
+  noteNo: string;
+  label: string;
+  configId?: string;
+  isSectionHeader?: boolean;
+  isBold?: boolean;
+  isSubtotal?: boolean;
+  indent?: boolean;
+  values: (number | null)[];
+}
+
+export function buildProjectedQuantNoteRows(
+  projData: import('../types/financial').ProjectedFormatYearData[],
+  options?: {
+    statementConfig?: StatementConfigItem[];
+    labelOverrides?: StatementLabelOverrides;
+    includeHidden?: boolean;
+  }
+): ProjectedQuantNoteRow[] {
+  const cfg = options?.statementConfig;
+  const lblOv = options?.labelOverrides;
+  const configMap = buildConfigVisibilityMap(cfg);
+  const vis = (id: string) => isConfigElementVisible(configMap, id);
+  const nLbl = (stmt: string, field: string, def: string) =>
+    resolveEffectiveLabel(stmt, field, def, lblOv, cfg);
+
+  const invLbl = nLbl('bs', 'closingInventory', 'Inventories');
+  const trRecLbl = nLbl('bs', 'tradeReceivables', 'Trade & Other Receivables');
+  const advLbl = nLbl('bs', 'otherReceivables', 'Advance, Deposit & Prepayments');
+  const cashLbl = nLbl('bs', 'cashAndEquivalents', 'Cash & Cash Equivalents');
+  const ltLoanLbl = nLbl('bs', 'longTermBorrowings', 'Long Term Loan');
+  const trPayLbl = nLbl('bs', 'tradePayables', 'Trade & Other Payables');
+  const taxPayLbl = nLbl('bs', 'currentTaxPayable', 'Provisions For Tax');
+  const stLoanLbl = nLbl('bs', 'shortTermBorrowings', 'Short Term Loan');
+  const cogsLbl = nLbl('income', 'costOfSales', 'Cost of Goods Sold');
+  const opexLbl = nLbl('income', 'operatingExpenses', 'Administrative & Selling Expenses');
+  const finCostLbl = nLbl('income', 'financeCost', 'Financial Expenses');
+
+  const includeHidden = Boolean(options?.includeHidden);
+  const keep = (id: string) => includeHidden || vis(id);
+  const nulls = () => projData.map(() => null);
+
+  const rows: ProjectedQuantNoteRow[] = [];
+
+  if (keep('bs_closingInventory')) {
+    rows.push({
+      noteNo: '3.00',
+      label: invLbl,
+      configId: 'bs_closingInventory',
+      isBold: true,
+      isSubtotal: true,
+      values: projData.map(d => d.inventories),
+    });
+  }
+
+  if (keep('bs_tradeReceivables')) {
+    rows.push(
+      { noteNo: '4.00', label: trRecLbl, configId: 'bs_tradeReceivables', isSectionHeader: true, isBold: true, values: nulls() },
+      { noteNo: '', label: 'As Per Last Year', configId: 'bs_tradeReceivables', indent: true, values: projData.map(d => d.note4ReceivablesOpening) },
+      { noteNo: '', label: 'Add: Credit Sales During the Year', configId: 'bs_tradeReceivables', indent: true, values: projData.map(d => d.note4ReceivablesAdded) },
+      { noteNo: '', label: 'Subtotal', configId: 'bs_tradeReceivables', isBold: true, isSubtotal: true, indent: true, values: projData.map(d => d.note4ReceivablesOpening + d.note4ReceivablesAdded) },
+      { noteNo: '', label: 'Less: Received During the Year', configId: 'bs_tradeReceivables', indent: true, values: projData.map(d => d.note4ReceivablesReceived) },
+      { noteNo: '', label: `Closing ${trRecLbl}`, configId: 'bs_tradeReceivables', isBold: true, isSubtotal: true, indent: true, values: projData.map(d => d.tradeAndOtherReceivables) },
+    );
+  }
+
+  if (keep('bs_otherReceivables')) {
+    rows.push(
+      { noteNo: '5.00', label: advLbl, configId: 'bs_otherReceivables', isSectionHeader: true, isBold: true, values: nulls() },
+      { noteNo: '', label: 'As Per Last Year', configId: 'bs_otherReceivables', indent: true, values: projData.map(d => d.note5AdvanceOpening) },
+      { noteNo: '', label: 'Add: During the Year', configId: 'bs_otherReceivables', indent: true, values: projData.map(d => d.note5AdvanceAdded) },
+      { noteNo: '', label: 'Subtotal', configId: 'bs_otherReceivables', isBold: true, isSubtotal: true, indent: true, values: projData.map(d => d.note5AdvanceOpening + d.note5AdvanceAdded) },
+      { noteNo: '', label: 'Less: Adjustment', configId: 'bs_otherReceivables', indent: true, values: projData.map(d => d.note5AdvanceAdjusted) },
+      { noteNo: '', label: `Closing ${advLbl}`, configId: 'bs_otherReceivables', isBold: true, isSubtotal: true, indent: true, values: projData.map(d => d.advanceDepositPrepayments) },
+    );
+  }
+
+  if (keep('bs_cashAndEquivalents')) {
+    rows.push(
+      { noteNo: '6.00', label: cashLbl, configId: 'bs_cashAndEquivalents', isSectionHeader: true, isBold: true, values: nulls() },
+      { noteNo: '', label: 'Cash In Hand & Bank', configId: 'bs_cashAndEquivalents', isBold: true, isSubtotal: true, indent: true, values: projData.map(d => d.cashAndCashEquivalents) },
+    );
+  }
+
+  if (keep('bs_longTermBorrowings')) {
+    rows.push({
+      noteNo: '7.00',
+      label: ltLoanLbl,
+      configId: 'bs_longTermBorrowings',
+      isBold: true,
+      isSubtotal: true,
+      values: projData.map(d => d.longTermLoan),
+    });
+  }
+
+  if (keep('bs_tradePayables')) {
+    rows.push(
+      { noteNo: '8.00', label: trPayLbl, configId: 'bs_tradePayables', isSectionHeader: true, isBold: true, values: nulls() },
+      { noteNo: '', label: 'As Per Last Year', configId: 'bs_tradePayables', indent: true, values: projData.map(d => d.note8PayablesOpening) },
+      { noteNo: '', label: 'Add: During the Year', configId: 'bs_tradePayables', indent: true, values: projData.map(d => d.note8PayablesAdded) },
+      { noteNo: '', label: 'Subtotal', configId: 'bs_tradePayables', isBold: true, isSubtotal: true, indent: true, values: projData.map(d => d.note8PayablesOpening + d.note8PayablesAdded) },
+      { noteNo: '', label: 'Less: Payment During the Year', configId: 'bs_tradePayables', indent: true, values: projData.map(d => d.note8PayablesPaid) },
+      { noteNo: '', label: `Closing ${trPayLbl}`, configId: 'bs_tradePayables', isBold: true, isSubtotal: true, indent: true, values: projData.map(d => d.tradeAndOtherPayables) },
+    );
+  }
+
+  if (keep('bs_currentTaxPayable')) {
+    rows.push(
+      { noteNo: '9.00', label: taxPayLbl, configId: 'bs_currentTaxPayable', isSectionHeader: true, isBold: true, values: nulls() },
+      { noteNo: '', label: 'As Per Last Year', configId: 'bs_currentTaxPayable', indent: true, values: projData.map(d => d.note9TaxOpening) },
+      { noteNo: '', label: 'Add: During the Year', configId: 'bs_currentTaxPayable', indent: true, values: projData.map(d => d.note9TaxAdded) },
+      { noteNo: '', label: 'Subtotal', configId: 'bs_currentTaxPayable', isBold: true, isSubtotal: true, indent: true, values: projData.map(d => d.note9TaxOpening + d.note9TaxAdded) },
+      { noteNo: '', label: 'Less: Adjustment', configId: 'bs_currentTaxPayable', indent: true, values: projData.map(d => d.note9TaxAdjusted) },
+      { noteNo: '', label: `Closing ${taxPayLbl}`, configId: 'bs_currentTaxPayable', isBold: true, isSubtotal: true, indent: true, values: projData.map(d => d.provisionsForTax) },
+    );
+  }
+
+  if (keep('bs_shortTermBorrowings')) {
+    rows.push(
+      { noteNo: '10.00', label: stLoanLbl, configId: 'bs_shortTermBorrowings', isSectionHeader: true, isBold: true, values: nulls() },
+      { noteNo: '', label: 'Bank Loan', configId: 'bs_shortTermBorrowings', isBold: true, isSubtotal: true, indent: true, values: projData.map(d => d.shortTermLoan) },
+    );
+  }
+
+  if (keep('inc_costOfSales')) {
+    rows.push(
+      { noteNo: '11.00', label: cogsLbl, configId: 'inc_costOfSales', isSectionHeader: true, isBold: true, values: nulls() },
+      { noteNo: '', label: 'Opening Stock', configId: 'inc_costOfSales', indent: true, values: projData.map(d => d.note11OpeningStock) },
+      { noteNo: '', label: 'Add: Purchase', configId: 'inc_costOfSales', indent: true, values: projData.map(d => d.note11Purchase) },
+      { noteNo: '', label: 'Subtotal', configId: 'inc_costOfSales', isBold: true, isSubtotal: true, indent: true, values: projData.map(d => d.note11OpeningStock + d.note11Purchase) },
+      { noteNo: '', label: 'Less: Closing Stock', configId: 'inc_costOfSales', indent: true, values: projData.map(d => d.note11ClosingStock) },
+      { noteNo: '', label: 'Material Consumed', configId: 'inc_costOfSales', isBold: true, isSubtotal: true, indent: true, values: projData.map(d => d.note11OpeningStock + d.note11Purchase - d.note11ClosingStock) },
+      { noteNo: '', label: 'Add: Direct Expenses', configId: 'inc_costOfSales', isSectionHeader: true, isBold: true, indent: true, values: nulls() },
+      { noteNo: '', label: 'Labour & Wages', configId: 'inc_costOfSales', indent: true, values: projData.map(d => d.note11LabourWages) },
+      { noteNo: '', label: 'Electricity Bill', configId: 'inc_costOfSales', indent: true, values: projData.map(d => d.note11ElectricityBill) },
+      { noteNo: '', label: 'Carriage Inward', configId: 'inc_costOfSales', indent: true, values: projData.map(d => d.note11CarriageInward) },
+      { noteNo: '', label: 'Other Direct Expenses', configId: 'inc_costOfSales', indent: true, values: projData.map(d => d.note11OtherDirectExpenses) },
+      { noteNo: '', label: 'Total Direct Expenses', configId: 'inc_costOfSales', isBold: true, isSubtotal: true, indent: true, values: projData.map(d => d.note11DirectExpensesTotal) },
+      { noteNo: '', label: cogsLbl, configId: 'inc_costOfSales', isBold: true, isSubtotal: true, indent: true, values: projData.map(d => d.costOfGoodsSold) },
+    );
+  }
+
+  if (includeHidden || vis('inc_operatingExpenses') || vis('inc_depreciationExpense')) {
+    rows.push({
+      noteNo: '12.00',
+      label: opexLbl,
+      configId: 'inc_operatingExpenses',
+      isBold: true,
+      isSubtotal: true,
+      values: projData.map(d => d.adminAndSellingExpenses),
+    });
+  }
+
+  if (keep('inc_financeCost')) {
+    rows.push(
+      { noteNo: '13.00', label: finCostLbl, configId: 'inc_financeCost', isSectionHeader: true, isBold: true, values: nulls() },
+      { noteNo: '', label: 'Bank Charges & Interest', configId: 'inc_financeCost', isBold: true, isSubtotal: true, indent: true, values: projData.map(d => d.financialExpenses) },
+    );
+  }
+
+  return rows;
 }
 
 // ---------------- MODEL VALIDATION SUITE (Requirement 5) ---------------- //
@@ -3220,19 +3453,26 @@ export function calculateDebtServiceCoverage(
   incomeStatements: IncomeStatementYear[],
   balanceSheets: BalanceSheetYear[],
   cashFlowStatements: CashFlowStatementYear[],
-  schedule?: import('../types/financial').ParsedRepaymentSchedule | null
+  schedule?: import('../types/financial').ParsedRepaymentSchedule | null,
+  options?: StatementCalculationOptions
 ): import('../types/financial').DebtServiceCoverageYear[] {
   const schedMap = new Map(
     (schedule?.annualSummaries || []).map(s => [s.financialYear, s])
   );
+  const configMap = buildConfigVisibilityMap(options?.statementConfig);
+  const vis = (id: string) => isConfigElementVisible(configMap, id);
 
   return inputs.map((inp, idx) => {
     const inc = incomeStatements[idx];
     const cf = cashFlowStatements[idx];
     const sched = schedMap.get(inp.year);
 
-    const scheduledPrincipal = sched ? sched.totalPrincipal : (cf?.repaymentOfBorrowings ?? inp.repaymentOfBorrowings ?? 0);
-    const scheduledFinanceCost = sched ? sched.totalProfit : (inc?.financeCost ?? inp.financeCost ?? 0);
+    const scheduledPrincipal = vis('cf_borrow_repay')
+      ? (sched ? sched.totalPrincipal : (cf?.repaymentOfBorrowings ?? inp.repaymentOfBorrowings ?? 0))
+      : 0;
+    const scheduledFinanceCost = vis('inc_financeCost')
+      ? (sched ? sched.totalProfit : (inc?.financeCost ?? inp.financeCost ?? 0))
+      : 0;
     const totalDebtService = r2(scheduledPrincipal + scheduledFinanceCost);
 
     const ebitda = r2((inc?.operatingProfit ?? 0) + (inc?.depreciationExpense ?? 0));

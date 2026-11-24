@@ -17,6 +17,7 @@ import {
   CalendarCheck2,
   ArrowUpRight,
   CheckSquare,
+  Square,
 } from 'lucide-react';
 import {
   CompanyProfile,
@@ -46,6 +47,8 @@ import {
   exportEquityStatementExcel,
   exportFixedAssetsExcel,
   exportNotesExcel,
+  exportNotesWord,
+  exportNotesPdf,
   exportDocumentWord,
   exportDocumentPdf,
   exportCompletePackageExcel,
@@ -167,12 +170,31 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
     );
   };
 
+  const activeConfigStatement: StatementConfigItem['statement'] | null =
+    activeStatement === 'income' ||
+    activeStatement === 'balanceSheet' ||
+    activeStatement === 'cashFlow' ||
+    activeStatement === 'equity' ||
+    activeStatement === 'fixedAssets'
+      ? activeStatement
+      : null;
+
+  const handleBulkSelectElements = (select: boolean, scope: 'active' | 'all' = 'active') => {
+    if (!onUpdateStatementConfig) return;
+    const targetStmt = scope === 'active' ? activeConfigStatement : null;
+    onUpdateStatementConfig(
+      statementConfig.map(c =>
+        !targetStmt || c.statement === targetStmt ? { ...c, isVisible: select } : c
+      )
+    );
+  };
+
   const getCustomItems = (stmt: StatementConfigItem['statement'], section?: string) =>
     statementConfig.filter(
       c => c.isCustom && c.statement === stmt && (!section || c.section === section)
     );
 
-  const exportSyncOptions = { statementConfig, labelOverrides };
+  const exportSyncOptions = { statementConfig, labelOverrides, cellOverrides };
   const totalConfigCount = statementConfig.length;
   const selectedConfigCount = statementConfig.filter(c => c.isVisible).length;
 
@@ -205,6 +227,8 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
   const filteredCashFlow = filterYears(cashFlowData);
   const filteredEquity = filterYears(equityData);
   const filteredFixedAssets = filterYears(fixedAssetsData);
+  const activeYearSet = new Set(filteredIncome.map(d => d.year));
+  const filteredDscr = debtServiceCoverage.filter(d => activeYearSet.has(d.year));
 
   // Helper to get effective cell value (checks cellOverrides first, falls back to original)
   const getVal = (stmt: string, field: string, year: number, fallback: number): number => {
@@ -259,7 +283,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
           filteredFixedAssets,
           notes,
           undefined,
-          isScheduleImplemented ? debtServiceCoverage : undefined,
+          isScheduleImplemented ? filteredDscr : undefined,
           exportSyncOptions
         );
         break;
@@ -277,9 +301,13 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         filteredFixedAssets,
         notes,
         undefined,
-        isScheduleImplemented ? debtServiceCoverage : undefined,
+        isScheduleImplemented ? filteredDscr : undefined,
         exportSyncOptions
       );
+      return;
+    }
+    if (activeStatement === 'notes') {
+      exportNotesWord(companyProfile, notes);
       return;
     }
     const { title, headers, rows } = getTableDataForExport(activeStatement);
@@ -297,9 +325,13 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         filteredFixedAssets,
         notes,
         undefined,
-        isScheduleImplemented ? debtServiceCoverage : undefined,
+        isScheduleImplemented ? filteredDscr : undefined,
         exportSyncOptions
       );
+      return;
+    }
+    if (activeStatement === 'notes') {
+      exportNotesPdf(companyProfile, notes);
       return;
     }
     const { title, headers, rows } = getTableDataForExport(activeStatement);
@@ -367,7 +399,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         visCustNonOp.forEach(ci => {
           rows.push([ci.label, ...filteredIncome.map(d => getCustomItemYearValue(ci, d.year))]);
         });
-        rows.push([getLbl('income', 'profitBeforeTax', 'Profit Before Tax'), ...filteredIncome.map(d => getVal('income', 'profitBeforeTax', d.year, d.profitBeforeTax))]);
+        rows.push([getLbl('income', 'profitBeforeTax', 'Profit Before Tax (EBT)'), ...filteredIncome.map(d => getVal('income', 'profitBeforeTax', d.year, d.profitBeforeTax))]);
         if (isElemVisible('inc_taxExpense')) {
           rows.push([getLbl('income', 'taxExpense', 'Income Tax Expense', 'inc_taxExpense'), ...filteredIncome.map(d => -getVal('income', 'taxExpense', d.year, d.taxExpense))]);
         }
@@ -501,7 +533,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         if (isElemVisible('cf_finance')) rows.push([getLbl('cf', 'adjFinanceCost', 'Finance Cost Adjustment', 'cf_finance'), ...filteredCashFlow.map(d => getVal('cf', 'adjFinanceCost', d.year, d.adjFinanceCost))]);
         if (isElemVisible('cf_interest_inc')) rows.push([getLbl('cf', 'adjInterestIncome', 'Interest & Investment Income', 'cf_interest_inc'), ...filteredCashFlow.map(d => getVal('cf', 'adjInterestIncome', d.year, d.adjInterestIncome))]);
         if (isElemVisible('cf_disposal_gain_loss')) rows.push([getLbl('cf', 'adjLossGainDisposal', 'Loss / (Gain) on Disposal of Fixed Assets', 'cf_disposal_gain_loss'), ...filteredCashFlow.map(d => getVal('cf', 'adjLossGainDisposal', d.year, d.adjLossGainDisposal))]);
-        rows.push([getLbl('cf', 'operatingProfitBeforeWC', 'Operating Profit Before Working Capital'), ...filteredCashFlow.map(d => getVal('cf', 'operatingProfitBeforeWC', d.year, d.operatingProfitBeforeWC))]);
+        rows.push([getLbl('cf', 'operatingProfitBeforeWC', 'Operating Profit Before Working Capital Changes'), ...filteredCashFlow.map(d => getVal('cf', 'operatingProfitBeforeWC', d.year, d.operatingProfitBeforeWC))]);
         if (isElemVisible('cf_wc_inventory')) rows.push([getLbl('cf', 'changeInInventory', '(Increase) / Decrease in Inventory', 'cf_wc_inventory'), ...filteredCashFlow.map(d => getVal('cf', 'changeInInventory', d.year, d.changeInInventory))]);
         if (isElemVisible('cf_wc_receivables')) rows.push([getLbl('cf', 'changeInReceivables', '(Increase) / Decrease in Trade Receivables', 'cf_wc_receivables'), ...filteredCashFlow.map(d => getVal('cf', 'changeInReceivables', d.year, d.changeInReceivables))]);
         if (isElemVisible('cf_wc_other_rec')) rows.push([getLbl('cf', 'changeInOtherReceivables', '(Increase) / Decrease in Other Receivables', 'cf_wc_other_rec'), ...filteredCashFlow.map(d => getVal('cf', 'changeInOtherReceivables', d.year, d.changeInOtherReceivables))]);
@@ -649,15 +681,38 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
               </button>
             )}
 
+            {isCustomizeMode && formatMode === 'section76' && onUpdateStatementConfig && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => handleBulkSelectElements(true, 'active')}
+                  className="px-2.5 py-1.5 text-xs font-medium text-emerald-800 hover:text-emerald-950 bg-white hover:bg-emerald-50 rounded-lg border border-slate-300 hover:border-emerald-300 transition-colors flex items-center gap-1 whitespace-nowrap shrink-0"
+                  title={activeConfigStatement ? 'Select all elements in this statement' : 'Select all statement elements'}
+                >
+                  <CheckSquare className="w-3.5 h-3.5 text-emerald-600" />
+                  Select All
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleBulkSelectElements(false, 'active')}
+                  className="px-2.5 py-1.5 text-xs font-medium text-rose-700 hover:text-rose-900 bg-white hover:bg-rose-50 rounded-lg border border-slate-300 hover:border-rose-300 transition-colors flex items-center gap-1 whitespace-nowrap shrink-0"
+                  title={activeConfigStatement ? 'Deselect all elements in this statement' : 'Deselect all statement elements'}
+                >
+                  <Square className="w-3.5 h-3.5 text-rose-500" />
+                  Deselect All
+                </button>
+              </>
+            )}
+
             {isCustomizeMode && formatMode === 'section76' && onResetStatementConfig && (
               <button
                 type="button"
                 onClick={onResetStatementConfig}
                 className="px-2.5 py-1.5 text-xs font-medium text-indigo-700 hover:text-indigo-900 bg-white hover:bg-indigo-50 rounded-lg border border-slate-300 transition-colors flex items-center gap-1 whitespace-nowrap shrink-0"
-                title="Re-select all default financial statement elements"
+                title="Restore all default financial statement elements and labels"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                Select All
+                Reset Defaults
               </button>
             )}
 
@@ -1017,20 +1072,36 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
 
           {/* Element Selection Info Banner */}
           {isCustomizeMode && (
-            <div className="p-3.5 bg-indigo-50/95 border border-indigo-300 rounded-xl text-xs text-indigo-950 flex items-center justify-between gap-3 shadow-xs">
+            <div className="p-3.5 bg-indigo-50/95 border border-indigo-300 rounded-xl text-xs text-indigo-950 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
               <div className="flex items-center gap-2">
                 <CheckSquare className="w-4 h-4 text-indigo-600 shrink-0" />
                 <span>
-                  <strong>Element Selection Mode:</strong> Use checkboxes on any statement row below to include or exclude line items. All subtotals, linked statements, ratios, previews, and exports recalculate automatically.
+                  <strong>Element Selection Mode ({selectedConfigCount}/{totalConfigCount} active):</strong> Check or uncheck any statement row below (such as <em>Repayment of Borrowings &amp; Financing</em>). All subtotals, linked statements, ratios, DSCR, previews, and exports recalculate automatically.
                 </span>
               </div>
-              <button
-                type="button"
-                onClick={() => setIsCustomizeMode(false)}
-                className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-medium text-[11px] shrink-0"
-              >
-                Done Selecting
-              </button>
+              <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleBulkSelectElements(true, 'all')}
+                  className="px-2.5 py-1 bg-white hover:bg-emerald-50 text-emerald-800 border border-emerald-300 rounded font-medium text-[11px]"
+                >
+                  Select All (All Statements)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleBulkSelectElements(false, 'all')}
+                  className="px-2.5 py-1 bg-white hover:bg-rose-50 text-rose-700 border border-rose-300 rounded font-medium text-[11px]"
+                >
+                  Deselect All (All Statements)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsCustomizeMode(false)}
+                  className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-medium text-[11px]"
+                >
+                  Done Selecting
+                </button>
+              </div>
             </div>
           )}
 
@@ -1148,7 +1219,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
               equityData={filteredEquity}
               fixedAssetsData={filteredFixedAssets}
               notes={notes}
-              debtServiceCoverage={isScheduleImplemented ? debtServiceCoverage : []}
+              debtServiceCoverage={isScheduleImplemented ? filteredDscr : []}
               onExportExcel={handleExportExcel}
               onExportWord={handleExportWord}
               onExportPdf={handleExportPdf}

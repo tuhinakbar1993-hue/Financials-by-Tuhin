@@ -8,6 +8,7 @@ import {
   CheckSquare,
   Square,
   RefreshCw,
+  Search,
 } from 'lucide-react';
 import { StatementConfigItem } from '../types/financial';
 
@@ -53,6 +54,7 @@ export const StatementConfigView: React.FC<StatementConfigViewProps> = ({
 }) => {
   const [selectedStatement, setSelectedStatement] = useState<StatementFilter>('all');
   const [selectedSection, setSelectedSection] = useState<string>('All');
+  const [searchQuery, setSearchQuery] = useState<string>('');
   const [newItemLabel, setNewItemLabel] = useState('');
   const [newItemStatement, setNewItemStatement] =
     useState<StatementConfigItem['statement']>('cashFlow');
@@ -70,17 +72,26 @@ export const StatementConfigView: React.FC<StatementConfigViewProps> = ({
   }, [configItems, selectedStatement]);
 
   const filteredItems = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
     return configItems
       .filter(item => {
         if (selectedStatement !== 'all' && item.statement !== selectedStatement) return false;
         if (selectedSection !== 'All' && item.section !== selectedSection) return false;
+        if (
+          q &&
+          !item.label.toLowerCase().includes(q) &&
+          !item.section.toLowerCase().includes(q) &&
+          !STATEMENT_BADGE[item.statement].toLowerCase().includes(q)
+        ) {
+          return false;
+        }
         return true;
       })
       .sort((a, b) => {
         if (a.statement !== b.statement) return a.statement.localeCompare(b.statement);
         return a.order - b.order;
       });
-  }, [configItems, selectedStatement, selectedSection]);
+  }, [configItems, selectedStatement, selectedSection, searchQuery]);
 
   const handleSelectStatementTab = (tab: StatementFilter) => {
     setSelectedStatement(tab);
@@ -100,12 +111,18 @@ export const StatementConfigView: React.FC<StatementConfigViewProps> = ({
   };
 
   const handleSelectScoped = (select: boolean, optionalOnly = false) => {
+    const q = searchQuery.trim().toLowerCase();
     onUpdateConfig(
       configItems.map(item => {
         const matchesStatement =
           selectedStatement === 'all' || item.statement === selectedStatement;
         const matchesSection = selectedSection === 'All' || item.section === selectedSection;
-        if (!matchesStatement || !matchesSection) return item;
+        const matchesQuery =
+          !q ||
+          item.label.toLowerCase().includes(q) ||
+          item.section.toLowerCase().includes(q) ||
+          STATEMENT_BADGE[item.statement].toLowerCase().includes(q);
+        if (!matchesStatement || !matchesSection || !matchesQuery) return item;
         if (optionalOnly && item.isMandatory) return item;
         return { ...item, isVisible: select };
       })
@@ -234,15 +251,36 @@ export const StatementConfigView: React.FC<StatementConfigViewProps> = ({
             ))}
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search elements..."
+                aria-label="Search financial statement elements"
+                className="pl-8 pr-3 py-1.5 w-44 sm:w-52 bg-white border border-slate-300 rounded-lg text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
+              />
+            </div>
             <button
+              type="button"
               onClick={() => handleSelectScoped(true, false)}
-              className="px-2.5 py-1.5 text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-50 rounded-lg border border-slate-300 transition-colors flex items-center gap-1"
+              className="px-2.5 py-1.5 text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-50 rounded-lg border border-slate-300 transition-colors flex items-center gap-1 font-medium"
             >
               <CheckSquare className="w-3.5 h-3.5 text-emerald-600" />
               Select All
             </button>
             <button
+              type="button"
+              onClick={() => handleSelectScoped(false, false)}
+              className="px-2.5 py-1.5 text-slate-700 hover:text-rose-800 bg-white hover:bg-rose-50 rounded-lg border border-slate-300 hover:border-rose-300 transition-colors flex items-center gap-1 font-medium"
+            >
+              <Square className="w-3.5 h-3.5 text-rose-500" />
+              Deselect All
+            </button>
+            <button
+              type="button"
               onClick={() => handleSelectScoped(false, true)}
               className="px-2.5 py-1.5 text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-50 rounded-lg border border-slate-300 transition-colors flex items-center gap-1"
             >

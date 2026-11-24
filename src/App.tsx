@@ -184,9 +184,9 @@ export default function App() {
       balanceSheets,
       cashFlowStatements,
       fixedAssetsSchedule,
-      { statementConfig, labelOverrides }
+      { statementConfig, labelOverrides, cellOverrides }
     );
-  }, [companyProfile, allYearsInputs, incomeStatements, balanceSheets, cashFlowStatements, fixedAssetsSchedule, statementConfig, labelOverrides]);
+  }, [companyProfile, allYearsInputs, incomeStatements, balanceSheets, cashFlowStatements, fixedAssetsSchedule, statementConfig, labelOverrides, cellOverrides]);
 
   const effectiveNotes = customNotes || defaultNotes;
 
@@ -218,7 +218,7 @@ export default function App() {
       fixedAssetsSchedule,
       effectiveNotes,
       defaultNotes,
-      { statementConfig, labelOverrides }
+      { statementConfig, labelOverrides, cellOverrides }
     );
   }, [
     companyProfile,
@@ -231,6 +231,7 @@ export default function App() {
     defaultNotes,
     statementConfig,
     labelOverrides,
+    cellOverrides,
   ]);
 
   const projectedFormatData = useMemo(() => {
@@ -265,9 +266,10 @@ export default function App() {
       incomeStatements,
       balanceSheets,
       cashFlowStatements,
-      isScheduleImplemented ? parsedSchedule : null
+      isScheduleImplemented ? parsedSchedule : null,
+      calcOptions
     );
-  }, [allYearsInputs, incomeStatements, balanceSheets, cashFlowStatements, isScheduleImplemented, parsedSchedule]);
+  }, [allYearsInputs, incomeStatements, balanceSheets, cashFlowStatements, isScheduleImplemented, parsedSchedule, calcOptions]);
 
   // Synchronize parsed schedule year-wise aggregation when FY end or model years change
   const modelYearsKey = useMemo(() => allYearsInputs.map(y => y.year).join(','), [allYearsInputs]);
@@ -886,6 +888,16 @@ export default function App() {
 
   const handleResetStatementConfig = () => {
     setStatementConfig(DEFAULT_STATEMENT_CONFIG_ITEMS);
+    setLabelOverrides(prev => {
+      const next = { ...prev };
+      Object.values(STATEMENT_CONFIG_TO_OVERRIDE_KEY).forEach(mapping => {
+        delete next[`${mapping.stmt}_${mapping.field}`];
+      });
+      FIXED_ASSET_CATEGORY_CONFIG_IDS.forEach((_, idx) => {
+        delete next[`fa_${idx}`];
+      });
+      return next;
+    });
   };
 
   // Reset all custom overrides back to pure calculation engine defaults
@@ -893,11 +905,19 @@ export default function App() {
     setCellOverrides({});
     setLabelOverrides({});
     setCustomNotes(null);
+    const defaultLabelMap = new Map(DEFAULT_STATEMENT_CONFIG_ITEMS.map(d => [d.id, d.label]));
+    setStatementConfig(prev =>
+      prev.map(item =>
+        !item.isCustom && defaultLabelMap.has(item.id)
+          ? { ...item, label: defaultLabelMap.get(item.id)! }
+          : item
+      )
+    );
   };
 
   const exportSyncOptions = useMemo(
-    () => ({ statementConfig, labelOverrides }),
-    [statementConfig, labelOverrides]
+    () => ({ statementConfig, labelOverrides, cellOverrides }),
+    [statementConfig, labelOverrides, cellOverrides]
   );
 
   // Handler: Export Complete Package (Section 76)

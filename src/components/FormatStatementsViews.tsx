@@ -11,6 +11,7 @@ import {
   Building2,
   BookOpen,
   CheckSquare,
+  Square,
   RotateCcw,
 } from 'lucide-react';
 import {
@@ -23,7 +24,7 @@ import {
   StatementLabelOverrides,
   YearDataInput,
 } from '../types/financial';
-import { resolveEffectiveLabel, getCustomItemYearValue } from '../services/financialEngine';
+import { resolveEffectiveLabel, getCustomItemYearValue, buildProjectedQuantNoteRows } from '../services/financialEngine';
 import {
   exportPreviousFinancialsExcel,
   exportPreviousFinancialsWord,
@@ -137,6 +138,13 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
     if (!onUpdateStatementConfig || statementConfig.length === 0) return;
     onUpdateStatementConfig(
       statementConfig.map(c => (c.id === id ? { ...c, isVisible: !c.isVisible } : c))
+    );
+  };
+
+  const handleSetAllConfigVisibility = (select: boolean) => {
+    if (!onUpdateStatementConfig || statementConfig.length === 0) return;
+    onUpdateStatementConfig(
+      statementConfig.map(c => ({ ...c, isVisible: select }))
     );
   };
 
@@ -267,6 +275,26 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                 <span>{isCustomizeMode ? 'Done Selecting' : 'Customize Elements'}</span>
               </button>
             )}
+            {isCustomizeMode && onUpdateStatementConfig && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => handleSetAllConfigVisibility(true)}
+                  className="px-2.5 py-1.5 rounded-lg bg-white hover:bg-emerald-50 text-emerald-800 border border-slate-300 hover:border-emerald-300 text-xs font-medium flex items-center gap-1"
+                >
+                  <CheckSquare className="w-3.5 h-3.5 text-emerald-600" />
+                  Select All
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSetAllConfigVisibility(false)}
+                  className="px-2.5 py-1.5 rounded-lg bg-white hover:bg-rose-50 text-rose-700 border border-slate-300 hover:border-rose-300 text-xs font-medium flex items-center gap-1"
+                >
+                  <Square className="w-3.5 h-3.5 text-rose-500" />
+                  Deselect All
+                </button>
+              </>
+            )}
             {isCustomizeMode && onResetStatementConfig && (
               <button
                 type="button"
@@ -274,7 +302,7 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                 className="px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 text-xs font-medium flex items-center gap-1"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                Select All
+                Reset Defaults
               </button>
             )}
             {comparativePairs.length > 0 && (
@@ -1318,7 +1346,7 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                   </tr>
                 ))}
                 <tr className="bg-emerald-50 font-bold text-emerald-950 border-t border-b-4 border-double border-emerald-700">
-                  <td className="py-2.5 px-4 border-r border-slate-200">TOTAL CLOSING EQUITY</td>
+                  <td className="py-2.5 px-4 border-r border-slate-200">{lbl('eq', 'totalClosingEquity', 'TOTAL CLOSING EQUITY')}</td>
                   {displayedData.map(d => (
                     <td key={d.year} className="py-2.5 px-4 text-right font-mono border-r border-slate-200 last:border-r-0">
                       {fmtCell(d.eqTotalClosingEquity)}
@@ -1499,6 +1527,13 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
       />
     ) : null;
 
+  const handleSetAllConfigVisibility = (select: boolean) => {
+    if (!onUpdateStatementConfig || statementConfig.length === 0) return;
+    onUpdateStatementConfig(
+      statementConfig.map(c => ({ ...c, isVisible: select }))
+    );
+  };
+
   const lbl = (stmt: string, field: string, def: string) =>
     resolveEffectiveLabel(stmt, field, def, labelOverrides, statementConfig);
 
@@ -1587,6 +1622,26 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
               <span>{isCustomizeMode ? 'Done Selecting' : 'Customize Elements'}</span>
             </button>
           )}
+          {isCustomizeMode && onUpdateStatementConfig && (
+            <>
+              <button
+                type="button"
+                onClick={() => handleSetAllConfigVisibility(true)}
+                className="px-2.5 py-1.5 rounded-lg bg-white hover:bg-emerald-50 text-emerald-800 border border-slate-300 hover:border-emerald-300 text-xs font-medium flex items-center gap-1 whitespace-nowrap shrink-0"
+              >
+                <CheckSquare className="w-3.5 h-3.5 text-emerald-600" />
+                Select All
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSetAllConfigVisibility(false)}
+                className="px-2.5 py-1.5 rounded-lg bg-white hover:bg-rose-50 text-rose-700 border border-slate-300 hover:border-rose-300 text-xs font-medium flex items-center gap-1 whitespace-nowrap shrink-0"
+              >
+                <Square className="w-3.5 h-3.5 text-rose-500" />
+                Deselect All
+              </button>
+            </>
+          )}
           {isCustomizeMode && onResetStatementConfig && (
             <button
               type="button"
@@ -1594,7 +1649,7 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
               className="px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 text-xs font-medium flex items-center gap-1 whitespace-nowrap shrink-0"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              Select All
+              Reset Defaults
             </button>
           )}
           <button
@@ -1849,7 +1904,7 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                   </tr>
                 )}
                 <tr className="bg-slate-100/80 font-bold text-slate-900 border-t border-b-2 border-slate-300">
-                  <td className="py-1.5 px-4">Closing Capital / Equity</td>
+                  <td className="py-1.5 px-4">{lbl('eq', 'closingShareCapital', 'Closing Capital / Equity')}</td>
                   <td></td>
                   {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono">{fmtCell(d.closingCapital)}</td>)}
                 </tr>
@@ -2399,10 +2454,17 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                     {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfLoanReceived)}</td>)}
                   </tr>
                 )}
-                <tr className="hover:bg-slate-50/80">
-                  <td className="py-1.5 px-4 text-slate-700">Additional Capital</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfAdditionalCapital)}</td>)}
-                </tr>
+                {(isElemVisible('cf_shares_issue') || isCustomizeMode) && (
+                  <tr className={!isElemVisible('cf_shares_issue') ? 'opacity-45 bg-slate-50' : 'hover:bg-slate-50/80'}>
+                    <td className="py-1.5 px-4 text-slate-700">
+                      <div className="flex items-center gap-2">
+                        {renderCheck('cf_shares_issue')}
+                        <span>Additional Capital</span>
+                      </div>
+                    </td>
+                    {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfAdditionalCapital)}</td>)}
+                  </tr>
+                )}
                 <tr className="hover:bg-slate-50/80">
                   <td className="py-1.5 px-4 text-slate-700">Issuance Of Debt (Bond &amp; Notes)</td>
                   {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfIssuanceOfDebt)}</td>)}
@@ -2531,159 +2593,54 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200/80 text-slate-800">
-                <tr className="font-bold text-slate-900 bg-slate-50">
-                  <td className="py-2 px-3 text-center font-mono">3.00</td>
-                  <td className="py-2 px-4">{lbl('bs', 'closingInventory', 'Inventories')}</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono">{fmtCell(d.inventories)}</td>)}
-                </tr>
-                <tr className="font-bold text-sky-900 bg-sky-50/50">
-                  <td className="py-2 px-3 text-center font-mono">4.00</td>
-                  <td colSpan={projData.length + 1} className="py-2 px-4">{lbl('bs', 'tradeReceivables', 'Trade & Other Receivables')}</td>
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">As Per Last Year</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note4ReceivablesOpening)}</td>)}
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Add: Credit Sales During the Year</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note4ReceivablesAdded)}</td>)}
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Less: Received During the Year</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note4ReceivablesReceived)}</td>)}
-                </tr>
-                <tr className="font-bold text-slate-900 bg-slate-100/75">
-                  <td></td><td className="py-1.5 px-4 pl-6">Closing {lbl('bs', 'tradeReceivables', 'Trade & Other Receivables')}</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono">{fmtCell(d.tradeAndOtherReceivables)}</td>)}
-                </tr>
-
-                <tr className="font-bold text-sky-900 bg-sky-50/50">
-                  <td className="py-2 px-3 text-center font-mono">5.00</td>
-                  <td colSpan={projData.length + 1} className="py-2 px-4">{lbl('bs', 'otherReceivables', 'Advance, Deposit & Prepayments')}</td>
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">As Per Last Year</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note5AdvanceOpening)}</td>)}
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Add: During the Year</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note5AdvanceAdded)}</td>)}
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Less: Adjustment</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note5AdvanceAdjusted)}</td>)}
-                </tr>
-                <tr className="font-bold text-slate-900 bg-slate-100/75">
-                  <td></td><td className="py-1.5 px-4 pl-6">Closing {lbl('bs', 'otherReceivables', 'Advance, Deposit & Prepayments')}</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono">{fmtCell(d.advanceDepositPrepayments)}</td>)}
-                </tr>
-
-                <tr className="font-bold text-sky-900 bg-sky-50/50">
-                  <td className="py-2 px-3 text-center font-mono">6.00</td>
-                  <td className="py-2 px-4">{lbl('bs', 'cashAndEquivalents', 'Cash & Cash Equivalents')} — Cash In Hand &amp; Bank</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.cashAndCashEquivalents)}</td>)}
-                </tr>
-                <tr className="font-bold text-sky-900 bg-sky-50/50">
-                  <td className="py-2 px-3 text-center font-mono">7.00</td>
-                  <td className="py-2 px-4">{lbl('bs', 'longTermBorrowings', 'Long Term Loan')}</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.longTermLoan)}</td>)}
-                </tr>
-
-                <tr className="font-bold text-sky-900 bg-sky-50/50">
-                  <td className="py-2 px-3 text-center font-mono">8.00</td>
-                  <td colSpan={projData.length + 1} className="py-2 px-4">{lbl('bs', 'tradePayables', 'Trade & Other Payables')}</td>
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">As Per Last Year</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note8PayablesOpening)}</td>)}
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Add: During the Year</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note8PayablesAdded)}</td>)}
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Less: Payment During the Year</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note8PayablesPaid)}</td>)}
-                </tr>
-                <tr className="font-bold text-slate-900 bg-slate-100/75">
-                  <td></td><td className="py-1.5 px-4 pl-6">Closing {lbl('bs', 'tradePayables', 'Trade & Other Payables')}</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono">{fmtCell(d.tradeAndOtherPayables)}</td>)}
-                </tr>
-
-                <tr className="font-bold text-sky-900 bg-sky-50/50">
-                  <td className="py-2 px-3 text-center font-mono">9.00</td>
-                  <td colSpan={projData.length + 1} className="py-2 px-4">{lbl('bs', 'currentTaxPayable', 'Provisions For Tax')}</td>
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">As Per Last Year</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note9TaxOpening)}</td>)}
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Add: During the Year</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note9TaxAdded)}</td>)}
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Less: Adjustment</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note9TaxAdjusted)}</td>)}
-                </tr>
-                <tr className="font-bold text-slate-900 bg-slate-100/75">
-                  <td></td><td className="py-1.5 px-4 pl-6">Closing {lbl('bs', 'currentTaxPayable', 'Provisions For Tax')}</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono">{fmtCell(d.provisionsForTax)}</td>)}
-                </tr>
-
-                <tr className="font-bold text-sky-900 bg-sky-50/50">
-                  <td className="py-2 px-3 text-center font-mono">10.00</td>
-                  <td className="py-2 px-4">{lbl('bs', 'shortTermBorrowings', 'Short Term Loan')} — Bank Loan</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">{fmtCell(d.shortTermLoan)}</td>)}
-                </tr>
-
-                <tr className="font-bold text-sky-900 bg-sky-50/50">
-                  <td className="py-2 px-3 text-center font-mono">11.00</td>
-                  <td colSpan={projData.length + 1} className="py-2 px-4">{lbl('income', 'costOfSales', 'Cost of Goods Sold')}</td>
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Opening Stock</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note11OpeningStock)}</td>)}
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Add: Purchase</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note11Purchase)}</td>)}
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Less: Closing Stock</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note11ClosingStock)}</td>)}
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Labour &amp; Wages</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note11LabourWages)}</td>)}
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Electricity Bill</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note11ElectricityBill)}</td>)}
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Carriage Inward</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note11CarriageInward)}</td>)}
-                </tr>
-                <tr className="hover:bg-slate-50/80">
-                  <td></td><td className="py-1.5 px-4 pl-6 text-slate-600">Other Direct Expenses</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-800">{fmtCell(d.note11OtherDirectExpenses)}</td>)}
-                </tr>
-                <tr className="font-bold text-slate-900 bg-slate-100/75">
-                  <td></td><td className="py-1.5 px-4 pl-6">{lbl('income', 'costOfSales', 'Cost of Goods Sold')}</td>
-                  {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono">{fmtCell(d.costOfGoodsSold)}</td>)}
-                </tr>
-
-                <tr className="font-bold text-slate-900 bg-slate-50">
-                  <td className="py-2 px-3 text-center font-mono">12.00</td>
-                  <td className="py-2 px-4">{lbl('income', 'operatingExpenses', 'Administrative & Selling Expenses')}</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono">{fmtCell(d.adminAndSellingExpenses)}</td>)}
-                </tr>
-                <tr className="font-bold text-slate-900 bg-slate-50">
-                  <td className="py-2 px-3 text-center font-mono">13.00</td>
-                  <td className="py-2 px-4">{lbl('income', 'financeCost', 'Financial Expenses')} — Bank Charges &amp; Interest</td>
-                  {projData.map(d => <td key={d.year} className="py-2 px-3 text-right font-mono">{fmtCell(d.financialExpenses)}</td>)}
-                </tr>
+                {buildProjectedQuantNoteRows(projData, {
+                  statementConfig,
+                  labelOverrides,
+                  includeHidden: isCustomizeMode,
+                }).map((row, idx) => {
+                  const visible = row.configId
+                    ? row.noteNo === '12.00'
+                      ? isElemVisible('inc_operatingExpenses') || isElemVisible('inc_depreciationExpense')
+                      : isElemVisible(row.configId)
+                    : true;
+                  const rowCls = !visible
+                    ? 'opacity-45 bg-slate-50'
+                    : row.isSectionHeader
+                      ? 'font-bold text-sky-900 bg-sky-50/50'
+                      : row.isSubtotal
+                        ? 'font-bold text-slate-900 bg-slate-100/75'
+                        : 'hover:bg-slate-50/80';
+                  return (
+                    <tr key={`qnote-${idx}-${row.noteNo}-${row.label}`} className={rowCls}>
+                      <td className="py-1.5 px-3 text-center font-mono">{row.noteNo}</td>
+                      {row.isSectionHeader && row.values.every(v => v === null) ? (
+                        <td colSpan={projData.length + 1} className={`py-1.5 px-4 ${row.indent ? 'pl-6' : ''}`}>
+                          <div className="flex items-center gap-2">
+                            {row.noteNo !== '' && row.configId && renderCheck(row.configId)}
+                            <span>{row.label}</span>
+                          </div>
+                        </td>
+                      ) : (
+                        <>
+                          <td className={`py-1.5 px-4 ${row.indent ? 'pl-6' : ''} ${!row.isBold ? 'text-slate-600' : ''}`}>
+                            <div className="flex items-center gap-2">
+                              {row.noteNo !== '' && row.configId && renderCheck(row.configId)}
+                              <span>{row.label}</span>
+                            </div>
+                          </td>
+                          {row.values.map((v, yIdx) => (
+                            <td
+                              key={projData[yIdx]?.year ?? yIdx}
+                              className={`py-1.5 px-3 text-right font-mono ${row.isBold ? 'text-slate-900' : 'text-slate-800'}`}
+                            >
+                              {v === null ? '' : fmtCell(v)}
+                            </td>
+                          ))}
+                        </>
+                      )}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
