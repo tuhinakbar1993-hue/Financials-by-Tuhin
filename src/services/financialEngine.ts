@@ -390,14 +390,74 @@ export function calculateFinancialRatios(
 }
 
 /**
+ * Deterministic bounded cyclical wave in [-1, 1] seeded by year and component channel.
+ * Produces realistic, non-uniform annual variations across financial line items while
+ * guaranteeing 100% repeatable output across UI renders, previews, and exports.
+ */
+function deterministicAnnualWave(year: number, channel: number): number {
+  const a = Math.sin(year * 1.37 + channel * 2.13);
+  const b = Math.cos(year * 0.79 + channel * 1.47);
+  return a * 0.62 + b * 0.38;
+}
+
+function clampVal(val: number, minVal: number, maxVal: number): number {
+  return Math.min(maxVal, Math.max(minVal, val));
+}
+
+function varyBounded(
+  baseVal: number,
+  year: number,
+  channel: number,
+  amplitude: number,
+  minVal: number,
+  maxVal: number
+): number {
+  return clampVal(baseVal + deterministicAnnualWave(year, channel) * amplitude, minVal, maxVal);
+}
+
+export function computeInterestIncomeRate(year: number, isProjected: boolean): number {
+  const amp = isProjected ? 0.00055 : 0.0004;
+  return Number(clampVal(0.005 + deterministicAnnualWave(year, 10) * amp, 0.0038, 0.0064).toFixed(6));
+}
+
+export function computeDepDisposalsRatio(year: number, isProjected: boolean): number {
+  const amp = isProjected ? 0.065 : 0.04;
+  return Number(clampVal(0.65 + deterministicAnnualWave(year, 16) * amp, 0.52, 0.78).toFixed(4));
+}
+
+function splitTotalNonUniform(
+  total: number,
+  year: number,
+  channel: number,
+  baseWeights: number[],
+  amplitudes: number[]
+): number[] {
+  if (total === 0) return baseWeights.map(() => 0);
+  const adjusted = baseWeights.map((w, idx) =>
+    Math.max(0.01, w + deterministicAnnualWave(year, channel + idx * 3) * (amplitudes[idx] ?? 0.02))
+  );
+  const weightSum = adjusted.reduce((acc, v) => acc + v, 0);
+  const out: number[] = [];
+  let running = 0;
+  for (let i = 0; i < adjusted.length - 1; i++) {
+    const val = Math.round(total * (adjusted[i] / weightSum));
+    out.push(val);
+    running += val;
+  }
+  out.push(r2(total - running));
+  return out;
+}
+
+/**
  * Automatically generates realistic, internally consistent year-wise figures
  * for the 6 primary financial drivers based on appropriate financial ratios,
- * historical trends, accounting relationships, and logical interconnections.
+ * historical trends, non-uniform annual business dynamics, and logical interconnections.
  */
 export function generateAutomaticPrimaryDrivers(
   prevYear: YearDataInput,
   assumptions: ProjectionAssumptions,
-  yearNumber: number
+  yearNumber: number,
+  stepIndex: number = 1
 ): {
   year: number;
   isProjected: boolean;
@@ -408,38 +468,83 @@ export function generateAutomaticPrimaryDrivers(
   repaymentOfBorrowings: number;
   fixedAssetsGross: number;
 } {
-  // 1. Sales Revenue: realistic compound growth based on assumptions
-  const growth = 1 + assumptions.revenueGrowthRate / 100;
-  const salesRevenue = Math.round(prevYear.salesRevenue * growth);
+  // 1. Sales Revenue: non-uniform annual growth centered around user's revenueGrowthRate with gentle maturity curve
+  const baseGrowthPct = assumptions.revenueGrowthRate;
+  const revAmp = Math.max(0.45, Math.abs(baseGrowthPct) * 0.16);
+  const maturityScale = stepIndex > 9 ? 0.90 : stepIndex > 5 ? 0.95 : 1.0;
+  const effectiveGrowthPct = baseGrowthPct * maturityScale + deterministicAnnualWave(yearNumber, 1) * revAmp;
+  const salesRevenue = Math.max(100, Math.round(prevYear.salesRevenue * (1 + effectiveGrowthPct / 100)));
 
-  // Cost of Sales based on gross margin
-  const costOfSales = Math.round(salesRevenue * (1 - assumptions.grossMarginPct / 100));
+  // Cost of Sales smoothly converging from historical COGS % toward target gross margin with annual mix variation
+  const targetCosPct = 100 - assumptions.grossMarginPct;
+  const prevCosPct = prevYear.salesRevenue > 0 ? (prevYear.costOfSales / prevYear.salesRevenue) * 100 : targetCosPct;
+  const yearCosPct = varyBounded(
+    prevCosPct * 0.35 + targetCosPct * 0.65,
+    yearNumber,
+    2,
+    0.65,
+    15,
+    92
+  );
+  const costOfSales = Math.round(salesRevenue * (yearCosPct / 100));
 
-  // 2. Closing Inventory: derived via Days Inventory Outstanding (DIO)
-  const closingInventory = Math.round((costOfSales / 365) * assumptions.inventoryDays);
+  // 2. Closing Inventory: smooth convergence from prior DIO toward target DIO + varied seasonal working-capital buffer
+  const targetDIO = Math.max(5, assumptions.inventoryDays);
+  const prevDIO = prevYear.costOfSales > 0 ? (prevYear.closingInventory / prevYear.costOfSales) * 365 : targetDIO;
+  const blendedDIO = prevDIO * 0.42 + targetDIO * 0.58;
+  const yearDIO = varyBounded(blendedDIO, yearNumber, 4, Math.max(1.4, targetDIO * 0.04), 5, 240);
+  const closingInventory = Math.round((costOfSales / 365) * yearDIO);
 
-  // 3. Finance Cost: realistic debt yield applied to outstanding borrowings
-  const prevTotalDebt = (prevYear.longTermBorrowings || 8000) + (prevYear.shortTermBorrowings || 2500);
-  const effectiveInterestRate = 0.085; // 8.5% p.a.
-  const financeCost = Math.max(350, Math.round(prevTotalDebt * effectiveInterestRate * 0.96));
+  // 3. Finance Cost: smooth rate transition from prior effective debt yield + non-uniform debt service timing
+  const prevTotalDebt = Math.max(1, (prevYear.longTermBorrowings || 8000) + (prevYear.shortTermBorrowings || 2500));
+  const rawPrevYield = prevYear.financeCost > 0 ? prevYear.financeCost / prevTotalDebt : 0.085;
+  const clampedPrevYield = clampVal(rawPrevYield, 0.045, 0.155);
+  const blendedYield = clampedPrevYield * 0.45 + 0.085 * 0.55;
+  const effectiveInterestRate = varyBounded(blendedYield, yearNumber, 14, 0.0055, 0.045, 0.16);
+  const midYearDeleveragingAdj = varyBounded(0.955, yearNumber, 18, 0.02, 0.91, 0.99);
+  const financeCost = Math.max(350, Math.round(prevTotalDebt * effectiveInterestRate * midYearDeleveragingAdj));
 
-  // 4. Net Profit After Tax: derived from operating profitability, depreciation, finance cost and statutory tax
+  // 4. Net Profit After Tax: operating leverage, non-uniform SG&A efficiency, depreciation, finance cost, and tax
   const grossProfit = salesRevenue - costOfSales;
-  const operatingExpenses = Math.round(salesRevenue * (assumptions.opexPctOfRevenue / 100));
+  const prevOpexPct = prevYear.salesRevenue > 0 ? (prevYear.operatingExpenses / prevYear.salesRevenue) * 100 : assumptions.opexPctOfRevenue;
+  const yearOpexPct = varyBounded(
+    prevOpexPct * 0.30 + assumptions.opexPctOfRevenue * 0.70,
+    yearNumber,
+    3,
+    0.50,
+    3,
+    55
+  );
+  const operatingExpenses = Math.round(salesRevenue * (yearOpexPct / 100));
   const depEstimate = Math.round(prevYear.fixedAssetsGross * (assumptions.depreciationRatePct / 100));
   const operatingProfit = grossProfit - operatingExpenses - depEstimate;
-  const interestIncome = Math.round(salesRevenue * 0.005);
+  const interestIncome = Math.round(salesRevenue * computeInterestIncomeRate(yearNumber, true));
   const profitBeforeTax = operatingProfit + interestIncome - financeCost;
   const taxExpense = Math.round(Math.max(0, profitBeforeTax) * (assumptions.taxRatePct / 100));
   const netProfit = profitBeforeTax - taxExpense;
 
-  // 5. Repayment of Borrowings and Financing: scheduled 12% annual term debt principal reduction
-  const repaymentOfBorrowings = Math.max(400, Math.round((prevYear.longTermBorrowings || 8000) * 0.12));
+  // 5. Repayment of Borrowings: smooth amortization transition with non-uniform facility reduction pacing
+  const prevLT = Math.max(500, prevYear.longTermBorrowings || 8000);
+  const rawPrevRepayRatio = prevYear.repaymentOfBorrowings > 0 ? prevYear.repaymentOfBorrowings / prevLT : 0.12;
+  const clampedPrevRepay = clampVal(rawPrevRepayRatio, 0.07, 0.22);
+  const yearRepayRatio = varyBounded(clampedPrevRepay * 0.42 + 0.125 * 0.58, yearNumber, 15, 0.014, 0.07, 0.23);
+  const repaymentOfBorrowings = Math.max(400, Math.round(prevLT * yearRepayRatio));
 
-  // 6. Fixed Assets (Gross Asset Base): disciplined capital reinvestment less disposals
-  const capexAdditions = Math.round(salesRevenue * (assumptions.capexPctOfRevenue / 100));
-  const disposals = Math.round(prevYear.fixedAssetsGross * 0.012);
-  const fixedAssetsGross = prevYear.fixedAssetsGross + capexAdditions - disposals;
+  // 6. Fixed Assets (Gross Asset Base): non-uniform capex cycle less varied asset retirements
+  const prevCapexPct =
+    prevYear.salesRevenue > 0 && prevYear.fixedAssetsAdditions > 0
+      ? clampVal((prevYear.fixedAssetsAdditions / prevYear.salesRevenue) * 100, 2.0, 14.0)
+      : assumptions.capexPctOfRevenue;
+  const yearCapexPct = clampVal(
+    (prevCapexPct * 0.25 + assumptions.capexPctOfRevenue * 0.75) *
+      (1 + deterministicAnnualWave(yearNumber, 11) * 0.18),
+    1.0,
+    25.0
+  );
+  const capexAdditions = Math.round(salesRevenue * (yearCapexPct / 100));
+  const disposalRate = varyBounded(0.012, yearNumber, 12, 0.0042, 0.005, 0.022);
+  const disposals = Math.round(prevYear.fixedAssetsGross * disposalRate);
+  const fixedAssetsGross = Math.max(100, prevYear.fixedAssetsGross + capexAdditions - disposals);
 
   return {
     year: yearNumber,
@@ -558,7 +663,18 @@ export function calculateDriverAutoFillSeries(
     });
   }
 
-  allYears.forEach(year => {
+  const sortedYears = [...allYears].sort((a, b) => a - b);
+  const stepGrowthFor = (yr: number, rate: number, direction: 1 | -1, stepNum: number, channel: number): number => {
+    const absAmp = Math.max(0.0035, Math.abs(rate) * 0.16);
+    const wave = deterministicAnnualWave(yr, channel) * absAmp;
+    if (direction === 1) {
+      const maturity = stepNum > 10 ? 0.88 : stepNum > 6 ? 0.94 : 1.0;
+      return rate * maturity + wave;
+    }
+    return rate + wave;
+  };
+
+  sortedYears.forEach(year => {
     if (year === baseYear) {
       // STRICTLY PRESERVE USER ENTERED BASE VALUE
       result[year] = Math.round(baseValue);
@@ -570,17 +686,22 @@ export function calculateDriverAutoFillSeries(
     switch (driver) {
       case 'salesRevenue': {
         if (diff > 0) {
-          // Future years: compound annual growth rate with gentle maturity dampening after year 7
           let val = baseValue;
           for (let step = 1; step <= diff; step++) {
-            const stepGrowth = step > 10 ? growthRate * 0.88 : (step > 6 ? growthRate * 0.94 : growthRate);
-            val = val * (1 + stepGrowth);
+            const yrStep = baseYear + step;
+            const g = stepGrowthFor(yrStep, growthRate, 1, step, 1);
+            val = val * (1 + g);
           }
           result[year] = Math.round(val);
         } else {
-          // Past years: back-discounting with steady expansion
-          const absDiff = Math.abs(diff);
-          result[year] = Math.round(baseValue / Math.pow(1 + Math.max(0.04, growthRate), absDiff));
+          let val = baseValue;
+          const backRate = Math.max(0.04, growthRate);
+          for (let step = 1; step <= Math.abs(diff); step++) {
+            const yrStep = baseYear - step + 1;
+            const g = Math.max(0.025, stepGrowthFor(yrStep, backRate, -1, step, 1));
+            val = val / (1 + g);
+          }
+          result[year] = Math.round(val);
         }
         break;
       }
@@ -590,71 +711,101 @@ export function calculateDriverAutoFillSeries(
         const targetSales = salesMap[year];
         if (baseSales && targetSales && baseSales > 0 && targetSales > 0) {
           const baseRatio = baseValue / baseSales;
-          // Working capital efficiency gains: 0.4% p.a. DIO improvement
           const efficiency = Math.pow(1 - 0.004, diff);
-          result[year] = Math.round(targetSales * baseRatio * efficiency);
+          const dioWave = 1 + deterministicAnnualWave(year, 4) * 0.045;
+          result[year] = Math.max(0, Math.round(targetSales * baseRatio * efficiency * dioWave));
         } else {
           const rate = growthRate || 0.072;
+          let val = baseValue;
           if (diff > 0) {
-            result[year] = Math.round(baseValue * Math.pow(1 + rate, diff));
+            for (let step = 1; step <= diff; step++) {
+              val = val * (1 + stepGrowthFor(baseYear + step, rate, 1, step, 4));
+            }
           } else {
-            result[year] = Math.round(baseValue / Math.pow(1 + rate, Math.abs(diff)));
+            for (let step = 1; step <= Math.abs(diff); step++) {
+              val = val / (1 + Math.max(0.02, stepGrowthFor(baseYear - step + 1, rate, -1, step, 4)));
+            }
           }
+          result[year] = Math.max(0, Math.round(val));
         }
         break;
       }
 
       case 'financeCost': {
-        // Forward: deleveraging as debt amortizes (default ~4.2% reduction p.a. down to working capital interest floor)
-        // Backward: debt was higher prior to principal repayment tranches
         if (diff > 0) {
           const reductionRate = Math.abs(growthRate) || 0.042;
-          const factor = Math.pow(1 - reductionRate, diff);
+          let val = baseValue;
+          for (let step = 1; step <= diff; step++) {
+            const yrStep = baseYear + step;
+            const r = clampVal(reductionRate + deterministicAnnualWave(yrStep, 14) * 0.012, 0.015, 0.12);
+            val = val * (1 - r);
+          }
           const minInterestFloor = Math.round(baseValue * 0.32);
-          result[year] = Math.max(minInterestFloor, Math.round(baseValue * factor));
+          result[year] = Math.max(minInterestFloor, Math.round(val));
         } else {
-          const priorDebtRate = 0.052;
-          const factor = Math.pow(1 + priorDebtRate, Math.abs(diff));
-          result[year] = Math.round(baseValue * factor);
+          let val = baseValue;
+          for (let step = 1; step <= Math.abs(diff); step++) {
+            const yrStep = baseYear - step + 1;
+            const r = clampVal(0.052 + deterministicAnnualWave(yrStep, 14) * 0.011, 0.025, 0.09);
+            val = val * (1 + r);
+          }
+          result[year] = Math.round(val);
         }
         break;
       }
 
       case 'netProfit': {
-        // Forward: earnings growth with moderate operating leverage (margins gently expand)
-        // Backward: lower volume and tighter margin
         const profitGrowth = Math.max(0.05, growthRate || 0.090);
+        let val = baseValue;
         if (diff > 0) {
-          result[year] = Math.round(baseValue * Math.pow(1 + profitGrowth, diff));
+          for (let step = 1; step <= diff; step++) {
+            val = val * (1 + stepGrowthFor(baseYear + step, profitGrowth, 1, step, 21));
+          }
         } else {
-          result[year] = Math.round(baseValue / Math.pow(1 + profitGrowth, Math.abs(diff)));
+          for (let step = 1; step <= Math.abs(diff); step++) {
+            val = val / (1 + Math.max(0.025, stepGrowthFor(baseYear - step + 1, profitGrowth, -1, step, 21)));
+          }
         }
+        result[year] = Math.round(val);
         break;
       }
 
       case 'repaymentOfBorrowings': {
-        // Forward: scheduled facility amortization gradually tapers down as term debt is liquidated
-        // Backward: earlier active facility amortization was higher
         if (diff > 0) {
           const taperRate = Math.abs(growthRate) || 0.055;
-          const factor = Math.pow(1 - taperRate, diff);
+          let val = baseValue;
+          for (let step = 1; step <= diff; step++) {
+            const yrStep = baseYear + step;
+            const r = clampVal(taperRate + deterministicAnnualWave(yrStep, 15) * 0.015, 0.02, 0.14);
+            val = val * (1 - r);
+          }
           const minRepaymentFloor = Math.max(350, Math.round(baseValue * 0.30));
-          result[year] = Math.max(minRepaymentFloor, Math.round(baseValue * factor));
+          result[year] = Math.max(minRepaymentFloor, Math.round(val));
         } else {
-          const priorRepayRate = 0.068;
-          result[year] = Math.round(baseValue * Math.pow(1 + priorRepayRate, Math.abs(diff)));
+          let val = baseValue;
+          for (let step = 1; step <= Math.abs(diff); step++) {
+            const yrStep = baseYear - step + 1;
+            const r = clampVal(0.068 + deterministicAnnualWave(yrStep, 15) * 0.014, 0.03, 0.12);
+            val = val * (1 + r);
+          }
+          result[year] = Math.round(val);
         }
         break;
       }
 
       case 'fixedAssetsGross': {
-        // Gross asset base expands as capex additions exceed disposals
         const assetGrowth = Math.max(0.03, growthRate || 0.056);
+        let val = baseValue;
         if (diff > 0) {
-          result[year] = Math.round(baseValue * Math.pow(1 + assetGrowth, diff));
+          for (let step = 1; step <= diff; step++) {
+            val = val * (1 + stepGrowthFor(baseYear + step, assetGrowth, 1, step, 11));
+          }
         } else {
-          result[year] = Math.round(baseValue / Math.pow(1 + assetGrowth, Math.abs(diff)));
+          for (let step = 1; step <= Math.abs(diff); step++) {
+            val = val / (1 + Math.max(0.02, stepGrowthFor(baseYear - step + 1, assetGrowth, -1, step, 11)));
+          }
         }
+        result[year] = Math.round(val);
         break;
       }
     }
@@ -746,11 +897,12 @@ export function deriveDependentFinancials(
     ? Math.round(netProfit / Math.max(0.01, 1 - taxRate / 100))
     : netProfit;
   const taxExpense = profitBeforeTax - netProfit;
-  const interestIncome = Math.round(salesRevenue * 0.005);
+  const interestIncome = Math.round(salesRevenue * computeInterestIncomeRate(year, isProjected));
 
-  // 2. Fixed Assets Additions & Disposals preserving fixedAssetsGross strictly
+  // 2. Fixed Assets Additions & Disposals preserving fixedAssetsGross strictly (with non-uniform disposal cycle)
   const prevGross = prevYear ? prevYear.fixedAssetsGross : Math.round(fixedAssetsGross * 0.9);
-  const baselineDisposals = Math.round(prevGross * 0.012 * yearStep);
+  const disposalRate = varyBounded(0.012, year, 12, 0.0042, 0.005, 0.022);
+  const baselineDisposals = Math.round(prevGross * disposalRate * yearStep);
   let fixedAssetsAdditions = 0;
   let fixedAssetsDisposals = baselineDisposals;
   if (fixedAssetsGross >= prevGross - baselineDisposals) {
@@ -764,25 +916,49 @@ export function deriveDependentFinancials(
   // 3. Operating Profit (EBIT) = PBT - interestIncome + financeCost
   const operatingProfit = profitBeforeTax - interestIncome + financeCost;
 
-  // 4. Total Operating Costs = Sales - EBIT - depCharge, allocated proportionately
+  // 4. Total Operating Costs = Sales - EBIT - depCharge, allocated using non-uniform CoS vs OpEx mix
   const totalOperatingCosts = Math.max(0, salesRevenue - operatingProfit - depCharge);
-  const targetCoSWeight = Math.max(0.1, 1 - (assumptions.grossMarginPct || 38) / 100);
-  const targetOpExWeight = Math.max(0.05, (assumptions.opexPctOfRevenue || 17.5) / 100);
+  const targetCosPct = 100 - (assumptions.grossMarginPct || 38);
+  const prevCosPct = prevYear && prevYear.salesRevenue > 0 ? (prevYear.costOfSales / prevYear.salesRevenue) * 100 : targetCosPct;
+  const yearCosPct = varyBounded(prevCosPct * 0.35 + targetCosPct * 0.65, year, 2, 0.65, 15, 92);
+  const prevOpexPct = prevYear && prevYear.salesRevenue > 0 ? (prevYear.operatingExpenses / prevYear.salesRevenue) * 100 : (assumptions.opexPctOfRevenue || 17.5);
+  const yearOpexPct = varyBounded(prevOpexPct * 0.30 + (assumptions.opexPctOfRevenue || 17.5) * 0.70, year, 3, 0.50, 3, 55);
+  const targetCoSWeight = Math.max(0.1, yearCosPct / 100);
+  const targetOpExWeight = Math.max(0.05, yearOpexPct / 100);
   const cosShare = targetCoSWeight / (targetCoSWeight + targetOpExWeight);
   const costOfSales = Math.round(totalOperatingCosts * cosShare);
   const operatingExpenses = Math.max(0, totalOperatingCosts - costOfSales);
 
-  // 5. Working Capital balances derived proportionately via turnover days & Sales/COGS
-  const tradeReceivables = Math.round((salesRevenue / 365) * (assumptions.receivableDays || 45));
-  const otherReceivables = Math.round(tradeReceivables * 0.16);
-  const tradePayables = Math.round((costOfSales / 365) * (assumptions.payableDays || 42));
-  const otherPayables = Math.round(tradePayables * 0.25);
-  const otherCurrentAssets = prevYear
-    ? Math.max(100, Math.round(prevYear.otherCurrentAssets * Math.pow(1.04, yearStep)))
-    : Math.round(salesRevenue * 0.015);
+  // 5. Working Capital balances derived using varied turnover days & smooth transition from prior periods
+  const baseDSO = assumptions.receivableDays || 45;
+  const prevDSO = prevYear && prevYear.salesRevenue > 0 ? (prevYear.tradeReceivables / prevYear.salesRevenue) * 365 : baseDSO;
+  const blendedDSO = isProjected && prevYear ? prevDSO * 0.35 + baseDSO * 0.65 : baseDSO;
+  const yearDSO = varyBounded(blendedDSO, year, 5, Math.max(1.1, baseDSO * 0.036), 5, 180);
+  const tradeReceivables = Math.round((salesRevenue / 365) * yearDSO);
 
-  // 6. Equity & Dividends / Drawings
-  const dividendsPaid = Math.round(Math.max(0, netProfit) * ((assumptions.dividendPayoutRatio || 30) / 100));
+  const prevOthRecRatio = prevYear && prevYear.tradeReceivables > 0 ? clampVal(prevYear.otherReceivables / prevYear.tradeReceivables, 0.12, 0.21) : 0.16;
+  const yearOthRecRatio = varyBounded(isProjected && prevYear ? prevOthRecRatio * 0.4 + 0.16 * 0.6 : 0.16, year, 7, 0.011, 0.12, 0.21);
+  const otherReceivables = Math.round(tradeReceivables * yearOthRecRatio);
+
+  const baseDPO = assumptions.payableDays || 42;
+  const prevDPO = prevYear && prevYear.costOfSales > 0 ? (prevYear.tradePayables / prevYear.costOfSales) * 365 : baseDPO;
+  const blendedDPO = isProjected && prevYear ? prevDPO * 0.38 + baseDPO * 0.62 : baseDPO;
+  const yearDPO = varyBounded(blendedDPO, year, 6, Math.max(1.1, baseDPO * 0.038), 5, 180);
+  const tradePayables = Math.round((costOfSales / 365) * yearDPO);
+
+  const prevOthPayRatio = prevYear && prevYear.tradePayables > 0 ? clampVal(prevYear.otherPayables / prevYear.tradePayables, 0.20, 0.31) : 0.25;
+  const yearOthPayRatio = varyBounded(isProjected && prevYear ? prevOthPayRatio * 0.4 + 0.25 * 0.6 : 0.25, year, 8, 0.014, 0.20, 0.31);
+  const otherPayables = Math.round(tradePayables * yearOthPayRatio);
+
+  const ocaGrowth = varyBounded(0.042, year, 9, 0.021, 0.012, 0.078);
+  const otherCurrentAssets = prevYear
+    ? Math.max(100, Math.round(prevYear.otherCurrentAssets * Math.pow(1 + ocaGrowth, yearStep)))
+    : Math.round(salesRevenue * varyBounded(0.015, year, 9, 0.003, 0.008, 0.025));
+
+  // 6. Equity & Dividends / Drawings with non-uniform annual payout pacing
+  const baseDivPct = assumptions.dividendPayoutRatio ?? 30;
+  const yearDivPct = baseDivPct > 0 ? varyBounded(baseDivPct, year, 13, Math.min(4.2, baseDivPct * 0.15), 2, 75) : 0;
+  const dividendsPaid = Math.round(Math.max(0, netProfit) * (yearDivPct / 100));
   const shareCapital = prevYear ? prevYear.shareCapital : (existingFullYear?.shareCapital ?? 12000);
 
   // 7. Borrowings & Financing Cash Flow preserving fixed repaymentOfBorrowings strictly
@@ -796,19 +972,21 @@ export function deriveDependentFinancials(
   // First projected year represents existing loans proposed for rescheduling/restructuring (no fresh loan proceeds)
   const isFirstProjectedYear = Boolean(isProjected && (!prevYear || !prevYear.isProjected));
 
-  // Proportionate working-capital facility proceeds; top up only if total debt would otherwise turn negative
+  // Proportionate working-capital facility proceeds with varied annual utilization; top up only if debt would turn negative
+  const proceedsFactor = varyBounded(0.18, year, 19, 0.045, 0.09, 0.28);
   let financingProceedsBorrowings = isFirstProjectedYear
     ? 0
     : prevYear
-    ? Math.round(prevST * 0.18)
-    : Math.round(salesRevenue * 0.02);
+    ? Math.round(prevST * proceedsFactor)
+    : Math.round(salesRevenue * varyBounded(0.02, year, 19, 0.004, 0.01, 0.03));
   if (!isFirstProjectedYear && prevTotalDebt + financingProceedsBorrowings < absRepayment) {
-    financingProceedsBorrowings = absRepayment - prevTotalDebt + Math.round(salesRevenue * 0.03);
+    financingProceedsBorrowings = absRepayment - prevTotalDebt + Math.round(salesRevenue * varyBounded(0.03, year, 20, 0.006, 0.018, 0.045));
   }
 
   const netDebtChange = financingProceedsBorrowings - absRepayment;
   const targetTotalDebt = Math.max(0, prevTotalDebt + netDebtChange);
-  const ltShare = prevTotalDebt > 0 ? prevLT / prevTotalDebt : 0.72;
+  const baseLtShare = prevTotalDebt > 0 ? prevLT / prevTotalDebt : 0.72;
+  const ltShare = varyBounded(baseLtShare, year, 17, 0.018, 0.55, 0.86);
   const longTermBorrowings = Math.round(targetTotalDebt * ltShare);
   const shortTermBorrowings = Math.max(0, targetTotalDebt - longTermBorrowings);
 
@@ -817,8 +995,9 @@ export function deriveDependentFinancials(
   const cashFlowFromFinancing =
     financingProceedsShares + financingProceedsBorrowings - absRepayment + financingDividendsPaid;
 
+  const amortStep = Math.round(varyBounded(100, year, 15, 22, 65, 145)) * yearStep;
   const intangibleAssets = prevYear
-    ? Math.max(0, prevYear.intangibleAssets - Math.min(prevYear.intangibleAssets, 100 * yearStep))
+    ? Math.max(0, prevYear.intangibleAssets - Math.min(prevYear.intangibleAssets, amortStep))
     : (existingFullYear?.intangibleAssets ?? Math.round(salesRevenue * 0.03));
   const otherNonCurrentAssets = prevYear
     ? prevYear.otherNonCurrentAssets
@@ -887,24 +1066,38 @@ export function generateYearDataForTargetYear(
   const diff = targetYear - anchor.year;
 
   const revRate = (assumptions.revenueGrowthRate || 8.5) / 100;
-  const scale = diff >= 0
-    ? Math.pow(1 + revRate, diff)
-    : 1 / Math.pow(1 + Math.max(0.04, revRate), Math.abs(diff));
+  const stepAccum = (baseR: number, channel: number, dirInvert = false): number => {
+    let mult = 1;
+    const steps = Math.abs(diff);
+    for (let s = 1; s <= steps; s++) {
+      const yr = diff >= 0 ? anchor.year + s : anchor.year - s + 1;
+      const r = clampVal(baseR + deterministicAnnualWave(yr, channel) * Math.max(0.004, Math.abs(baseR) * 0.16), -0.15, 0.35);
+      if ((diff >= 0 && !dirInvert) || (diff < 0 && dirInvert)) {
+        mult *= 1 + r;
+      } else {
+        mult /= 1 + Math.max(0.02, r);
+      }
+    }
+    return mult;
+  };
 
-  const salesRevenue = Math.max(100, Math.round(anchor.salesRevenue * scale));
-  const closingInventory = Math.max(0, Math.round(anchor.closingInventory * scale));
+  const salesScale = stepAccum(diff >= 0 ? revRate : Math.max(0.04, revRate), 1);
+  const invScale = stepAccum(diff >= 0 ? revRate * 0.88 : Math.max(0.035, revRate * 0.88), 4);
+
+  const salesRevenue = Math.max(100, Math.round(anchor.salesRevenue * salesScale));
+  const closingInventory = Math.max(0, Math.round(anchor.closingInventory * invScale));
   const financeCost = Math.max(
     50,
-    Math.round(anchor.financeCost * (diff >= 0 ? Math.pow(0.96, diff) : Math.pow(1.05, Math.abs(diff))))
+    Math.round(anchor.financeCost * stepAccum(diff >= 0 ? -0.04 : 0.05, 14))
   );
-  const netProfit = Math.round(anchor.netProfit * Math.pow(1 + Math.max(0.04, revRate), diff));
+  const netProfit = Math.round(anchor.netProfit * stepAccum(Math.max(0.04, revRate * 1.04), 21));
   const repaymentOfBorrowings = Math.max(
     0,
-    Math.round(anchor.repaymentOfBorrowings * (diff >= 0 ? Math.pow(0.945, diff) : Math.pow(1.06, Math.abs(diff))))
+    Math.round(anchor.repaymentOfBorrowings * stepAccum(diff >= 0 ? -0.055 : 0.06, 15))
   );
   const fixedAssetsGross = Math.max(
     100,
-    Math.round(anchor.fixedAssetsGross * Math.pow(1.055, diff))
+    Math.round(anchor.fixedAssetsGross * stepAccum(0.055, 11))
   );
 
   return deriveDependentFinancials(
@@ -934,19 +1127,20 @@ export function generateProjectedYears(
 
   const projected: YearDataInput[] = [];
   let prevYear = baseInput;
+  let stepCounter = 0;
 
   for (const yearNum of targetYears) {
     const step = Math.max(1, yearNum - prevYear.year);
-    // Compound across step years if non-consecutive
     let tempPrev = prevYear;
-    let finalDrivers = generateAutomaticPrimaryDrivers(tempPrev, assumptions, yearNum);
     if (step > 1) {
       for (let s = 1; s < step; s++) {
-        const midDrivers = generateAutomaticPrimaryDrivers(tempPrev, assumptions, prevYear.year + s);
+        stepCounter += 1;
+        const midDrivers = generateAutomaticPrimaryDrivers(tempPrev, assumptions, prevYear.year + s, stepCounter);
         tempPrev = deriveDependentFinancials(midDrivers, tempPrev, assumptions);
       }
-      finalDrivers = generateAutomaticPrimaryDrivers(tempPrev, assumptions, yearNum);
     }
+    stepCounter += 1;
+    const finalDrivers = generateAutomaticPrimaryDrivers(tempPrev, assumptions, yearNum, stepCounter);
     const fullYear = deriveDependentFinancials(finalDrivers, prevYear, assumptions);
     projected.push(fullYear);
     prevYear = fullYear;
@@ -966,8 +1160,17 @@ export function calculateScheduleOfFixedAssets(
   const configMap = buildConfigVisibilityMap(options?.statementConfig);
   const cellOverrides = options?.cellOverrides;
 
+  const assetClasses = [
+    { name: 'Freehold Land & Industrial Buildings', depRate: 2.5, initCostShare: 0.40, initDepShare: 0.18 },
+    { name: 'Plant, Machinery & Automated Systems', depRate: 10.0, initCostShare: 0.35, initDepShare: 0.45 },
+    { name: 'Office Equipment & Fixtures', depRate: 15.0, initCostShare: 0.10, initDepShare: 0.15 },
+    { name: 'Motor Vehicles & Logistics Fleet', depRate: 20.0, initCostShare: 0.08, initDepShare: 0.12 },
+    { name: 'Computer, IT & Telecommunications', depRate: 25.0, initCostShare: 0.07, initDepShare: 0.10 },
+  ];
+
   let prevBaseClosingCost = 0;
   let prevBaseClosingDep = 0;
+  let prevBaseCategories: FixedAssetCategory[] | null = null;
 
   inputs.forEach((input, index) => {
     const isFirst = index === 0;
@@ -994,97 +1197,151 @@ export function calculateScheduleOfFixedAssets(
 
     const openingDep = isFirst ? baseAccumDep : prevBaseClosingDep;
     const depCharge = Math.round(((openingCost + closingCost) / 2) * (input.depreciationRate / 100));
-    const depDisposals = Math.round(disposals * 0.65);
+    const depDisposals = Math.round(disposals * computeDepDisposalsRatio(input.year, input.isProjected));
     const closingDep = Math.max(0, openingDep + depCharge - depDisposals);
     const netBookValue = Math.max(0, closingCost - closingDep);
 
     prevBaseClosingCost = closingCost;
     prevBaseClosingDep = closingDep;
 
-    const baseCategories: FixedAssetCategory[] = [
-      {
-        name: 'Freehold Land & Industrial Buildings',
-        costOpening: Math.round(openingCost * 0.40),
-        additions: Math.round(additions * 0.25),
-        disposals: Math.round(disposals * 0.10),
-        costClosing: Math.round(closingCost * 0.40),
-        depOpening: Math.round(openingDep * 0.18),
-        depCharge: Math.round(depCharge * 0.15),
-        depDisposals: Math.round(depDisposals * 0.10),
-        depClosing: Math.round(closingDep * 0.18),
-        netBookValue: Math.round(closingCost * 0.40) - Math.round(closingDep * 0.18),
-        depRate: 2.5,
-      },
-      {
-        name: 'Plant, Machinery & Automated Systems',
-        costOpening: Math.round(openingCost * 0.35),
-        additions: Math.round(additions * 0.45),
-        disposals: Math.round(disposals * 0.50),
-        costClosing: Math.round(closingCost * 0.35),
-        depOpening: Math.round(openingDep * 0.45),
-        depCharge: Math.round(depCharge * 0.50),
-        depDisposals: Math.round(depDisposals * 0.50),
-        depClosing: Math.round(closingDep * 0.45),
-        netBookValue: Math.round(closingCost * 0.35) - Math.round(closingDep * 0.45),
-        depRate: 10.0,
-      },
-      {
-        name: 'Office Equipment & Fixtures',
-        costOpening: Math.round(openingCost * 0.10),
-        additions: Math.round(additions * 0.12),
-        disposals: Math.round(disposals * 0.15),
-        costClosing: Math.round(closingCost * 0.10),
-        depOpening: Math.round(openingDep * 0.15),
-        depCharge: Math.round(depCharge * 0.15),
-        depDisposals: Math.round(depDisposals * 0.15),
-        depClosing: Math.round(closingDep * 0.15),
-        netBookValue: Math.round(closingCost * 0.10) - Math.round(closingDep * 0.15),
-        depRate: 15.0,
-      },
-      {
-        name: 'Motor Vehicles & Logistics Fleet',
-        costOpening: Math.round(openingCost * 0.08),
-        additions: Math.round(additions * 0.10),
-        disposals: Math.round(disposals * 0.15),
-        costClosing: Math.round(closingCost * 0.08),
-        depOpening: Math.round(openingDep * 0.12),
-        depCharge: Math.round(depCharge * 0.12),
-        depDisposals: Math.round(depDisposals * 0.15),
-        depClosing: Math.round(closingDep * 0.12),
-        netBookValue: Math.round(closingCost * 0.08) - Math.round(closingDep * 0.12),
-        depRate: 20.0,
-      },
-      {
-        name: 'Computer, IT & Telecommunications',
-        costOpening: Math.round(openingCost * 0.07),
-        additions: Math.round(additions * 0.08),
-        disposals: Math.round(disposals * 0.10),
-        costClosing: closingCost - (
-          Math.round(closingCost * 0.40) +
-          Math.round(closingCost * 0.35) +
-          Math.round(closingCost * 0.10) +
-          Math.round(closingCost * 0.08)
-        ),
-        depOpening: Math.round(openingDep * 0.10),
-        depCharge: depCharge - (
-          Math.round(depCharge * 0.15) +
-          Math.round(depCharge * 0.50) +
-          Math.round(depCharge * 0.15) +
-          Math.round(depCharge * 0.12)
-        ),
-        depDisposals: Math.round(depDisposals * 0.10),
-        depClosing: closingDep - (
-          Math.round(closingDep * 0.18) +
-          Math.round(closingDep * 0.45) +
-          Math.round(closingDep * 0.15) +
-          Math.round(closingDep * 0.12)
-        ),
-        netBookValue: 0,
-        depRate: 25.0,
-      },
-    ];
-    const lastBaseCat = baseCategories[baseCategories.length - 1];
-    lastBaseCat.netBookValue = lastBaseCat.costClosing - lastBaseCat.depClosing;
+    // Roll forward category openings cleanly from prior year's closings
+    const catCostOpenings: number[] = [];
+    const catDepOpenings: number[] = [];
+    if (isFirst || !prevBaseCategories) {
+      let remCost = openingCost;
+      let remDep = openingDep;
+      assetClasses.forEach((cls, idx) => {
+        if (idx === assetClasses.length - 1) {
+          catCostOpenings.push(r2(remCost));
+          catDepOpenings.push(r2(remDep));
+        } else {
+          const c = Math.round(openingCost * cls.initCostShare);
+          const d = Math.round(openingDep * cls.initDepShare);
+          catCostOpenings.push(c);
+          catDepOpenings.push(d);
+          remCost -= c;
+          remDep -= d;
+        }
+      });
+    } else {
+      assetClasses.forEach((_, idx) => {
+        catCostOpenings.push(prevBaseCategories![idx].costClosing);
+        catDepOpenings.push(prevBaseCategories![idx].depClosing);
+      });
+    }
+
+    // Allocate Additions & Disposals with non-uniform year-specific capital investment weights
+    const catAdditionsArr = splitTotalNonUniform(
+      additions,
+      input.year,
+      30,
+      [0.22, 0.44, 0.13, 0.11, 0.10],
+      [0.05, 0.06, 0.025, 0.025, 0.02]
+    );
+    const rawDisposalsArr = splitTotalNonUniform(
+      disposals,
+      input.year,
+      45,
+      [0.08, 0.46, 0.16, 0.18, 0.12],
+      [0.025, 0.055, 0.03, 0.03, 0.025]
+    );
+    // Cap each class disposal at available gross cost + additions; redistribute any excess to larger classes
+    const catDisposalsArr = [...rawDisposalsArr];
+    let excessDisp = 0;
+    for (let i = 0; i < assetClasses.length; i++) {
+      const maxAvail = Math.max(0, catCostOpenings[i] + catAdditionsArr[i]);
+      if (catDisposalsArr[i] > maxAvail) {
+        excessDisp += catDisposalsArr[i] - maxAvail;
+        catDisposalsArr[i] = maxAvail;
+      }
+    }
+    if (excessDisp > 0) {
+      for (let i = 1; i < assetClasses.length && excessDisp > 0; i++) {
+        const room = Math.max(0, catCostOpenings[i] + catAdditionsArr[i] - catDisposalsArr[i]);
+        const addHere = Math.min(room, excessDisp);
+        catDisposalsArr[i] = r2(catDisposalsArr[i] + addHere);
+        excessDisp = r2(excessDisp - addHere);
+      }
+    }
+
+    const catCostClosings = assetClasses.map((_, i) =>
+      r2(catCostOpenings[i] + catAdditionsArr[i] - catDisposalsArr[i])
+    );
+
+    // Rate-weighted depreciation charge scaled cleanly to exact totalDepCharge
+    const rawDepWeights = assetClasses.map((cls, i) => {
+      const avgGross = Math.max(0, (catCostOpenings[i] + catCostClosings[i]) / 2);
+      const jitter = 1 + deterministicAnnualWave(input.year, 55 + i * 2) * 0.04;
+      return Math.max(0, avgGross * (cls.depRate / 100) * jitter);
+    });
+    const rawDepSum = rawDepWeights.reduce((acc, v) => acc + v, 0);
+    const catDepCharges: number[] = [];
+    let remDepCharge = depCharge;
+    for (let i = 0; i < assetClasses.length; i++) {
+      if (i === assetClasses.length - 1) {
+        catDepCharges.push(Math.max(0, r2(remDepCharge)));
+      } else {
+        const chg = rawDepSum > 0 ? Math.round(depCharge * (rawDepWeights[i] / rawDepSum)) : 0;
+        const clampedChg = Math.min(chg, Math.max(0, remDepCharge));
+        catDepCharges.push(clampedChg);
+        remDepCharge -= clampedChg;
+      }
+    }
+
+    // Allocate depDisposals proportional to category disposals & accumulated dep progress
+    const rawDepDispWeights = assetClasses.map((_, i) =>
+      Math.max(0, catDisposalsArr[i] * Math.max(0.1, catDepOpenings[i] / Math.max(1, catCostOpenings[i])))
+    );
+    const rawDepDispSum = rawDepDispWeights.reduce((acc, v) => acc + v, 0);
+    const catDepDisposalsArr: number[] = [];
+    let remDepDisp = depDisposals;
+    for (let i = 0; i < assetClasses.length; i++) {
+      const maxDepAvail = Math.max(0, catDepOpenings[i] + catDepCharges[i]);
+      if (i === assetClasses.length - 1) {
+        catDepDisposalsArr.push(Math.min(maxDepAvail, Math.max(0, r2(remDepDisp))));
+      } else {
+        const d = rawDepDispSum > 0 ? Math.round(depDisposals * (rawDepDispWeights[i] / rawDepDispSum)) : 0;
+        const clampedD = Math.min(maxDepAvail, Math.max(0, Math.min(d, remDepDisp)));
+        catDepDisposalsArr.push(clampedD);
+        remDepDisp -= clampedD;
+      }
+    }
+    const depDispShortfall = r2(depDisposals - catDepDisposalsArr.reduce((a, b) => a + b, 0));
+    if (Math.abs(depDispShortfall) > 0.001) {
+      for (let i = 0; i < assetClasses.length; i++) {
+        const maxDepAvail = Math.max(0, catDepOpenings[i] + catDepCharges[i]);
+        const room = maxDepAvail - catDepDisposalsArr[i];
+        if (room >= depDispShortfall) {
+          catDepDisposalsArr[i] = r2(catDepDisposalsArr[i] + depDispShortfall);
+          break;
+        }
+      }
+    }
+
+    const baseCategories: FixedAssetCategory[] = assetClasses.map((cls, i) => {
+      const costOpeningCat = catCostOpenings[i];
+      const addCat = catAdditionsArr[i];
+      const dispCat = catDisposalsArr[i];
+      const costClosingCat = catCostClosings[i];
+      const depOpeningCat = catDepOpenings[i];
+      const depChargeCat = catDepCharges[i];
+      const depDisposalsCat = catDepDisposalsArr[i];
+      const depClosingCat = Math.max(0, r2(depOpeningCat + depChargeCat - depDisposalsCat));
+      return {
+        name: cls.name,
+        costOpening: costOpeningCat,
+        additions: addCat,
+        disposals: dispCat,
+        costClosing: costClosingCat,
+        depOpening: depOpeningCat,
+        depCharge: depChargeCat,
+        depDisposals: depDisposalsCat,
+        depClosing: depClosingCat,
+        netBookValue: r2(costClosingCat - depClosingCat),
+        depRate: cls.depRate,
+      };
+    });
+    prevBaseCategories = baseCategories;
 
     let hasCategoryOverride = false;
     const processedCategories: FixedAssetCategory[] = baseCategories.map((cat, catIdx) => {
@@ -1242,7 +1499,7 @@ export function calculateIncomeStatement(
     }
     const openingDep = isFirst ? Math.round(firstGross * 0.35) : prevBaseClosingDep;
     const depCharge = Math.round(((openingCost + closingCost) / 2) * (input.depreciationRate / 100));
-    const depDisposals = Math.round(disposals * 0.65);
+    const depDisposals = Math.round(disposals * computeDepDisposalsRatio(input.year, input.isProjected));
     const closingDep = Math.max(0, openingDep + depCharge - depDisposals);
     prevBaseClosingCost = closingCost;
     prevBaseClosingDep = closingDep;
@@ -1277,7 +1534,7 @@ export function calculateIncomeStatement(
     const baseTaxExpense =
       baseNetProfit >= 0 ? r(baseNetProfit / Math.max(0.01, 1 - taxRate / 100) - baseNetProfit) : 0;
     const basePBT = r2(baseNetProfit + baseTaxExpense);
-    let baseInterestIncome = r(baseRevenue * 0.005);
+    let baseInterestIncome = r(baseRevenue * computeInterestIncomeRate(input.year, input.isProjected));
 
     const baseOperatingProfit = r2(basePBT - baseInterestIncome + baseFinanceCost);
     const requiredOperatingCosts = r2(baseRevenue - baseOperatingProfit - baselineDepCharge);
@@ -1441,8 +1698,8 @@ export function calculateCashFlowStatement(
       const firstGross = inputs[0]?.fixedAssetsGross || 32000;
       const baseOpeningCost = Math.max(0, input.fixedAssetsGross - input.fixedAssetsAdditions + input.fixedAssetsDisposals);
       const baseDepCharge = Math.round(((baseOpeningCost + input.fixedAssetsGross) / 2) * (input.depreciationRate / 100));
-      const baseDepDisposals = Math.round(input.fixedAssetsDisposals * 0.65);
-      const baseIntInc = r(input.salesRevenue * 0.005);
+      const baseDepDisposals = Math.round(input.fixedAssetsDisposals * computeDepDisposalsRatio(input.year, input.isProjected));
+      const baseIntInc = r(input.salesRevenue * computeInterestIncomeRate(input.year, input.isProjected));
       const baseOpProfitBeforeWC =
         basePBT + baseDepCharge + 100 + input.financeCost - baseIntInc - baseDepDisposals;
       const baseWC =
@@ -2209,6 +2466,19 @@ export function generateNotesToFinancialStatements(
   const pCfDiff = r2(pCfClose - pCfStatedBS);
   const cCfReconciled = Math.abs(cCfDiff) < 0.01;
 
+  const cRevSplit = splitTotalNonUniform(cRevenue, currYear, 70, [0.72, 0.20, 0.08], [0.028, 0.022, 0.014]);
+  const pRevSplit = splitTotalNonUniform(pRevenue, prevYear, 70, [0.72, 0.20, 0.08], [0.028, 0.022, 0.014]);
+  const cCogsSplit = splitTotalNonUniform(cCogs, currYear, 80, [0.58, 0.22, 0.20], [0.025, 0.018, 0.016]);
+  const pCogsSplit = splitTotalNonUniform(pCogs, prevYear, 80, [0.58, 0.22, 0.20], [0.025, 0.018, 0.016]);
+  const cFinSplit = splitTotalNonUniform(cFinCost, currYear, 90, [0.65, 0.25, 0.10], [0.03, 0.022, 0.015]);
+  const pFinSplit = splitTotalNonUniform(pFinCost, prevYear, 90, [0.65, 0.25, 0.10], [0.03, 0.022, 0.015]);
+  const cInvSplit = splitTotalNonUniform(cInv, currYear, 100, [0.45, 0.20, 0.35], [0.028, 0.02, 0.025]);
+  const pInvSplit = splitTotalNonUniform(pInv, prevYear, 100, [0.45, 0.20, 0.35], [0.028, 0.02, 0.025]);
+  const cRecSplit = splitTotalNonUniform(cTrRec, currYear, 110, [0.65, 0.25, 0.10], [0.032, 0.022, 0.016]);
+  const pRecSplit = splitTotalNonUniform(pTrRec, prevYear, 110, [0.65, 0.25, 0.10], [0.032, 0.022, 0.016]);
+  const cCashSplit = splitTotalNonUniform(cCashBS, currYear, 120, [0.05, 0.70, 0.25], [0.01, 0.032, 0.028]);
+  const pCashSplit = splitTotalNonUniform(pCashBS, prevYear, 120, [0.05, 0.70, 0.25], [0.01, 0.032, 0.028]);
+
   return [
     {
       noteNumber: 1,
@@ -2224,9 +2494,9 @@ export function generateNotesToFinancialStatements(
       tableData: {
         headers: ['Revenue Streams', `${currYear} (${company.reportingCurrency})`, `${prevYear} (${company.reportingCurrency})`],
         rows: [
-          { label: 'Commercial Contract Deliverables', values: [Math.round(cRevenue * 0.72).toLocaleString(), Math.round(pRevenue * 0.72).toLocaleString()] },
-          { label: 'Institutional & Direct Enterprise Sales', values: [Math.round(cRevenue * 0.20).toLocaleString(), Math.round(pRevenue * 0.20).toLocaleString()] },
-          { label: 'Technical Services & Ancillary Revenue', values: [Math.round(cRevenue * 0.08).toLocaleString(), Math.round(pRevenue * 0.08).toLocaleString()] },
+          { label: 'Commercial Contract Deliverables', values: [cRevSplit[0].toLocaleString(), pRevSplit[0].toLocaleString()] },
+          { label: 'Institutional & Direct Enterprise Sales', values: [cRevSplit[1].toLocaleString(), pRevSplit[1].toLocaleString()] },
+          { label: 'Technical Services & Ancillary Revenue', values: [cRevSplit[2].toLocaleString(), pRevSplit[2].toLocaleString()] },
         ],
         totalRow: { label: `Total ${nLbl('income', 'revenue', 'Revenue from Contracts')}`, values: [cRevenue.toLocaleString(), pRevenue.toLocaleString()] },
       },
@@ -2239,9 +2509,9 @@ export function generateNotesToFinancialStatements(
       tableData: {
         headers: ['Component Breakdown', `${currYear} (${company.reportingCurrency})`, `${prevYear} (${company.reportingCurrency})`],
         rows: [
-          { label: 'Raw Materials & Components Consumed', values: [Math.round(cCogs * 0.58).toLocaleString(), Math.round(pCogs * 0.58).toLocaleString()] },
-          { label: 'Direct Labor & Industrial Staff Costs', values: [Math.round(cCogs * 0.22).toLocaleString(), Math.round(pCogs * 0.22).toLocaleString()] },
-          { label: 'Factory Overheads, Fuel & Power', values: [Math.round(cCogs * 0.20).toLocaleString(), Math.round(pCogs * 0.20).toLocaleString()] },
+          { label: 'Raw Materials & Components Consumed', values: [cCogsSplit[0].toLocaleString(), pCogsSplit[0].toLocaleString()] },
+          { label: 'Direct Labor & Industrial Staff Costs', values: [cCogsSplit[1].toLocaleString(), pCogsSplit[1].toLocaleString()] },
+          { label: 'Factory Overheads, Fuel & Power', values: [cCogsSplit[2].toLocaleString(), pCogsSplit[2].toLocaleString()] },
         ],
         totalRow: { label: `Total ${nLbl('income', 'costOfSales', 'Cost of Sales')}`, values: [cCogs.toLocaleString(), pCogs.toLocaleString()] },
       },
@@ -2254,9 +2524,9 @@ export function generateNotesToFinancialStatements(
       tableData: {
         headers: ['Financing Facility Charges', `${currYear} (${company.reportingCurrency})`, `${prevYear} (${company.reportingCurrency})`],
         rows: [
-          { label: 'Interest on Long-Term Credit Facilities', values: [Math.round(cFinCost * 0.65).toLocaleString(), Math.round(pFinCost * 0.65).toLocaleString()] },
-          { label: 'Interest on Working Capital & Short-Term Debt', values: [Math.round(cFinCost * 0.25).toLocaleString(), Math.round(pFinCost * 0.25).toLocaleString()] },
-          { label: 'Bank Charges, LC Fees & Financing Commissions', values: [Math.round(cFinCost * 0.10).toLocaleString(), Math.round(pFinCost * 0.10).toLocaleString()] },
+          { label: 'Interest on Long-Term Credit Facilities', values: [cFinSplit[0].toLocaleString(), pFinSplit[0].toLocaleString()] },
+          { label: 'Interest on Working Capital & Short-Term Debt', values: [cFinSplit[1].toLocaleString(), pFinSplit[1].toLocaleString()] },
+          { label: 'Bank Charges, LC Fees & Financing Commissions', values: [cFinSplit[2].toLocaleString(), pFinSplit[2].toLocaleString()] },
         ],
         totalRow: { label: `Total ${nLbl('income', 'financeCost', 'Finance Cost')}`, values: [cFinCost.toLocaleString(), pFinCost.toLocaleString()] },
       },
@@ -2286,9 +2556,9 @@ export function generateNotesToFinancialStatements(
       tableData: {
         headers: ['Inventory Classes', `${currYear} (${company.reportingCurrency})`, `${prevYear} (${company.reportingCurrency})`],
         rows: [
-          { label: 'Raw Materials & Imported Spares', values: [Math.round(cInv * 0.45).toLocaleString(), Math.round(pInv * 0.45).toLocaleString()] },
-          { label: 'Work-in-Progress (WIP)', values: [Math.round(cInv * 0.20).toLocaleString(), Math.round(pInv * 0.20).toLocaleString()] },
-          { label: 'Finished Goods Inventory', values: [Math.round(cInv * 0.35).toLocaleString(), Math.round(pInv * 0.35).toLocaleString()] },
+          { label: 'Raw Materials & Imported Spares', values: [cInvSplit[0].toLocaleString(), pInvSplit[0].toLocaleString()] },
+          { label: 'Work-in-Progress (WIP)', values: [cInvSplit[1].toLocaleString(), pInvSplit[1].toLocaleString()] },
+          { label: 'Finished Goods Inventory', values: [cInvSplit[2].toLocaleString(), pInvSplit[2].toLocaleString()] },
         ],
         totalRow: { label: `Total ${nLbl('bs', 'closingInventory', 'Closing Inventory')}`, values: [cInv.toLocaleString(), pInv.toLocaleString()] },
       },
@@ -2301,9 +2571,9 @@ export function generateNotesToFinancialStatements(
       tableData: {
         headers: ['Receivable Category', `${currYear} (${company.reportingCurrency})`, `${prevYear} (${company.reportingCurrency})`],
         rows: [
-          { label: `${nLbl('bs', 'tradeReceivables', 'Trade Debtors')} (within 30 days)`, values: [Math.round(cTrRec * 0.65).toLocaleString(), Math.round(pTrRec * 0.65).toLocaleString()] },
-          { label: `${nLbl('bs', 'tradeReceivables', 'Trade Debtors')} (31 - 90 days)`, values: [Math.round(cTrRec * 0.25).toLocaleString(), Math.round(pTrRec * 0.25).toLocaleString()] },
-          { label: `${nLbl('bs', 'tradeReceivables', 'Trade Debtors')} (over 90 days, secured)`, values: [Math.round(cTrRec * 0.10).toLocaleString(), Math.round(pTrRec * 0.10).toLocaleString()] },
+          { label: `${nLbl('bs', 'tradeReceivables', 'Trade Debtors')} (within 30 days)`, values: [cRecSplit[0].toLocaleString(), pRecSplit[0].toLocaleString()] },
+          { label: `${nLbl('bs', 'tradeReceivables', 'Trade Debtors')} (31 - 90 days)`, values: [cRecSplit[1].toLocaleString(), pRecSplit[1].toLocaleString()] },
+          { label: `${nLbl('bs', 'tradeReceivables', 'Trade Debtors')} (over 90 days, secured)`, values: [cRecSplit[2].toLocaleString(), pRecSplit[2].toLocaleString()] },
           { label: nLbl('bs', 'otherReceivables', 'Advance Deposits & Prepayments'), values: [cOthRec.toLocaleString(), pOthRec.toLocaleString()] },
         ],
         totalRow: { label: 'Total Receivables', values: [(cTrRec + cOthRec).toLocaleString(), (pTrRec + pOthRec).toLocaleString()] },
@@ -2317,9 +2587,9 @@ export function generateNotesToFinancialStatements(
       tableData: {
         headers: ['Liquid Asset Classes', `${currYear} (${company.reportingCurrency})`, `${prevYear} (${company.reportingCurrency})`],
         rows: [
-          { label: 'Cash in Hand (Corporate & Branches)', values: [Math.round(cCashBS * 0.05).toLocaleString(), Math.round(pCashBS * 0.05).toLocaleString()] },
-          { label: 'Balances with Commercial Banks', values: [Math.round(cCashBS * 0.70).toLocaleString(), Math.round(pCashBS * 0.70).toLocaleString()] },
-          { label: 'Short-Term Liquid Placements (< 90 Days)', values: [Math.round(cCashBS * 0.25).toLocaleString(), Math.round(pCashBS * 0.25).toLocaleString()] },
+          { label: 'Cash in Hand (Corporate & Branches)', values: [cCashSplit[0].toLocaleString(), pCashSplit[0].toLocaleString()] },
+          { label: 'Balances with Commercial Banks', values: [cCashSplit[1].toLocaleString(), pCashSplit[1].toLocaleString()] },
+          { label: 'Short-Term Liquid Placements (< 90 Days)', values: [cCashSplit[2].toLocaleString(), pCashSplit[2].toLocaleString()] },
         ],
         totalRow: { label: `Total Balance Sheet ${nLbl('bs', 'cashAndEquivalents', 'Cash & Cash Equivalents')}`, values: [cCashBS.toLocaleString(), pCashBS.toLocaleString()] },
       },
@@ -2575,8 +2845,8 @@ export function buildPreviousFormatData(
     const customOpExp = getVisibleCustomItemsSum(options?.statementConfig, 'income', inp.year, 'Operating Expenses');
     const nonDepOpEx = vis('inc_operatingExpenses') ? Math.max(0, r2(inc.operatingExpenses + customOpExp)) : 0;
 
-    // Allocate non-depreciation Operating Expenses cleanly across the 12 exact expense lines from Previous Financials
-    const weights = [
+    // Allocate non-depreciation Operating Expenses with realistic non-uniform annual cost shares across all 12 lines
+    const baseWeights = [
       0.281, // Salary & Allowances
       0.018, // Telephone & Mobile Bill
       0.002, // Postage & Courier
@@ -2588,18 +2858,26 @@ export function buildPreviousFormatData(
       0.003, // Audit & Professional Fee
       0.042, // Travelling & Conveyance
       0.002, // News Paper & Periodicals
+      0.475, // Selling Exp. (residual)
     ];
-    const salaryAndAllowances = Math.round(nonDepOpEx * weights[0]);
-    const telephoneAndMobileBill = Math.round(nonDepOpEx * weights[1]);
-    const postageAndCourier = Math.round(nonDepOpEx * weights[2]);
-    const electricCharges = Math.round(nonDepOpEx * weights[3]);
-    const entertainment = Math.round(nonDepOpEx * weights[4]);
-    const printingAndStationery = Math.round(nonDepOpEx * weights[5]);
-    const generalExpenses = Math.round(nonDepOpEx * weights[6]);
-    const licenceAndRenewals = Math.round(nonDepOpEx * weights[7]);
-    const auditAndProfessionalFee = Math.round(nonDepOpEx * weights[8]);
-    const travellingAndConveyance = Math.round(nonDepOpEx * weights[9]);
-    const newspaperAndPeriodicals = Math.round(nonDepOpEx * weights[10]);
+    const expenseSplit = splitTotalNonUniform(
+      nonDepOpEx,
+      inp.year,
+      140,
+      baseWeights,
+      [0.018, 0.003, 0.0005, 0.004, 0.005, 0.002, 0.009, 0.002, 0.0006, 0.005, 0.0005, 0.02]
+    );
+    const salaryAndAllowances = expenseSplit[0];
+    const telephoneAndMobileBill = expenseSplit[1];
+    const postageAndCourier = expenseSplit[2];
+    const electricCharges = expenseSplit[3];
+    const entertainment = expenseSplit[4];
+    const printingAndStationery = expenseSplit[5];
+    const generalExpenses = expenseSplit[6];
+    const licenceAndRenewals = expenseSplit[7];
+    const auditAndProfessionalFee = expenseSplit[8];
+    const travellingAndConveyance = expenseSplit[9];
+    const newspaperAndPeriodicals = expenseSplit[10];
     const partialSum =
       salaryAndAllowances +
       telephoneAndMobileBill +
@@ -3053,14 +3331,17 @@ export function buildProjectedFormatData(
       : r2(equitySubtotal - cfAdditionalCapital - netProfitAfterTax);
     const additionalCapital = r2(equitySubtotal - capital - netProfitAfterTax);
 
-    // Notes 3.00 - 13.00 Breakdown
-    const note4ReceivablesAdded = Math.max(0, tradeAndOtherReceivables - prevRec) + Math.round(sales * 0.25);
+    // Notes 3.00 - 13.00 Breakdown (non-uniform annual operational turnover & direct expense splits preserving exact roll-forward identities)
+    const note4CreditShare = varyBounded(0.25, inp.year, 180, 0.045, 0.18, 0.33);
+    const note4ReceivablesAdded = Math.max(0, tradeAndOtherReceivables - prevRec) + Math.round(sales * note4CreditShare);
     const note4ReceivablesReceived = prevRec + note4ReceivablesAdded - tradeAndOtherReceivables;
 
-    const note5AdvanceAdded = Math.max(0, advanceDepositPrepayments - prevAdv) + Math.round(advanceDepositPrepayments * 0.1);
+    const note5AdvTurnover = varyBounded(0.105, inp.year, 185, 0.028, 0.06, 0.16);
+    const note5AdvanceAdded = Math.max(0, advanceDepositPrepayments - prevAdv) + Math.round(advanceDepositPrepayments * note5AdvTurnover);
     const note5AdvanceAdjusted = prevAdv + note5AdvanceAdded - advanceDepositPrepayments;
 
-    const note8PayablesAdded = Math.max(0, tradeAndOtherPayables - prevPay) + Math.round(costOfGoodsSold * 0.15);
+    const note8PayTurnover = varyBounded(0.15, inp.year, 190, 0.032, 0.10, 0.22);
+    const note8PayablesAdded = Math.max(0, tradeAndOtherPayables - prevPay) + Math.round(costOfGoodsSold * note8PayTurnover);
     const note8PayablesPaid = prevPay + note8PayablesAdded - tradeAndOtherPayables;
 
     const note9TaxAdded = provisionForIncomeTax;
@@ -3068,11 +3349,19 @@ export function buildProjectedFormatData(
 
     const note11OpeningStock = prevInv;
     const note11ClosingStock = inventories;
-    const directTotal = Math.round(costOfGoodsSold * 0.015);
-    const note11LabourWages = Math.round(directTotal * 0.18);
-    const note11ElectricityBill = Math.round(directTotal * 0.36);
-    const note11CarriageInward = Math.round(directTotal * 0.21);
-    const note11OtherDirectExpenses = Math.max(0, directTotal - note11LabourWages - note11ElectricityBill - note11CarriageInward);
+    const directShareRate = varyBounded(0.0155, inp.year, 195, 0.0032, 0.0105, 0.022);
+    const directTotal = Math.round(costOfGoodsSold * directShareRate);
+    const directSplit = splitTotalNonUniform(
+      directTotal,
+      inp.year,
+      200,
+      [0.18, 0.36, 0.21, 0.25],
+      [0.03, 0.045, 0.03, 0.035]
+    );
+    const note11LabourWages = directSplit[0];
+    const note11ElectricityBill = directSplit[1];
+    const note11CarriageInward = directSplit[2];
+    const note11OtherDirectExpenses = Math.max(0, directSplit[3]);
     const note11DirectExpensesTotal = note11LabourWages + note11ElectricityBill + note11CarriageInward + note11OtherDirectExpenses;
     const materialConsumed = costOfGoodsSold - note11DirectExpensesTotal;
     const note11Purchase = materialConsumed + note11ClosingStock - note11OpeningStock;
@@ -3651,7 +3940,27 @@ export function implementRepaymentScheduleIntoModel({
   const ebitdaMargin = Math.max(0.14, (gmPct - opexPct) / 100);
   const firstProjYear = projYears[0] || (maxHistYear + 1);
   const lastHistInput = nextHistStore[histYears[histYears.length - 1]] || INITIAL_HISTORICAL_INPUTS[INITIAL_HISTORICAL_INPUTS.length - 1];
-  const baselineProjRev = lastHistInput.salesRevenue * (1 + revRate);
+  const revAmp = Math.max(0.004, Math.abs(revRate) * 0.15);
+  const projRevRateForYear = (yr: number): number => {
+    const step = Math.max(1, yr - firstProjYear + 1);
+    const maturityScale = step > 9 ? 0.90 : step > 5 ? 0.95 : 1.0;
+    return clampVal(revRate * maturityScale + deterministicAnnualWave(yr, 1) * revAmp, -0.05, 0.35);
+  };
+  const cumRevMult = (fromYr: number, toYr: number): number => {
+    if (toYr === fromYr) return 1;
+    let mult = 1;
+    if (toYr > fromYr) {
+      for (let y = fromYr + 1; y <= toYr; y++) {
+        mult *= 1 + projRevRateForYear(y);
+      }
+    } else {
+      for (let y = toYr + 1; y <= fromYr; y++) {
+        mult /= 1 + Math.max(0.02, projRevRateForYear(y));
+      }
+    }
+    return mult;
+  };
+  const baselineProjRev = lastHistInput.salesRevenue * (1 + projRevRateForYear(firstProjYear));
 
   const investmentMade = schedule.metadata.investmentMade || schedule.grandTotalPrincipal || 0;
   let requiredAnchorProjRev = baselineProjRev;
@@ -3661,11 +3970,9 @@ export function implementRepaymentScheduleIntoModel({
     // Sustainable business EBITDA must comfortably cover 1.52x Debt Service plus working capital / capex cushion
     const taxAllowance = Math.max(0, (annualDS * 1.48 - s.totalProfit) * (taxPct / 100));
     const reqEBITDA = Math.max(annualDS * 1.52 + taxAllowance * 0.45, investmentMade * 0.30);
-    const reqRevThisYear = reqEBITDA / ebitdaMargin;
-    const yearsFromFirstProj = s.financialYear - firstProjYear;
-    const backDiscountedRev = yearsFromFirstProj >= 0
-      ? reqRevThisYear / Math.pow(1 + revRate, yearsFromFirstProj)
-      : reqRevThisYear * Math.pow(1 + revRate, Math.abs(yearsFromFirstProj));
+    // Account for minor year-by-year EBITDA margin variation (-0.015 worst-case safety buffer)
+    const reqRevThisYear = reqEBITDA / Math.max(0.12, ebitdaMargin - 0.015);
+    const backDiscountedRev = reqRevThisYear / Math.max(0.1, cumRevMult(firstProjYear, s.financialYear));
     if (backDiscountedRev > requiredAnchorProjRev) {
       requiredAnchorProjRev = backDiscountedRev;
     }
@@ -3689,7 +3996,7 @@ export function implementRepaymentScheduleIntoModel({
     const sched = schedMap.get(yr);
     const nextYrSched = schedMap.get(yr + 1);
 
-    // Determine Sales Revenue on smooth business curve
+    // Determine Sales Revenue on smooth non-uniform business curve
     let salesRevenue: number;
     if (!isProjected) {
       if (shouldScaleHist) {
@@ -3698,14 +4005,13 @@ export function implementRepaymentScheduleIntoModel({
         salesRevenue = existingInput?.salesRevenue || lastHistInput.salesRevenue;
       }
     } else {
-      const stepsFromFirst = yr - firstProjYear;
-      salesRevenue = Math.round(targetAnchorProjRev * Math.pow(1 + revRate, Math.max(0, stepsFromFirst)));
+      salesRevenue = Math.round(targetAnchorProjRev * cumRevMult(firstProjYear, yr));
       if (!needsOptimizationLift && customProjectedOverrides[yr] && !sched) {
         salesRevenue = customProjectedOverrides[yr].salesRevenue;
       }
     }
 
-    // Productive Fixed Assets base scales with revenue & investment asset expansion in disbursement year
+    // Productive Fixed Assets base scales with revenue & non-uniform capex/disposal cycles
     const prevGross = prevYear
       ? prevYear.fixedAssetsGross
       : Math.round(salesRevenue * (lastHistInput.fixedAssetsGross / Math.max(1, lastHistInput.salesRevenue)));
@@ -3726,25 +4032,29 @@ export function implementRepaymentScheduleIntoModel({
       fixedAssetsDisposals = Math.round(existingInput.fixedAssetsDisposals * scaleFactorApplied);
     } else {
       const disbBoost = !isFirstProjYear && sched && sched.disbursementAmount > 0 ? Math.round(sched.disbursementAmount * 0.45) : 0;
-      const capexBase = Math.round(salesRevenue * (capexPct / 100));
+      const yearCapexPct = clampVal(capexPct * (1 + deterministicAnnualWave(yr, 11) * 0.14), 1.5, 22);
+      const capexBase = Math.round(salesRevenue * (yearCapexPct / 100));
       fixedAssetsAdditions = capexBase + disbBoost;
-      fixedAssetsDisposals = Math.round(prevGross * 0.01);
+      const yearDispRate = varyBounded(0.011, yr, 12, 0.0032, 0.005, 0.02);
+      fixedAssetsDisposals = Math.round(prevGross * yearDispRate);
       fixedAssetsGross = Math.max(100, prevGross + fixedAssetsAdditions - fixedAssetsDisposals);
     }
 
     const depCharge = Math.round(((prevGross + fixedAssetsGross) / 2) * (depPct / 100));
-    const costOfSales = Math.round(salesRevenue * (1 - gmPct / 100));
-    const operatingExpenses = Math.round(salesRevenue * (opexPct / 100));
-    const interestIncome = Math.round(salesRevenue * 0.005);
+    const yearGmPct = varyBounded(gmPct, yr, 2, 0.65, 18, 82);
+    const yearOpexPct = varyBounded(opexPct, yr, 3, 0.50, 3, 50);
+    const costOfSales = Math.round(salesRevenue * (1 - yearGmPct / 100));
+    const operatingExpenses = Math.round(salesRevenue * (yearOpexPct / 100));
+    const interestIncome = Math.round(salesRevenue * computeInterestIncomeRate(yr, isProjected));
 
     // Exact Schedule Locks for Principal & Profit! NEVER altered!
     const exactFinanceCost = sched
       ? sched.totalProfit
-      : (existingInput ? (shouldScaleHist && !isProjected ? Math.round(existingInput.financeCost * scaleFactorApplied) : existingInput.financeCost) : Math.max(100, Math.round((prevYear ? prevYear.longTermBorrowings + prevYear.shortTermBorrowings : salesRevenue * 0.15) * 0.085)));
+      : (existingInput ? (shouldScaleHist && !isProjected ? Math.round(existingInput.financeCost * scaleFactorApplied) : existingInput.financeCost) : Math.max(100, Math.round((prevYear ? prevYear.longTermBorrowings + prevYear.shortTermBorrowings : salesRevenue * 0.15) * varyBounded(0.085, yr, 14, 0.005, 0.05, 0.14))));
 
     const exactRepayment = sched
       ? sched.totalPrincipal
-      : (existingInput ? (shouldScaleHist && !isProjected ? Math.round(existingInput.repaymentOfBorrowings * scaleFactorApplied) : existingInput.repaymentOfBorrowings) : Math.round((prevYear ? prevYear.longTermBorrowings : salesRevenue * 0.1) * 0.12));
+      : (existingInput ? (shouldScaleHist && !isProjected ? Math.round(existingInput.repaymentOfBorrowings * scaleFactorApplied) : existingInput.repaymentOfBorrowings) : Math.round((prevYear ? prevYear.longTermBorrowings : salesRevenue * 0.1) * varyBounded(0.12, yr, 15, 0.014, 0.07, 0.21)));
 
     // P&L forward calculation incorporating exact Finance Cost
     const operatingProfit = salesRevenue - costOfSales - operatingExpenses - depCharge;
@@ -3754,17 +4064,26 @@ export function implementRepaymentScheduleIntoModel({
       ? r2(profitBeforeTax - taxExpense)
       : (existingInput?.netProfit ?? r2(profitBeforeTax - taxExpense));
 
-    // Working capital items aligned logically to Sales / CoS
+    // Working capital items aligned logically to Sales / CoS with smooth non-uniform annual turnover variations
+    const prevDio = prevYear && prevYear.costOfSales > 0 ? (prevYear.closingInventory / prevYear.costOfSales) * 365 : dio;
+    const yearDio = varyBounded(isProjected && prevYear ? prevDio * 0.38 + dio * 0.62 : dio, yr, 4, Math.max(1.4, dio * 0.04), 5, 220);
     const closingInventory = (!isProjected && existingInput && !shouldScaleHist)
       ? existingInput.closingInventory
-      : Math.round((costOfSales / 365) * dio);
-    const tradeReceivables = Math.round((salesRevenue / 365) * dso);
-    const otherReceivables = Math.round(tradeReceivables * 0.16);
-    const tradePayables = Math.round((costOfSales / 365) * dpo);
-    const otherPayables = Math.round(tradePayables * 0.25);
+      : Math.round((costOfSales / 365) * yearDio);
+    const prevDso = prevYear && prevYear.salesRevenue > 0 ? (prevYear.tradeReceivables / prevYear.salesRevenue) * 365 : dso;
+    const yearDso = varyBounded(isProjected && prevYear ? prevDso * 0.35 + dso * 0.65 : dso, yr, 5, Math.max(1.2, dso * 0.036), 5, 180);
+    const tradeReceivables = Math.round((salesRevenue / 365) * yearDso);
+    const otherRecRatio = varyBounded(0.16, yr, 7, 0.011, 0.11, 0.23);
+    const otherReceivables = Math.round(tradeReceivables * otherRecRatio);
+    const prevDpo = prevYear && prevYear.costOfSales > 0 ? (prevYear.tradePayables / prevYear.costOfSales) * 365 : dpo;
+    const yearDpo = varyBounded(isProjected && prevYear ? prevDpo * 0.38 + dpo * 0.62 : dpo, yr, 6, Math.max(1.2, dpo * 0.038), 5, 180);
+    const tradePayables = Math.round((costOfSales / 365) * yearDpo);
+    const otherPayRatio = varyBounded(0.25, yr, 8, 0.014, 0.18, 0.33);
+    const otherPayables = Math.round(tradePayables * otherPayRatio);
+    const ocaGrowth = varyBounded(0.042, yr, 9, 0.015, 0.015, 0.075);
     const otherCurrentAssets = prevYear
-      ? Math.round(prevYear.otherCurrentAssets * 1.04)
-      : Math.round(salesRevenue * 0.015);
+      ? Math.round(prevYear.otherCurrentAssets * (1 + ocaGrowth))
+      : Math.round(salesRevenue * varyBounded(0.015, yr, 9, 0.003, 0.008, 0.025));
 
     // Borrowings & Financing Cash Flow synchronized cleanly with Schedule Balance & Disbursement
     const prevLT = prevYear
@@ -3781,14 +4100,14 @@ export function implementRepaymentScheduleIntoModel({
       financingProceedsBorrowings = 0;
     } else if (sched) {
       if (sched.disbursementAmount > 0) {
-        financingProceedsBorrowings = r2(sched.disbursementAmount + Math.round(salesRevenue * 0.015));
+        financingProceedsBorrowings = r2(sched.disbursementAmount + Math.round(salesRevenue * varyBounded(0.015, yr, 19, 0.003, 0.009, 0.022)));
       } else {
         financingProceedsBorrowings = 0;
       }
     } else if (existingInput && !isProjected) {
       financingProceedsBorrowings = Math.round((existingInput.financingProceedsBorrowings || 0) * (shouldScaleHist ? scaleFactorApplied : 1));
     } else {
-      financingProceedsBorrowings = Math.round(prevST * 0.12);
+      financingProceedsBorrowings = Math.round(prevST * varyBounded(0.12, yr, 19, 0.032, 0.06, 0.20));
     }
 
     // Ensure total debt never drops below remaining scheduled balance + stays non-negative
@@ -3797,10 +4116,12 @@ export function implementRepaymentScheduleIntoModel({
     }
     const targetTotalDebt = Math.max(sched?.closingBalance ?? 0, r2(prevTotalDebt + financingProceedsBorrowings - exactRepayment));
     const currentMatOfLT = nextYrSched ? nextYrSched.totalPrincipal : 0;
-    const shortTermBorrowings = r2(Math.min(targetTotalDebt, Math.max(currentMatOfLT, Math.round(salesRevenue * 0.03))));
+    const stSalesFloor = Math.round(salesRevenue * varyBounded(0.03, yr, 17, 0.006, 0.018, 0.042));
+    const shortTermBorrowings = r2(Math.min(targetTotalDebt, Math.max(currentMatOfLT, stSalesFloor)));
     const longTermBorrowings = r2(Math.max(0, targetTotalDebt - shortTermBorrowings));
 
-    const dividendsPaid = Math.round(Math.max(0, netProfit) * (divPayout / 100));
+    const yearDivPayout = divPayout > 0 ? varyBounded(divPayout, yr, 13, Math.min(3.5, divPayout * 0.14), 2, 40) : 0;
+    const dividendsPaid = Math.round(Math.max(0, netProfit) * (yearDivPayout / 100));
     const shareCapital = prevYear
       ? prevYear.shareCapital
       : Math.round((existingInput?.shareCapital || 12000) * (shouldScaleHist ? scaleFactorApplied : 1));
@@ -3834,7 +4155,7 @@ export function implementRepaymentScheduleIntoModel({
       cashAndEquivalentsBS,
       otherCurrentAssets,
       intangibleAssets: prevYear
-        ? Math.max(0, prevYear.intangibleAssets - Math.min(prevYear.intangibleAssets, Math.round(salesRevenue * 0.002)))
+        ? Math.max(0, prevYear.intangibleAssets - Math.min(prevYear.intangibleAssets, Math.round(salesRevenue * varyBounded(0.002, yr, 15, 0.0005, 0.001, 0.003))))
         : Math.round((existingInput?.intangibleAssets || 1400) * (shouldScaleHist ? scaleFactorApplied : 1)),
       otherNonCurrentAssets: prevYear
         ? prevYear.otherNonCurrentAssets

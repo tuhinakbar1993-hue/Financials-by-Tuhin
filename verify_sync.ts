@@ -372,6 +372,109 @@ assert.equal(rProjAsc[0].cfRedeemLongTermDebt, -300000, 'Rescheduled Year 1 debt
 assert.equal(rProjAsc[0].cfNetCashFinancing, rFirstCF.netCashFromFinancing, 'Rescheduled Year 1 financing CF must tie out');
 assert.equal(rProjAsc[0].totalAssets, rProjAsc[0].totalEquityAndLiabilities, 'Rescheduled Year 1 Projected BS must balance');
 
+// 4. Realistic and non-uniform proportional allocation & deterministic repeatability checks
+const baseYearInput = engine.INITIAL_HISTORICAL_INPUTS[engine.INITIAL_HISTORICAL_INPUTS.length - 1];
+const projRepeat1 = engine.generateProjectedYears(baseYearInput, engine.DEFAULT_PROJECTION_ASSUMPTIONS);
+const projRepeat2 = engine.generateProjectedYears(baseYearInput, engine.DEFAULT_PROJECTION_ASSUMPTIONS);
+assert.deepEqual(projRepeat1, projRepeat2, 'Projected engine output must be 100% deterministic across calls');
+
+const pctGrowth = (curr: number, prev: number) => Number((((curr - prev) / Math.max(1, Math.abs(prev))) * 100).toFixed(2));
+const baseAsc = [...baseline.allInputs].sort((a, b) => a.year - b.year);
+const revYoyRates = new Set<number>();
+const cosYoyRates = new Set<number>();
+const opexYoyRates = new Set<number>();
+const invYoyRates = new Set<number>();
+const recYoyRates = new Set<number>();
+const payYoyRates = new Set<number>();
+
+for (let i = 1; i < baseAsc.length; i++) {
+  const c = baseAsc[i];
+  const p = baseAsc[i - 1];
+  if (!c.isProjected) continue;
+  const rPct = pctGrowth(c.salesRevenue, p.salesRevenue);
+  const cPct = pctGrowth(c.costOfSales, p.costOfSales);
+  const oPct = pctGrowth(c.operatingExpenses, p.operatingExpenses);
+  const iPct = pctGrowth(c.closingInventory, p.closingInventory);
+  const dPct = pctGrowth(c.tradeReceivables, p.tradeReceivables);
+  const pPct = pctGrowth(c.tradePayables, p.tradePayables);
+  revYoyRates.add(rPct);
+  cosYoyRates.add(cPct);
+  opexYoyRates.add(oPct);
+  invYoyRates.add(iPct);
+  recYoyRates.add(dPct);
+  payYoyRates.add(pPct);
+
+  if (c.year >= 2028 && c.year <= 2035) {
+    const distinctComponentRates = new Set([rPct, cPct, oPct, iPct, dPct, pPct]);
+    assert(
+      distinctComponentRates.size >= 4,
+      `Expected varied component YoY rates in ${c.year}, got ${Array.from(distinctComponentRates).join(', ')}`
+    );
+  }
+}
+
+assert(revYoyRates.size >= 5, `Expected varied annual revenue growth rates, got ${Array.from(revYoyRates).join(', ')}`);
+assert(cosYoyRates.size >= 5, `Expected varied annual COGS growth rates, got ${Array.from(cosYoyRates).join(', ')}`);
+assert(opexYoyRates.size >= 5, `Expected varied annual OpEx growth rates, got ${Array.from(opexYoyRates).join(', ')}`);
+assert(invYoyRates.size >= 5, `Expected varied annual inventory growth rates, got ${Array.from(invYoyRates).join(', ')}`);
+assert(recYoyRates.size >= 5, `Expected varied annual receivable growth rates, got ${Array.from(recYoyRates).join(', ')}`);
+assert(payYoyRates.size >= 5, `Expected varied annual payable growth rates, got ${Array.from(payYoyRates).join(', ')}`);
+
+// Fixed Asset Schedule category-level horizontal roll-forward & vertical sum integrity
+for (const faRow of baseline.fa) {
+  let sumOp = 0;
+  let sumAdd = 0;
+  let sumDisp = 0;
+  let sumCl = 0;
+  let sumDepOp = 0;
+  let sumDepChg = 0;
+  let sumDepDisp = 0;
+  let sumDepCl = 0;
+  for (const cat of faRow.categories) {
+    assert(Math.abs(cat.costOpening + cat.additions - cat.disposals - cat.costClosing) < 0.05, `FA horizontal cost tie failed in ${faRow.year} (${cat.name})`);
+    assert(Math.abs(cat.depOpening + cat.depCharge - cat.depDisposals - cat.depClosing) < 0.05, `FA horizontal dep tie failed in ${faRow.year} (${cat.name})`);
+    sumOp += cat.costOpening;
+    sumAdd += cat.additions;
+    sumDisp += cat.disposals;
+    sumCl += cat.costClosing;
+    sumDepOp += cat.depOpening;
+    sumDepChg += cat.depCharge;
+    sumDepDisp += cat.depDisposals;
+    sumDepCl += cat.depClosing;
+  }
+  assert(Math.abs(sumOp - faRow.totalCostOpening) < 0.05, `FA vertical opening cost mismatch in ${faRow.year}`);
+  assert(Math.abs(sumAdd - faRow.totalAdditions) < 0.05, `FA vertical additions mismatch in ${faRow.year}`);
+  assert(Math.abs(sumDisp - faRow.totalDisposals) < 0.05, `FA vertical disposals mismatch in ${faRow.year}`);
+  assert(Math.abs(sumCl - faRow.totalCostClosing) < 0.05, `FA vertical closing cost mismatch in ${faRow.year}`);
+  assert(Math.abs(sumDepOp - faRow.totalDepOpening) < 0.05, `FA vertical opening dep mismatch in ${faRow.year}`);
+  assert(Math.abs(sumDepChg - faRow.totalDepCharge) < 0.05, `FA vertical dep charge mismatch in ${faRow.year}`);
+  assert(Math.abs(sumDepDisp - faRow.totalDepDisposals) < 0.05, `FA vertical dep disposals mismatch in ${faRow.year}`);
+  assert(Math.abs(sumDepCl - faRow.totalDepClosing) < 0.05, `FA vertical closing dep mismatch in ${faRow.year}`);
+}
+
+// Notes disaggregation sums cleanly & varies weights between current and prior year
+for (const nn of [2, 3, 4, 6, 7, 8]) {
+  const note = baseline.notes.find(n => n.noteNumber === nn)!;
+  const rows = note.tableData?.rows || [];
+  const tot = note.tableData?.totalRow!;
+  const parseNum = (s: string) => Number(String(s).replace(/,/g, ''));
+  const sum0 = rows.reduce((acc, r) => acc + parseNum(r.values[0]), 0);
+  const sum1 = rows.reduce((acc, r) => acc + parseNum(r.values[1]), 0);
+  const tot0 = parseNum(tot.values[0]);
+  const tot1 = parseNum(tot.values[1]);
+  assert.equal(sum0, tot0, `Note ${nn} current-year breakdown sum must match totalRow`);
+  assert.equal(sum1, tot1, `Note ${nn} prior-year breakdown sum must match totalRow`);
+  const firstShare0 = parseNum(rows[0].values[0]) / Math.max(1, tot0);
+  const firstShare1 = parseNum(rows[0].values[1]) / Math.max(1, tot1);
+  assert(Math.abs(firstShare0 - firstShare1) > 0.001, `Note ${nn} current and prior year disaggregation shares should vary naturally`);
+}
+
+// Rescheduled model multi-year integrity & DSCR headroom
+assert(reschedResult.minEbitdaDscr >= 1.25, `Expected healthy EBITDA DSCR >= 1.25, got ${reschedResult.minEbitdaDscr}`);
+rBs.forEach(b => assert(Math.abs(b.balanceCheck) < 0.05, `Rescheduled BS unbalanced in ${b.year}: ${b.balanceCheck}`));
+rCf.forEach(c => assert.equal(c.reconciliationStatus, 'RECONCILED', `Rescheduled CF unreconciled in ${c.year}`));
+
 xlsxCjs.writeFile = origWriteFile;
 console.log('ALL VERIFICATION CHECKS PASSED! Workbooks validated:', capturedWorkbooks.map(c => c.filename));
+
 
