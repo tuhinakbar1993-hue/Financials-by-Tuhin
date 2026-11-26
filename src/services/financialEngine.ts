@@ -16,6 +16,7 @@ import {
   AutoFillConfigs,
   StatementCellOverrides,
   StatementLabelOverrides,
+  FinancialYearEndOption,
 } from '../types/financial';
 
 export interface StatementCalculationOptions {
@@ -175,6 +176,42 @@ export function getVisibleCustomItemsSum(
     .reduce((sum, item) => sum + getCustomItemYearValue(item, year), 0);
 }
 
+export function isJuneYearEnd(fyEnd?: string): boolean {
+  return /june|jun|\b06\b/i.test(fyEnd || '');
+}
+
+export function normalizeFinancialYearEnd(fyEnd?: string): FinancialYearEndOption {
+  return isJuneYearEnd(fyEnd) ? 'June 30' : 'December 31';
+}
+
+export function formatFyEndDateCode(year: number, fyEnd?: string): string {
+  return `${isJuneYearEnd(fyEnd) ? '30.06' : '31.12'}.${year}`;
+}
+
+export function formatFyStartDateCode(year: number, fyEnd?: string): string {
+  return isJuneYearEnd(fyEnd) ? `01.07.${year - 1}` : `01.01.${year}`;
+}
+
+export function formatFyAsAtUpper(year: number, fyEnd?: string): string {
+  return `AS AT ${isJuneYearEnd(fyEnd) ? '30 JUNE' : '31 DECEMBER'}, ${year}`;
+}
+
+export function formatFyYearEndedTitle(year: number, fyEnd?: string): string {
+  return `For the year ended ${isJuneYearEnd(fyEnd) ? '30 June' : '31 December'}, ${year}`;
+}
+
+export function formatFyYearEndedNoComma(year: number, fyEnd?: string): string {
+  return `For the year ended ${isJuneYearEnd(fyEnd) ? '30 June' : '31 December'} ${year}`;
+}
+
+export function formatFyProjectedAsAt(year: number, fyEnd?: string): string {
+  return `As at ${isJuneYearEnd(fyEnd) ? '30th June' : '31st December'}, ${year}(Projected)`;
+}
+
+export function formatFyProjectedYearEnded(year: number, fyEnd?: string): string {
+  return `For the year ended ${isJuneYearEnd(fyEnd) ? '30th June' : '31st December'}, ${year}(Projected)`;
+}
+
 export const INITIAL_COMPANY_PROFILE: CompanyProfile = {
   companyName: 'Apex Industrial Holdings Ltd.',
   tradingName: 'Apex Global Manufacturing',
@@ -185,7 +222,7 @@ export const INITIAL_COMPANY_PROFILE: CompanyProfile = {
   reportingUnit: 'Thousands',
   entityType: 'manufacturing',
   accountingFramework: 'IFRS',
-  financialYearEnd: '31 December',
+  financialYearEnd: 'December 31',
   auditorName: 'Rahman Rahman Huq & Co. (Chartered Accountants)',
   preparedBy: 'Mohammad Towhidul Akbar Tuhin, Officer, Sammilito Islami Bank PLC (Transferee of Assets & Liabilities of Union Bank PLC) | BBA, Heriot Watt University, UK · MBA, University of Chittagong',
 };
@@ -207,6 +244,65 @@ export const DEFAULT_PROJECTION_ASSUMPTIONS: ProjectionAssumptions = {
   dividendPayoutRatio: 30.0,
   projectedFinancingCashFlowGrowth: -4.0,
 };
+
+export function createCleanCaseCompanyProfile(currentFyEnd?: string): CompanyProfile {
+  return {
+    companyName: '',
+    tradingName: '',
+    registrationNumber: '',
+    taxId: '',
+    registeredAddress: '',
+    reportingCurrency: '$',
+    reportingUnit: 'Thousands',
+    entityType: 'manufacturing',
+    accountingFramework: 'IFRS',
+    financialYearEnd: normalizeFinancialYearEnd(currentFyEnd),
+    auditorName: '',
+    preparedBy: INITIAL_COMPANY_PROFILE.preparedBy,
+  };
+}
+
+export function createZeroHistoricalInputs(
+  years: number[] = DEFAULT_PROJECTION_ASSUMPTIONS.selectedHistoricalYears || [2023, 2024, 2025]
+): YearDataInput[] {
+  return years.map((year) => ({
+    year,
+    isProjected: false,
+    salesRevenue: 0,
+    netProfit: 0,
+    financeCost: 0,
+    cashFlowFromFinancing: 0,
+    repaymentOfBorrowings: 0,
+    fixedAssetsGross: 0,
+    fixedAssetsAdditions: 0,
+    fixedAssetsDisposals: 0,
+    depreciationRate: DEFAULT_PROJECTION_ASSUMPTIONS.depreciationRatePct,
+    costOfSales: 0,
+    operatingExpenses: 0,
+    taxRate: DEFAULT_PROJECTION_ASSUMPTIONS.taxRatePct,
+    closingInventory: 0,
+    tradeReceivables: 0,
+    otherReceivables: 0,
+    tradePayables: 0,
+    otherPayables: 0,
+    cashAndEquivalentsBS: 0,
+    otherCurrentAssets: 0,
+    intangibleAssets: 0,
+    otherNonCurrentAssets: 0,
+    shortTermBorrowings: 0,
+    longTermBorrowings: 0,
+    hasCustomLongTermBorrowings: false,
+    shareCapital: 0,
+    retainedEarningsOpening: 0,
+    reservesOpening: 0,
+    dividendsPaid: 0,
+    financingProceedsShares: 0,
+    financingProceedsBorrowings: 0,
+    financingRepaymentBorrowings: 0,
+    financingDividendsPaid: 0,
+    isScheduleLocked: false,
+  }));
+}
 
 // Default 3 Historical Years (2023, 2024, 2025)
 export const INITIAL_HISTORICAL_INPUTS: YearDataInput[] = [
@@ -774,10 +870,34 @@ export function generateAutomaticPrimaryDrivers(
   repaymentOfBorrowings: number;
   fixedAssetsGross: number;
 } {
+  if (
+    prevYear.salesRevenue === 0 &&
+    prevYear.netProfit === 0 &&
+    prevYear.closingInventory === 0 &&
+    prevYear.fixedAssetsGross === 0 &&
+    prevYear.longTermBorrowings === 0 &&
+    prevYear.shortTermBorrowings === 0 &&
+    prevYear.financeCost === 0 &&
+    prevYear.repaymentOfBorrowings === 0
+  ) {
+    return {
+      year: yearNumber,
+      isProjected: true,
+      salesRevenue: 0,
+      closingInventory: 0,
+      financeCost: 0,
+      netProfit: 0,
+      repaymentOfBorrowings: 0,
+      fixedAssetsGross: 0,
+    };
+  }
+
   // 1. Sales Revenue: irregular business cycle centered on revenueGrowthRate with natural expansions & occasional mild contractions
   const baseGrowthPct = assumptions.revenueGrowthRate;
   const effectiveGrowthPct = computeProjectedRevenueGrowthPct(yearNumber, baseGrowthPct, stepIndex);
-  const salesRevenue = Math.max(100, Math.round(prevYear.salesRevenue * (1 + effectiveGrowthPct / 100)));
+  const salesRevenue = prevYear.salesRevenue > 0
+    ? Math.max(100, Math.round(prevYear.salesRevenue * (1 + effectiveGrowthPct / 100)))
+    : 0;
   const gRev = yoyPct(salesRevenue, prevYear.salesRevenue);
 
   // Cost of Sales fluctuating naturally around target gross margin while staying >= 1.5pp distinct from Revenue growth
@@ -825,13 +945,18 @@ export function generateAutomaticPrimaryDrivers(
   );
 
   // 3. Finance Cost: smooth rate transition from prior effective debt yield + non-uniform debt service timing
-  const prevTotalDebt = Math.max(1, (prevYear.longTermBorrowings || 8000) + (prevYear.shortTermBorrowings || 2500));
-  const rawPrevYield = prevYear.financeCost > 0 ? prevYear.financeCost / prevTotalDebt : 0.085;
+  const hasPrevDebt = prevYear.longTermBorrowings > 0 || prevYear.shortTermBorrowings > 0 || prevYear.financeCost > 0;
+  const prevTotalDebt = hasPrevDebt
+    ? Math.max(1, prevYear.longTermBorrowings + prevYear.shortTermBorrowings)
+    : 0;
+  const rawPrevYield = prevYear.financeCost > 0 && prevTotalDebt > 0 ? prevYear.financeCost / prevTotalDebt : 0.085;
   const clampedPrevYield = clampVal(rawPrevYield, 0.045, 0.155);
   const blendedYield = clampedPrevYield * 0.42 + 0.085 * 0.58;
   const effectiveInterestRate = varyBounded(blendedYield, yearNumber, 14, 0.0085, 0.045, 0.16);
   const midYearDeleveragingAdj = varyBounded(0.95, yearNumber, 18, 0.028, 0.89, 0.995);
-  const financeCost = Math.max(120, Math.round(prevTotalDebt * effectiveInterestRate * midYearDeleveragingAdj));
+  const financeCost = prevTotalDebt > 0
+    ? Math.max(120, Math.round(prevTotalDebt * effectiveInterestRate * midYearDeleveragingAdj))
+    : 0;
   const gFin = yoyPct(financeCost, prevYear.financeCost);
 
   // 4. Fixed Assets Additions, Disposals & Asset-Mix Depreciation
@@ -871,7 +996,9 @@ export function generateAutomaticPrimaryDrivers(
     12,
     1.6
   );
-  const fixedAssetsGross = Math.max(100, prevYear.fixedAssetsGross + capexAdditions - disposals);
+  const fixedAssetsGross = prevYear.fixedAssetsGross > 0
+    ? Math.max(100, prevYear.fixedAssetsGross + capexAdditions - disposals)
+    : capexAdditions;
   const gGrossFA = yoyPct(fixedAssetsGross, prevYear.fixedAssetsGross);
   const prevOpeningGrossEst = Math.max(0, prevYear.fixedAssetsGross - (prevYear.fixedAssetsAdditions || 0) + (prevYear.fixedAssetsDisposals || 0));
   const prevDepEst = prevYear.fixedAssetsGross > 0
@@ -959,21 +1086,25 @@ export function generateAutomaticPrimaryDrivers(
   }
 
   // 6. Repayment of Borrowings: non-uniform facility reduction pacing distinct from Finance Cost & NP
-  const prevLT = Math.max(500, prevYear.longTermBorrowings || 8000);
-  const rawPrevRepayRatio = prevYear.repaymentOfBorrowings > 0 ? prevYear.repaymentOfBorrowings / prevLT : 0.12;
-  const clampedPrevRepay = clampVal(rawPrevRepayRatio, 0.065, 0.23);
-  const yearRepayRatio = varyBounded(clampedPrevRepay * 0.38 + 0.125 * 0.62, yearNumber, 15, 0.022, 0.065, 0.24);
+  const prevLT = prevYear.longTermBorrowings;
   const gNp = yoyPct(netProfit, prevYear.netProfit);
-  const repaymentOfBorrowings = computeSpreadValue(
-    Math.max(400, prevLT * yearRepayRatio),
-    prevYear.repaymentOfBorrowings,
-    Math.max(400, Math.round(prevLT * 0.065)),
-    Math.max(450, Math.round(prevLT * 0.24)),
-    [gFin, gNp],
-    yearNumber,
-    15,
-    1.55
-  );
+  let repaymentOfBorrowings = 0;
+  if (prevLT > 0 || prevYear.repaymentOfBorrowings > 0) {
+    const baseLT = Math.max(500, prevLT);
+    const rawPrevRepayRatio = prevYear.repaymentOfBorrowings > 0 ? prevYear.repaymentOfBorrowings / baseLT : 0.12;
+    const clampedPrevRepay = clampVal(rawPrevRepayRatio, 0.065, 0.23);
+    const yearRepayRatio = varyBounded(clampedPrevRepay * 0.38 + 0.125 * 0.62, yearNumber, 15, 0.022, 0.065, 0.24);
+    repaymentOfBorrowings = computeSpreadValue(
+      Math.max(400, baseLT * yearRepayRatio),
+      prevYear.repaymentOfBorrowings,
+      Math.max(400, Math.round(baseLT * 0.065)),
+      Math.max(450, Math.round(baseLT * 0.24)),
+      [gFin, gNp],
+      yearNumber,
+      15,
+      1.55
+    );
+  }
 
   return {
     year: yearNumber,
@@ -1253,7 +1384,7 @@ export function calculateDriverAutoFillSeries(
  */
 export function recalculateAllYearsWithUpdatedDriver(
   currentYears: YearDataInput[],
-  driver: PrimaryDriverKey,
+  driver: PrimaryDriverKey | 'longTermBorrowings',
   driverValuesByYear: Record<number, number>,
   assumptions: ProjectionAssumptions
 ): YearDataInput[] {
@@ -1262,8 +1393,9 @@ export function recalculateAllYearsWithUpdatedDriver(
   for (let i = 0; i < currentYears.length; i++) {
     const existing = currentYears[i];
     const prevYearObj = i > 0 ? result[i - 1] : null;
-    const newVal = driverValuesByYear[existing.year] !== undefined 
-      ? driverValuesByYear[existing.year] 
+    const hasUpdatedVal = driverValuesByYear[existing.year] !== undefined;
+    const newVal = hasUpdatedVal
+      ? driverValuesByYear[existing.year]
       : existing[driver];
 
     const updatedDrivers = {
@@ -1277,7 +1409,16 @@ export function recalculateAllYearsWithUpdatedDriver(
       fixedAssetsGross: driver === 'fixedAssetsGross' ? newVal : existing.fixedAssetsGross,
     };
 
-    const recomputed = deriveDependentFinancials(updatedDrivers, prevYearObj, assumptions, existing);
+    const existingOverride: Partial<YearDataInput> =
+      driver === 'longTermBorrowings' && hasUpdatedVal
+        ? {
+            ...existing,
+            longTermBorrowings: Math.max(0, newVal),
+            hasCustomLongTermBorrowings: true,
+          }
+        : existing;
+
+    const recomputed = deriveDependentFinancials(updatedDrivers, prevYearObj, assumptions, existingOverride);
     result.push(recomputed);
   }
 
@@ -1513,7 +1654,7 @@ export function deriveDependentFinancials(
     ? computeSpreadValue(
         prevYear.otherCurrentAssets * Math.pow(1 + ocaGrowth, yearStep),
         prevYear.otherCurrentAssets,
-        Math.max(100, Math.round(prevYear.otherCurrentAssets * Math.pow(0.955, yearStep))),
+        prevYear.otherCurrentAssets > 0 ? Math.max(100, Math.round(prevYear.otherCurrentAssets * Math.pow(0.955, yearStep))) : 0,
         Math.round(prevYear.otherCurrentAssets * Math.pow(1.088, yearStep)),
         [gTrRec, gOthRec, gInv],
         year,
@@ -1538,51 +1679,84 @@ export function deriveDependentFinancials(
           1.50
         )
       : 0;
-  const shareCapital = prevYear ? prevYear.shareCapital : (existingFullYear?.shareCapital ?? 12000);
+  const isZeroSeed =
+    !prevYear &&
+    salesRevenue === 0 &&
+    closingInventory === 0 &&
+    financeCost === 0 &&
+    netProfit === 0 &&
+    repaymentOfBorrowings === 0 &&
+    fixedAssetsGross === 0;
+  const hasCustomLT = Boolean(
+    existingFullYear?.hasCustomLongTermBorrowings && existingFullYear.longTermBorrowings !== undefined
+  );
 
-  // 7. Borrowings & Financing Cash Flow preserving fixed repaymentOfBorrowings strictly
+  const shareCapital = prevYear
+    ? prevYear.shareCapital
+    : (existingFullYear?.shareCapital ?? (isZeroSeed ? 0 : 12000));
+
+  // 7. Borrowings & Financing Cash Flow preserving fixed repaymentOfBorrowings & custom Long-Term Borrowings
   const absRepayment = Math.max(0, repaymentOfBorrowings);
   const financingProceedsShares = existingFullYear?.financingProceedsShares ?? 0;
-
-  const prevLT = prevYear ? prevYear.longTermBorrowings : Math.max(8000, absRepayment * 4);
-  const prevST = prevYear ? prevYear.shortTermBorrowings : Math.max(2500, Math.round(salesRevenue * 0.06));
-  const prevTotalDebt = prevLT + prevST;
 
   // First projected year represents existing loans proposed for rescheduling/restructuring (no fresh loan proceeds)
   const isFirstProjectedYear = Boolean(isProjected && (!prevYear || !prevYear.isProjected));
 
-  // Proportionate working-capital facility proceeds with varied annual utilization; sustain operational credit headroom as business scales
-  const proceedsFactor = varyBounded(0.24, year, 19, 0.065, 0.12, 0.36);
-  const wcFacilityDraw = prevYear && prevTotalDebt < salesRevenue * 0.065
-    ? Math.round(salesRevenue * varyBounded(0.009, year, 29, 0.0035, 0.003, 0.016))
-    : 0;
-  let financingProceedsBorrowings = isFirstProjectedYear
-    ? 0
-    : prevYear
-    ? Math.round(prevST * proceedsFactor) + wcFacilityDraw
-    : Math.round(salesRevenue * varyBounded(0.02, year, 19, 0.004, 0.01, 0.03));
-  if (!isFirstProjectedYear && prevTotalDebt + financingProceedsBorrowings < absRepayment) {
-    financingProceedsBorrowings = absRepayment - prevTotalDebt + Math.round(salesRevenue * varyBounded(0.03, year, 20, 0.006, 0.018, 0.045));
-  }
+  let financingProceedsBorrowings = 0;
+  let longTermBorrowings = 0;
+  let shortTermBorrowings = 0;
 
-  const netDebtChange = financingProceedsBorrowings - absRepayment;
-  const targetTotalDebt = Math.max(0, prevTotalDebt + netDebtChange);
-  const baseLtShare = prevTotalDebt > 0 ? prevLT / prevTotalDebt : 0.72;
-  const ltShare = varyBounded(baseLtShare, year, 17, 0.032, 0.54, 0.86);
-  const longTermBorrowings =
-    prevYear && prevYear.longTermBorrowings > 0 && targetTotalDebt > 0
-      ? computeSpreadValue(
-          targetTotalDebt * ltShare,
-          prevYear.longTermBorrowings,
-          Math.round(targetTotalDebt * 0.54),
-          Math.round(targetTotalDebt * 0.86),
-          [gRepay, gFin],
-          year,
-          17,
-          1.45
-        )
-      : Math.round(targetTotalDebt * ltShare);
-  const shortTermBorrowings = Math.max(0, targetTotalDebt - longTermBorrowings);
+  if (isZeroSeed) {
+    longTermBorrowings = Math.max(0, existingFullYear?.longTermBorrowings ?? 0);
+    shortTermBorrowings = Math.max(0, existingFullYear?.shortTermBorrowings ?? 0);
+    financingProceedsBorrowings = existingFullYear?.financingProceedsBorrowings ?? 0;
+  } else {
+    const prevLT = prevYear
+      ? prevYear.longTermBorrowings
+      : (hasCustomLT ? Math.max(0, existingFullYear!.longTermBorrowings!) : Math.max(8000, absRepayment * 4));
+    const prevST = prevYear ? prevYear.shortTermBorrowings : Math.max(2500, Math.round(salesRevenue * 0.06));
+    const prevTotalDebt = prevLT + prevST;
+
+    // Proportionate working-capital facility proceeds with varied annual utilization; sustain operational credit headroom as business scales
+    const proceedsFactor = varyBounded(0.24, year, 19, 0.065, 0.12, 0.36);
+    const wcFacilityDraw = prevYear && prevTotalDebt < salesRevenue * 0.065
+      ? Math.round(salesRevenue * varyBounded(0.009, year, 29, 0.0035, 0.003, 0.016))
+      : 0;
+    financingProceedsBorrowings = isFirstProjectedYear
+      ? 0
+      : prevYear
+      ? Math.round(prevST * proceedsFactor) + wcFacilityDraw
+      : Math.round(salesRevenue * varyBounded(0.02, year, 19, 0.004, 0.01, 0.03));
+    if (!isFirstProjectedYear && prevTotalDebt + financingProceedsBorrowings < absRepayment) {
+      financingProceedsBorrowings = absRepayment - prevTotalDebt + Math.round(salesRevenue * varyBounded(0.03, year, 20, 0.006, 0.018, 0.045));
+    }
+
+    if (hasCustomLT) {
+      longTermBorrowings = Math.max(0, existingFullYear!.longTermBorrowings!);
+      shortTermBorrowings = prevYear
+        ? Math.max(0, Math.round(prevYear.shortTermBorrowings * (1 + clampVal(gRev / 100, -0.08, 0.15))))
+        : (existingFullYear?.shortTermBorrowings ?? Math.max(2500, Math.round(salesRevenue * 0.06)));
+    } else {
+      const netDebtChange = financingProceedsBorrowings - absRepayment;
+      const targetTotalDebt = Math.max(0, prevTotalDebt + netDebtChange);
+      const baseLtShare = prevTotalDebt > 0 ? prevLT / prevTotalDebt : 0.72;
+      const ltShare = varyBounded(baseLtShare, year, 17, 0.032, 0.54, 0.86);
+      longTermBorrowings =
+        prevYear && prevYear.longTermBorrowings > 0 && targetTotalDebt > 0
+          ? computeSpreadValue(
+              targetTotalDebt * ltShare,
+              prevYear.longTermBorrowings,
+              Math.round(targetTotalDebt * 0.54),
+              Math.round(targetTotalDebt * 0.86),
+              [gRepay, gFin],
+              year,
+              17,
+              1.45
+            )
+          : Math.round(targetTotalDebt * ltShare);
+      shortTermBorrowings = Math.max(0, targetTotalDebt - longTermBorrowings);
+    }
+  }
 
   const financingRepaymentBorrowings = -absRepayment;
   const financingDividendsPaid = -dividendsPaid;
@@ -1592,15 +1766,15 @@ export function deriveDependentFinancials(
   const amortStep = Math.round(varyBounded(100, year, 15, 28, 55, 155)) * yearStep;
   const intangibleAssets = prevYear
     ? Math.max(0, prevYear.intangibleAssets - Math.min(prevYear.intangibleAssets, amortStep))
-    : (existingFullYear?.intangibleAssets ?? Math.round(salesRevenue * 0.03));
+    : (existingFullYear?.intangibleAssets ?? (isZeroSeed ? 0 : Math.round(salesRevenue * 0.03)));
   const otherNonCurrentAssets = prevYear
     ? prevYear.otherNonCurrentAssets
-    : (existingFullYear?.otherNonCurrentAssets ?? Math.round(salesRevenue * 0.08));
+    : (existingFullYear?.otherNonCurrentAssets ?? (isZeroSeed ? 0 : Math.round(salesRevenue * 0.08)));
 
   // Estimated Cash & Equivalents (actual Closing Cash is computed cleanly by Cash Flow Engine)
   const cashAndEquivalentsBS = prevYear
     ? Math.max(0, Math.round(prevYear.cashAndEquivalentsBS + netProfit * 0.35))
-    : (existingFullYear?.cashAndEquivalentsBS ?? Math.round(salesRevenue * 0.085));
+    : (existingFullYear?.cashAndEquivalentsBS ?? (isZeroSeed ? 0 : Math.round(salesRevenue * 0.085)));
 
   return {
     ...(existingFullYear || {}),
@@ -1629,6 +1803,7 @@ export function deriveDependentFinancials(
     otherNonCurrentAssets,
     shortTermBorrowings,
     longTermBorrowings,
+    hasCustomLongTermBorrowings: hasCustomLT,
     shareCapital,
     dividendsPaid,
     financingProceedsShares,
@@ -1650,13 +1825,23 @@ export function generateYearDataForTargetYear(
 ): YearDataInput {
   const sorted = [...existingYears].sort((a, b) => a.year - b.year);
   if (sorted.length === 0) {
-    const fallbackBase = INITIAL_HISTORICAL_INPUTS[0];
-    return { ...fallbackBase, year: targetYear, isProjected };
+    return { ...createZeroHistoricalInputs([targetYear])[0], isProjected };
   }
 
   // Find closest preceding year or earliest year
   const preceding = [...sorted].reverse().find(y => y.year < targetYear);
   const anchor = preceding || sorted[0];
+  if (
+    anchor.salesRevenue === 0 &&
+    anchor.closingInventory === 0 &&
+    anchor.financeCost === 0 &&
+    anchor.netProfit === 0 &&
+    anchor.repaymentOfBorrowings === 0 &&
+    anchor.fixedAssetsGross === 0 &&
+    anchor.longTermBorrowings === 0
+  ) {
+    return { ...createZeroHistoricalInputs([targetYear])[0], isProjected };
+  }
   const diff = targetYear - anchor.year;
 
   const revRate = (assumptions.revenueGrowthRate || 8.5) / 100;
@@ -1752,7 +1937,7 @@ export function calculateScheduleOfFixedAssets(
   options?: StatementCalculationOptions
 ): ScheduleOfFixedAssetsYear[] {
   const result: ScheduleOfFixedAssetsYear[] = [];
-  const firstGross = inputs[0]?.fixedAssetsGross || 32000;
+  const firstGross = inputs[0]?.fixedAssetsGross ?? 0;
   const baseAccumDep = Math.round(firstGross * 0.35);
   const configMap = buildConfigVisibilityMap(options?.statementConfig);
   const cellOverrides = options?.cellOverrides;
@@ -2087,7 +2272,7 @@ export function calculateIncomeStatement(
   const cellOverrides = options?.cellOverrides;
 
   // Baseline un-filtered FA depreciation so Cost of Sales & OpEx stay anchored when FA categories are deselected
-  const firstGross = inputs[0]?.fixedAssetsGross || 32000;
+  const firstGross = inputs[0]?.fixedAssetsGross ?? 0;
   let prevBaseClosingCost = 0;
   let prevBaseClosingDep = 0;
   const baseDepCharges: number[] = inputs.map((input, index) => {
@@ -2298,13 +2483,14 @@ export function calculateCashFlowStatement(
           ? r(input.netProfit / Math.max(0.01, 1 - baseTaxRate / 100) - input.netProfit)
           : 0;
       const basePBT = r2(input.netProfit + baseTaxExp);
-      const firstGross = inputs[0]?.fixedAssetsGross || 32000;
+      const firstGross = inputs[0]?.fixedAssetsGross ?? 0;
       const baseOpeningCost = Math.max(0, input.fixedAssetsGross - input.fixedAssetsAdditions + input.fixedAssetsDisposals);
       const baseDepCharge = Math.round(((baseOpeningCost + input.fixedAssetsGross) / 2) * (input.depreciationRate / 100));
       const baseDepDisposals = Math.round(input.fixedAssetsDisposals * computeDepDisposalsRatio(input.year, input.isProjected));
       const baseIntInc = r(input.salesRevenue * computeInterestIncomeRate(input.year, input.isProjected));
+      const baseIntangAmort = input.intangibleAssets > 0 ? 100 : 0;
       const baseOpProfitBeforeWC =
-        basePBT + baseDepCharge + 100 + input.financeCost - baseIntInc - baseDepDisposals;
+        basePBT + baseDepCharge + baseIntangAmort + input.financeCost - baseIntInc - baseDepDisposals;
       const baseWC =
         -Math.round(input.closingInventory * 0.08) -
         Math.round(input.tradeReceivables * 0.08) -
@@ -2330,7 +2516,9 @@ export function calculateCashFlowStatement(
       ? getCellOverride(cellOverrides, 'cf', 'adjDepreciation', input.year) ?? depAddBackDefault
       : 0;
 
-    const baseAmort = prevInput ? Math.max(0, prevInput.intangibleAssets - input.intangibleAssets) : 100;
+    const baseAmort = prevInput
+      ? Math.max(0, prevInput.intangibleAssets - input.intangibleAssets)
+      : (input.intangibleAssets > 0 ? 100 : 0);
     const adjAmortization =
       vis('cf_amort') && vis('bs_intangibleAssets')
         ? getCellOverride(cellOverrides, 'cf', 'adjAmortization', input.year) ?? baseAmort
@@ -2574,7 +2762,10 @@ export function calculateCashFlowStatement(
       ? r2(input.cashAndEquivalentsBS - baseFirstNetChangeInCash)
       : result[index - 1].closingCashCalculated;
     if (ovOpeningCash === undefined && openingCash < 0 && isFirst) {
-      openingCash = Math.max(200, Math.round(input.salesRevenue * 0.05));
+      openingCash =
+        input.salesRevenue > 0 || baseFirstNetChangeInCash !== 0
+          ? Math.max(200, Math.round(input.salesRevenue * 0.05))
+          : 0;
     }
 
     const closingCashCalculated =
@@ -2675,9 +2866,16 @@ export function calculateEquityStatement(
       : 0;
     const closingShareCapital = r2(openingShareCapital + shareCapitalIssued);
 
+    const isZeroFirst =
+      isFirst &&
+      input.salesRevenue === 0 &&
+      input.shareCapital === 0 &&
+      input.netProfit === 0 &&
+      input.longTermBorrowings === 0;
+
     const openingRetainedEarnings = vis('eq_openingRetainedEarnings')
       ? getCellOverride(cellOverrides, 'eq', 'openingRetainedEarnings', input.year) ??
-        (isFirst ? input.retainedEarningsOpening ?? 6500 : result[index - 1].closingRetainedEarnings)
+        (isFirst ? input.retainedEarningsOpening ?? (isZeroFirst ? 0 : 6500) : result[index - 1].closingRetainedEarnings)
       : 0;
     const netProfitForYear = vis('eq_netProfitForYear')
       ? getCellOverride(cellOverrides, 'eq', 'netProfitForYear', input.year) ?? income.netProfit
@@ -2689,7 +2887,7 @@ export function calculateEquityStatement(
 
     const openingReserves = vis('eq_openingReserves')
       ? getCellOverride(cellOverrides, 'eq', 'openingReserves', input.year) ??
-        (isFirst ? 1800 : result[index - 1].closingReserves)
+        (isFirst ? (input.reservesOpening ?? (isZeroFirst ? 0 : 1800)) : result[index - 1].closingReserves)
       : 0;
     const otherComprehensiveIncome = vis('eq_otherComprehensiveIncome')
       ? getCellOverride(cellOverrides, 'eq', 'otherComprehensiveIncome', input.year) ?? 0
@@ -2774,10 +2972,11 @@ export function calculateBalanceSheet(
         input.longTermBorrowings +
         (equity.closingShareCapital + equity.closingRetainedEarnings + equity.closingReserves)
     );
-    const baseOtherNonCurrentAssets = Math.max(
-      0,
-      r2(baseLiabilitiesAndEquity - (baseCurrentAssets + fixedAssets.totalNetBookValue + input.intangibleAssets))
+    const rawNonCurrentGap = r2(
+      baseLiabilitiesAndEquity - (baseCurrentAssets + fixedAssets.totalNetBookValue + input.intangibleAssets)
     );
+    const baseOtherNonCurrentAssets = rawNonCurrentGap >= 0 ? rawNonCurrentGap : 0;
+    const baseOtherNonCurrentLiab = rawNonCurrentGap < 0 ? Math.abs(rawNonCurrentGap) : 0;
 
     // Apply bs_* visibility, inline cell overrides, and custom items
     const cashAndEquivalents = vis('bs_cashAndEquivalents')
@@ -2856,7 +3055,7 @@ export function calculateBalanceSheet(
       ? getCellOverride(cellOverrides, 'bs', 'longTermBorrowings', input.year) ?? input.longTermBorrowings
       : 0;
     const otherNonCurrentLiabilities = vis('bs_otherNonCurrentLiabilities')
-      ? getCellOverride(cellOverrides, 'bs', 'otherNonCurrentLiabilities', input.year) ?? 0
+      ? getCellOverride(cellOverrides, 'bs', 'otherNonCurrentLiabilities', input.year) ?? baseOtherNonCurrentLiab
       : 0;
     const customNonCurrentLiab = getVisibleCustomItemsSum(
       options?.statementConfig,
@@ -2937,6 +3136,7 @@ export function generateNotesToFinancialStatements(
     cellOverrides?: StatementCellOverrides;
   }
 ): FinancialNoteItem[] {
+  if (years.length === 0) return [];
   const latestIdx = years.length - 1;
   const currYear = years[latestIdx];
   const prevYear = years.length > 1 ? years[latestIdx - 1] : currYear;
@@ -3087,7 +3287,7 @@ export function generateNotesToFinancialStatements(
       noteNumber: 1,
       title: 'Company Information & Significant Accounting Policies',
       category: 'General Disclosures',
-      textDescription: `${company.companyName} is a limited liability company incorporated under applicable commercial law, with its registered corporate office situated at ${company.registeredAddress}. The financial statements have been prepared in accordance with ${company.accountingFramework} and applicable statutory frameworks. The Statement of Cash Flows is presented using the Indirect Method in compliance with IAS 7 / ASC 230, distinguishing between operating, investing, and financing activities. Cash and cash equivalents comprise cash in hand, call deposits with scheduled banks, and liquid money-market placements with original maturities of three months or less.`,
+      textDescription: `${company.companyName?.trim() || 'The Company'} is a limited liability company incorporated under applicable commercial law, with its registered corporate office situated at ${company.registeredAddress?.trim() || 'its registered corporate office'}. The financial statements are prepared on a consistent annual cycle ending ${normalizeFinancialYearEnd(company.financialYearEnd)} in accordance with ${company.accountingFramework} and applicable statutory frameworks. The Statement of Cash Flows is presented using the Indirect Method in compliance with IAS 7 / ASC 230, distinguishing between operating, investing, and financing activities. Cash and cash equivalents comprise cash in hand, call deposits with scheduled banks, and liquid money-market placements with original maturities of three months or less.`,
     },
     {
       noteNumber: 2,
@@ -3415,7 +3615,8 @@ export function buildPreviousFormatData(
   cashFlowStatements: CashFlowStatementYear[],
   equityStatements: EquityStatementYear[],
   fixedAssetsSchedule: ScheduleOfFixedAssetsYear[],
-  options?: StatementCalculationOptions
+  options?: StatementCalculationOptions,
+  financialYearEnd?: string
 ): import('../types/financial').PreviousFormatYearData[] {
   const histIndices = inputs
     .map((inp, idx) => ({ inp, idx }))
@@ -3575,7 +3776,7 @@ export function buildPreviousFormatData(
 
     prevResults.push({
       year: inp.year,
-      dateLabel: `31.12.${inp.year}`,
+      dateLabel: formatFyEndDateCode(inp.year, financialYearEnd),
       fixedAssetsWDV,
       advancesDepositsPrepayments,
       stockAndStores,
@@ -4982,10 +5183,13 @@ export function implementRepaymentScheduleIntoModel({
         : Math.round((existingInput?.otherNonCurrentAssets || 3900) * (shouldScaleHist ? scaleFactorApplied : 1)),
       shortTermBorrowings,
       longTermBorrowings,
+      hasCustomLongTermBorrowings: false,
       shareCapital,
       retainedEarningsOpening: prevYear
         ? undefined
-        : Math.round((existingInput?.retainedEarningsOpening || 6500) * (shouldScaleHist ? scaleFactorApplied : 1)),
+        : existingInput?.retainedEarningsOpening !== undefined
+        ? Math.round(existingInput.retainedEarningsOpening * (shouldScaleHist ? scaleFactorApplied : 1))
+        : (shouldScaleHist || salesRevenue > 0 ? Math.round(6500 * (shouldScaleHist ? scaleFactorApplied : 1)) : 0),
       dividendsPaid,
       financingProceedsShares: 0,
       financingProceedsBorrowings,

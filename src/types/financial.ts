@@ -23,6 +23,8 @@ export type MultiplierUnit = 'Units' | 'Thousands' | 'Millions' | 'Billions';
 
 export type InputMode = 'manual' | 'automatic';
 
+export type FinancialYearEndOption = 'June 30' | 'December 31';
+
 export interface CompanyProfile {
   companyName: string;
   tradingName?: string;
@@ -33,7 +35,7 @@ export interface CompanyProfile {
   reportingUnit: MultiplierUnit;
   entityType: EntityType;
   accountingFramework: AccountingFramework;
-  financialYearEnd: string; // e.g. "31 December"
+  financialYearEnd: string; // "June 30" or "December 31"
   auditorName: string;
   preparedBy: string; // "Tuhin Akbar, Lead Financial Architect"
 }
@@ -91,8 +93,10 @@ export interface YearDataInput {
   otherNonCurrentAssets: number;
   shortTermBorrowings: number;
   longTermBorrowings: number;
+  hasCustomLongTermBorrowings?: boolean;
   shareCapital: number;
   retainedEarningsOpening?: number;
+  reservesOpening?: number;
   dividendsPaid: number;
   
   // Sector-specific inputs

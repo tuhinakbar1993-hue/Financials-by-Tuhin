@@ -25,7 +25,19 @@ import {
   StatementLabelOverrides,
   YearDataInput,
 } from '../types/financial';
-import { resolveEffectiveLabel, getCustomItemYearValue, buildProjectedQuantNoteRows } from '../services/financialEngine';
+import {
+  resolveEffectiveLabel,
+  getCustomItemYearValue,
+  buildProjectedQuantNoteRows,
+  formatFyAsAtUpper,
+  formatFyYearEndedTitle,
+  formatFyYearEndedNoComma,
+  formatFyStartDateCode,
+  formatFyEndDateCode,
+  formatFyProjectedAsAt,
+  formatFyProjectedYearEnded,
+  normalizeFinancialYearEnd,
+} from '../services/financialEngine';
 import {
   exportPreviousFinancialsExcel,
   exportPreviousFinancialsWord,
@@ -226,6 +238,7 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
   const maxYear = displayedData[0].year;
   const allAsc = [...prevData].sort((a, b) => a.year - b.year);
   const faAsc = [...displayedData].sort((a, b) => a.year - b.year);
+  const safeCompanyName = companyProfile.companyName?.trim() || 'Untitled Entity';
   const ccyLabel = companyProfile.reportingCurrency === '৳' ? 'BDT' : companyProfile.reportingCurrency;
   const unitCaption = companyProfile.reportingUnit === 'Units'
     ? `(Figure in ${ccyLabel})`
@@ -396,7 +409,7 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                         Set {idx + 1}: ({pair.label})
                       </div>
                       <div className="text-[10px] text-slate-600 font-mono">
-                        Cols: 31.12.{pair.laterYear} &amp; 31.12.{pair.earlierYear}
+                        Cols: {formatFyEndDateCode(pair.laterYear, companyProfile.financialYearEnd)} &amp; {formatFyEndDateCode(pair.earlierYear, companyProfile.financialYearEnd)}
                       </div>
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
@@ -457,13 +470,13 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
         <div className="bg-white/96 backdrop-blur-md border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
           <div className="p-5 border-b border-slate-200 text-center space-y-1 bg-white">
             <h3 className="text-base font-extrabold text-slate-900 tracking-wide uppercase">
-              {companyProfile.companyName}
+              {safeCompanyName}
             </h3>
             <div className="text-sm font-bold text-emerald-800 uppercase tracking-wide">
               STATEMENT OF FINANCIAL POSITION
             </div>
             <div className="text-xs font-semibold text-slate-700">
-              AS AT 31 DECEMBER, {maxYear}
+              {formatFyAsAtUpper(maxYear, companyProfile.financialYearEnd)}
             </div>
             <div className="text-[11px] text-slate-500 text-right font-mono pt-1">
               {unitCaption}
@@ -805,13 +818,13 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
         <div className="bg-white/96 backdrop-blur-md border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
           <div className="p-5 border-b border-slate-200 text-center space-y-1 bg-white">
             <h3 className="text-base font-extrabold text-slate-900 tracking-wide uppercase">
-              {companyProfile.companyName}
+              {safeCompanyName}
             </h3>
             <div className="text-sm font-bold text-emerald-800">
               Statement of Comprehensive Income
             </div>
             <div className="text-xs font-semibold text-slate-700">
-              For the year ended 31 December, {maxYear}
+              {formatFyYearEndedTitle(maxYear, companyProfile.financialYearEnd)}
             </div>
             <div className="text-[11px] text-slate-500 text-right font-mono pt-1">
               {unitCaption}
@@ -1076,13 +1089,13 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
         <div className="bg-white/96 backdrop-blur-md border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
           <div className="p-5 border-b border-slate-200 text-center space-y-1 bg-white">
             <h3 className="text-base font-extrabold text-slate-900 tracking-wide uppercase">
-              {companyProfile.companyName}
+              {safeCompanyName}
             </h3>
             <div className="text-sm font-bold text-emerald-800 uppercase tracking-wide">
               STATEMENT OF CASH FLOWS
             </div>
             <div className="text-xs font-semibold text-slate-700">
-              For the year ended 31 December {maxYear}
+              {formatFyYearEndedNoComma(maxYear, companyProfile.financialYearEnd)}
             </div>
             <div className="text-[11px] text-slate-500 text-right font-mono pt-1">
               {unitCaption}
@@ -1282,13 +1295,13 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
         <div className="bg-white/96 backdrop-blur-md border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
           <div className="p-5 border-b border-slate-200 text-center space-y-1 bg-white">
             <h3 className="text-base font-extrabold text-slate-900 tracking-wide uppercase">
-              {companyProfile.companyName}
+              {safeCompanyName}
             </h3>
             <div className="text-sm font-bold text-emerald-800 uppercase tracking-wide">
               STATEMENT OF CHANGES IN EQUITY
             </div>
             <div className="text-xs font-semibold text-slate-700">
-              For the year ended 31 December {maxYear}
+              {formatFyYearEndedNoComma(maxYear, companyProfile.financialYearEnd)}
             </div>
             <div className="text-[11px] text-slate-500 text-right font-mono pt-1">
               {unitCaption}
@@ -1377,10 +1390,10 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
           <div className="bg-white/96 backdrop-blur-md border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
             <div className="p-5 border-b border-slate-200 text-center space-y-1 bg-white">
               <h3 className="text-base font-extrabold text-slate-900 tracking-wide uppercase">
-                {companyProfile.companyName}
+                {safeCompanyName}
               </h3>
               <div className="text-xs font-semibold text-slate-700">
-                For the Year ended 31 December {maxYear}
+                {formatFyYearEndedNoComma(maxYear, companyProfile.financialYearEnd)}
               </div>
               <div className="text-left text-xs font-bold text-emerald-800 pt-2">
                 1.00 FIXED ASSETS SCHEDULE
@@ -1393,12 +1406,12 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                   <thead>
                     <tr className="bg-slate-100 text-slate-900 border-b border-slate-300">
                       <th className="py-2 px-3 text-left border-r border-slate-300">Particulars</th>
-                      <th className="py-2 px-3 text-right border-r border-slate-300">Opening at 01.01.{d.year}</th>
+                      <th className="py-2 px-3 text-right border-r border-slate-300">Opening at {formatFyStartDateCode(d.year, companyProfile.financialYearEnd)}</th>
                       <th className="py-2 px-3 text-right border-r border-slate-300">Addition during the year</th>
-                      <th className="py-2 px-3 text-right border-r border-slate-300">Total at 31.12.{d.year}</th>
+                      <th className="py-2 px-3 text-right border-r border-slate-300">Total at {formatFyEndDateCode(d.year, companyProfile.financialYearEnd)}</th>
                       <th className="py-2 px-3 text-center border-r border-slate-300">Rate %</th>
                       <th className="py-2 px-3 text-right border-r border-slate-300">Depreciation charged for the year</th>
-                      <th className="py-2 px-3 text-right">W.D.V. at 31.12.{d.year}</th>
+                      <th className="py-2 px-3 text-right">W.D.V. at {formatFyEndDateCode(d.year, companyProfile.financialYearEnd)}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1593,6 +1606,8 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
   const maxYear = projData[0].year; // Descending order
   const minYear = projData[projData.length - 1].year;
   const rangeStr = minYear === maxYear ? `${maxYear}` : `${minYear}–${maxYear}`;
+  const safeCompanyName = companyProfile.companyName?.trim() || 'Untitled Entity';
+  const safeAddress = companyProfile.registeredAddress?.trim() || 'Registered Corporate Office';
   const amtLabel = companyProfile.reportingCurrency === '৳' ? 'Amount In Taka' : `Amount In ${companyProfile.reportingCurrency}`;
   const unitNote = companyProfile.reportingUnit !== 'Units' ? ` · ${companyProfile.reportingUnit}` : '';
   const projAsc = [...projData].sort((a, b) => a.year - b.year);
@@ -1723,9 +1738,9 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
       {(subTab === 'all' || subTab === 'bs') && (
         <div className="bg-white/96 backdrop-blur-md border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
           <div className="p-5 border-b border-slate-200 text-center space-y-1 bg-slate-50/75">
-            <h3 className="text-base font-extrabold text-slate-900 tracking-wide">{companyProfile.companyName}</h3>
+            <h3 className="text-base font-extrabold text-slate-900 tracking-wide">{safeCompanyName}</h3>
             <div className="text-sm font-bold text-sky-800">Statement of Financial Position</div>
-            <div className="text-xs text-slate-600">As at 31st December, {maxYear}(Projected)</div>
+            <div className="text-xs text-slate-600">{formatFyProjectedAsAt(maxYear, companyProfile.financialYearEnd)}</div>
           </div>
 
           <div className="overflow-x-auto">
@@ -1956,9 +1971,17 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                     <td className="py-2 px-3 text-center font-mono text-slate-600">7.00</td>
                     {projData.map(d => {
                       const custSum = visBsNcl.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0);
+                      const baseLt = Math.round((d.longTermLoan - custSum) * 100) / 100;
                       return (
                         <td key={d.year} className="py-2 px-3 text-right font-mono text-slate-900">
-                          {fmtCell(Math.round((d.longTermLoan - custSum) * 100) / 100)}
+                          {onUpdatePrimaryDriver ? (
+                            <InlineDriverCell
+                              value={baseLt}
+                              isEditMode={isEditMode}
+                              onSave={val => onUpdatePrimaryDriver(d.year, 'longTermBorrowings', Math.max(0, val))}
+                              title="Editable Year-Wise Input: Long-Term Borrowings"
+                            />
+                          ) : fmtCell(baseLt)}
                         </td>
                       );
                     })}
@@ -2076,9 +2099,9 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
       {(subTab === 'all' || subTab === 'pl') && (
         <div className="bg-white/96 backdrop-blur-md border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
           <div className="p-5 border-b border-slate-200 text-center space-y-1 bg-slate-50/75">
-            <h3 className="text-base font-extrabold text-slate-900 tracking-wide">{companyProfile.companyName}</h3>
+            <h3 className="text-base font-extrabold text-slate-900 tracking-wide">{safeCompanyName}</h3>
             <div className="text-sm font-bold text-sky-800">Statement of Profit or Loss &amp; Other Comprehensive Income</div>
-            <div className="text-xs text-slate-600">For the year ended 31st December, {maxYear}(Projected)</div>
+            <div className="text-xs text-slate-600">{formatFyProjectedYearEnded(maxYear, companyProfile.financialYearEnd)}</div>
           </div>
 
           <div className="overflow-x-auto">
@@ -2329,10 +2352,10 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
       {(subTab === 'all' || subTab === 'cf') && (
         <div className="bg-white/96 backdrop-blur-md border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
           <div className="p-5 border-b border-slate-200 text-center space-y-1 bg-slate-50/75">
-            <h3 className="text-base font-extrabold text-slate-900 tracking-wide">{companyProfile.companyName}</h3>
-            <div className="text-[11px] text-slate-600">{companyProfile.registeredAddress}</div>
+            <h3 className="text-base font-extrabold text-slate-900 tracking-wide">{safeCompanyName}</h3>
+            <div className="text-[11px] text-slate-600">{safeAddress}</div>
             <div className="text-sm font-bold text-sky-800">Statement Of Cash Flows</div>
-            <div className="text-xs text-slate-600">For the year ended 31st December, {maxYear}(Projected)</div>
+            <div className="text-xs text-slate-600">{formatFyProjectedYearEnded(maxYear, companyProfile.financialYearEnd)}</div>
           </div>
 
           <div className="overflow-x-auto">
@@ -2568,17 +2591,17 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
       {(subTab === 'all' || subTab === 'notes') && (
         <div className="bg-white/96 backdrop-blur-md border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
           <div className="p-5 border-b border-slate-200 text-center space-y-1 bg-slate-50/75">
-            <h3 className="text-base font-extrabold text-slate-900 tracking-wide">{companyProfile.companyName}</h3>
-            <div className="text-[11px] text-slate-600">{companyProfile.registeredAddress}</div>
+            <h3 className="text-base font-extrabold text-slate-900 tracking-wide">{safeCompanyName}</h3>
+            <div className="text-[11px] text-slate-600">{safeAddress}</div>
             <div className="text-sm font-bold text-sky-800">Notes to the Financial Statements</div>
-            <div className="text-xs text-slate-600">For the year ended 31st December, {maxYear}(Projected)</div>
+            <div className="text-xs text-slate-600">{formatFyProjectedYearEnded(maxYear, companyProfile.financialYearEnd)}</div>
           </div>
 
           <div className="p-5 space-y-4 text-xs border-b border-slate-200 text-slate-700">
             <div>
               <div className="font-bold text-slate-900">1 Reporting Entity:</div>
               <p className="text-slate-600 mt-1">
-                {companyProfile.companyName} is a {companyProfile.entityType.replace(/_/g, ' ')} entity and its office is situated at {companyProfile.registeredAddress}.
+                {safeCompanyName} is a {companyProfile.entityType.replace(/_/g, ' ')} entity and its office is situated at {safeAddress}.
               </p>
             </div>
             <div className="space-y-2">
@@ -2586,7 +2609,7 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
               <p><strong className="text-slate-900">2.1 Basis of Accounting:</strong> The Financial Statements have been prepared on a going concern basis using accrual method of accounting in accordance with {companyProfile.accountingFramework}.</p>
               <p><strong className="text-slate-900">2.2 Accounting Policies:</strong> Selected and applied consistently for significant transactions and events to all periods presented.</p>
               <p><strong className="text-slate-900">2.3 Property, Plant and Equipment:</strong> Stated at cost less accumulated depreciation. Depreciation is computed over estimated useful lives consistently.</p>
-              <p><strong className="text-slate-900">2.4 Reporting Period:</strong> Financial Statements cover the annual reporting cycle ending {companyProfile.financialYearEnd}.</p>
+              <p><strong className="text-slate-900">2.4 Reporting Period:</strong> Financial Statements cover the annual reporting cycle ending {normalizeFinancialYearEnd(companyProfile.financialYearEnd)}.</p>
               <p><strong className="text-slate-900">2.5 Reporting currency and level of precision:</strong> Figures represent {companyProfile.reportingCurrency} ({companyProfile.reportingUnit}) rounded cleanly.</p>
               <p><strong className="text-slate-900">2.6 Comparative Information:</strong> Disclosed for all selected years for numerical information and descriptive narratives.</p>
             </div>
@@ -2646,14 +2669,30 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                               <span>{row.label}</span>
                             </div>
                           </td>
-                          {row.values.map((v, yIdx) => (
-                            <td
-                              key={projData[yIdx]?.year ?? yIdx}
-                              className={`py-1.5 px-3 text-right font-mono ${row.isBold ? 'text-slate-900' : 'text-slate-800'}`}
-                            >
-                              {v === null ? '' : fmtCell(v)}
-                            </td>
-                          ))}
+                          {row.values.map((v, yIdx) => {
+                            const yrData = projData[yIdx];
+                            const custSum = yrData ? visBsNcl.reduce((s, ci) => s + getCustomItemYearValue(ci, yrData.year), 0) : 0;
+                            const baseLt = v !== null ? Math.round((v - custSum) * 100) / 100 : null;
+                            return (
+                              <td
+                                key={yrData?.year ?? yIdx}
+                                className={`py-1.5 px-3 text-right font-mono ${row.isBold ? 'text-slate-900' : 'text-slate-800'}`}
+                              >
+                                {v === null ? (
+                                  ''
+                                ) : row.noteNo === '7.00' && yrData && onUpdatePrimaryDriver ? (
+                                  <InlineDriverCell
+                                    value={baseLt ?? v}
+                                    isEditMode={isEditMode}
+                                    onSave={val => onUpdatePrimaryDriver(yrData.year, 'longTermBorrowings', Math.max(0, val))}
+                                    title="Editable Year-Wise Input: Long-Term Borrowings"
+                                  />
+                                ) : (
+                                  fmtCell(v)
+                                )}
+                              </td>
+                            );
+                          })}
                         </>
                       )}
                     </tr>
@@ -2669,10 +2708,10 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
       {(subTab === 'all' || subTab === 'sched') && (
         <div className="bg-white/96 backdrop-blur-md border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
           <div className="p-5 border-b border-slate-200 text-center space-y-1 bg-slate-50/75">
-            <h3 className="text-base font-extrabold text-slate-900 tracking-wide">{companyProfile.companyName}</h3>
-            <div className="text-[11px] text-slate-600">{companyProfile.registeredAddress}</div>
+            <h3 className="text-base font-extrabold text-slate-900 tracking-wide">{safeCompanyName}</h3>
+            <div className="text-[11px] text-slate-600">{safeAddress}</div>
             <div className="text-sm font-bold text-sky-800">Schedule of Property Plant &amp; Equipments</div>
-            <div className="text-xs text-slate-600">As at 31st December, {maxYear}(Projected)</div>
+            <div className="text-xs text-slate-600">{formatFyProjectedAsAt(maxYear, companyProfile.financialYearEnd)}</div>
           </div>
 
           <div className="p-4 space-y-4 overflow-x-auto">
@@ -2685,13 +2724,13 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                     <th colSpan={4} className="py-1.5 px-3 text-center border-r border-b border-slate-200">Cost</th>
                     <th rowSpan={2} className="py-2 px-2 text-center border-r border-slate-200 w-24">Rate of Dep. (%)</th>
                     <th rowSpan={2} className="py-2 px-3 text-right border-r border-slate-200">Depreciation Charged During the Year</th>
-                    <th rowSpan={2} className="py-2 px-3 text-right">W.D.V as on 31.12.{d.year}</th>
+                    <th rowSpan={2} className="py-2 px-3 text-right">W.D.V as on {formatFyEndDateCode(d.year, companyProfile.financialYearEnd)}</th>
                   </tr>
                   <tr className="bg-slate-50 text-slate-700 border-b border-slate-200 text-[11px]">
                     <th className="py-1.5 px-3 text-right border-r border-slate-200">Opening Balance</th>
                     <th className="py-1.5 px-3 text-right border-r border-slate-200">Addition During the Year</th>
                     <th className="py-1.5 px-3 text-right border-r border-slate-200">Disposals During the Year</th>
-                    <th className="py-1.5 px-3 text-right border-r border-slate-200">Balance as on 31.12.{d.year}</th>
+                    <th className="py-1.5 px-3 text-right border-r border-slate-200">Balance as on {formatFyEndDateCode(d.year, companyProfile.financialYearEnd)}</th>
                   </tr>
                 </thead>
                 <tbody className="text-slate-800">

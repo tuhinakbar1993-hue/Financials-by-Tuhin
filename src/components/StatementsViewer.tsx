@@ -39,6 +39,7 @@ import {
   YearDataInput,
   DebtServiceCoverageYear,
   ParsedRepaymentSchedule,
+  FinancialYearEndOption,
 } from '../types/financial';
 import {
   exportIncomeStatementExcel,
@@ -66,7 +67,12 @@ import {
   resolveFACategoriesForExport,
   hasAnyNonZeroValue,
 } from '../services/exportService';
-import { getCustomItemYearValue, FIXED_ASSET_CATEGORY_CONFIG_IDS, generateNotesToFinancialStatements } from '../services/financialEngine';
+import {
+  getCustomItemYearValue,
+  FIXED_ASSET_CATEGORY_CONFIG_IDS,
+  generateNotesToFinancialStatements,
+  normalizeFinancialYearEnd,
+} from '../services/financialEngine';
 import { PreviousFormatSuiteView, ProjectedFormatSuiteView } from './FormatStatementsViews';
 import { YearSelectorControl } from './YearSelectorControl';
 
@@ -108,6 +114,7 @@ interface StatementsViewerProps {
   isScheduleImplemented?: boolean;
   parsedSchedule?: ParsedRepaymentSchedule | null;
   onJumpToRepaymentSchedule?: () => void;
+  onChangeFinancialYearEnd?: (fyEnd: FinancialYearEndOption) => void;
 }
 
 export const StatementsViewer: React.FC<StatementsViewerProps> = ({
@@ -148,6 +155,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
   isScheduleImplemented = false,
   parsedSchedule = null,
   onJumpToRepaymentSchedule,
+  onChangeFinancialYearEnd,
 }) => {
   const [activeStatement, setActiveStatement] = useState<string>('cashFlow');
   const [yearViewMode, setYearViewMode] = useState<'all' | 'historical' | 'projected' | 'comparative5'>('all');
@@ -726,12 +734,34 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
               </span>
             </div>
             <p className="text-xs text-slate-600 mt-1">
-              {companyProfile.companyName} · {companyProfile.accountingFramework} · {companyProfile.reportingCurrency} in {companyProfile.reportingUnit}
+              {companyProfile.companyName?.trim() || 'Untitled Entity'} · {companyProfile.accountingFramework} · {companyProfile.reportingCurrency} in {companyProfile.reportingUnit} · FY End: {normalizeFinancialYearEnd(companyProfile.financialYearEnd)}
             </p>
           </div>
 
-          {/* Global Controls: Year Selector, Edit Mode Toggle & Export Strip */}
+          {/* Global Controls: Year Selector, FY End, Edit Mode Toggle & Export Strip */}
           <div className="flex flex-wrap items-center gap-2">
+            {onChangeFinancialYearEnd && (
+              <div
+                className="flex items-center bg-slate-100 border border-slate-300 rounded-lg p-0.5 text-[11px] font-semibold shrink-0"
+                title="Switch Financial Year-End between June 30 and December 31"
+              >
+                {(['June 30', 'December 31'] as FinancialYearEndOption[]).map(opt => {
+                  const active = normalizeFinancialYearEnd(companyProfile.financialYearEnd) === opt;
+                  return (
+                    <button
+                      key={opt}
+                      type="button"
+                      onClick={() => onChangeFinancialYearEnd(opt)}
+                      className={`px-2 py-1 rounded-md transition-colors whitespace-nowrap ${
+                        active ? 'bg-emerald-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      {opt}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
             {onJumpToRepaymentSchedule && (
               <button
                 type="button"
@@ -1356,7 +1386,7 @@ const StatementMasthead: React.FC<StatementMastheadProps> = ({
       <div>
         <div className="flex items-center gap-2 text-[11px] font-mono">
           <span className="uppercase tracking-wider text-emerald-700 font-bold">
-            {companyProfile?.companyName || 'Corporate Entity'}
+            {companyProfile?.companyName?.trim() || 'Untitled Entity'}
           </span>
           <span className="text-slate-300" aria-hidden="true">·</span>
           <span className="text-slate-600">
@@ -3162,7 +3192,7 @@ function DebtServiceCoverageSummaryPanel({
       <div className="p-4 border-b border-emerald-200 bg-emerald-50/75 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <span className="text-[10px] font-mono uppercase tracking-widest text-emerald-800 font-bold">
-            Implemented Repayment Schedule Coverage · {parsedSchedule?.metadata?.sourceFileName || companyProfile.companyName}
+            Implemented Repayment Schedule Coverage · {parsedSchedule?.metadata?.sourceFileName || companyProfile.companyName?.trim() || 'Untitled Entity'}
           </span>
           <h4 className="text-sm font-bold text-slate-900 mt-0.5">
             Debt Servicing &amp; Repayment Capacity Verification (DSCR)

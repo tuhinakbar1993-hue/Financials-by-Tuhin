@@ -1,7 +1,14 @@
-import React, { useState } from 'react';
-import { X, Building2, Globe, Check } from 'lucide-react';
-import { CompanyProfile, EntityType, AccountingFramework, CurrencySymbol, MultiplierUnit } from '../types/financial';
-import { COMPANY_TYPE_TEMPLATES } from '../services/financialEngine';
+import React, { useState, useEffect } from 'react';
+import { X, Building2, Check, Calendar } from 'lucide-react';
+import {
+  CompanyProfile,
+  EntityType,
+  AccountingFramework,
+  CurrencySymbol,
+  MultiplierUnit,
+  FinancialYearEndOption,
+} from '../types/financial';
+import { COMPANY_TYPE_TEMPLATES, normalizeFinancialYearEnd } from '../services/financialEngine';
 
 interface CompanyProfileModalProps {
   isOpen: boolean;
@@ -18,11 +25,22 @@ export const CompanyProfileModal: React.FC<CompanyProfileModalProps> = ({
 }) => {
   const [formData, setFormData] = useState<CompanyProfile>(profile);
 
+  useEffect(() => {
+    if (isOpen) {
+      setFormData(profile);
+    }
+  }, [profile, isOpen]);
+
   if (!isOpen) return null;
+
+  const activeFyEnd = normalizeFinancialYearEnd(formData.financialYearEnd);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSave(formData);
+    onSave({
+      ...formData,
+      financialYearEnd: normalizeFinancialYearEnd(formData.financialYearEnd),
+    });
     onClose();
   };
 
@@ -50,13 +68,13 @@ export const CompanyProfileModal: React.FC<CompanyProfileModalProps> = ({
         <form onSubmit={handleSubmit} className="p-6 overflow-y-auto space-y-5 text-xs text-slate-700">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-1">
-              <label className="font-semibold text-slate-800">Company Legal Name *</label>
+              <label className="font-semibold text-slate-800">Company Legal Name</label>
               <input
                 type="text"
                 value={formData.companyName}
                 onChange={(e) => setFormData({ ...formData, companyName: e.target.value })}
+                placeholder="Enter company legal name..."
                 className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-600"
-                required
               />
             </div>
 
@@ -91,13 +109,13 @@ export const CompanyProfileModal: React.FC<CompanyProfileModalProps> = ({
             </div>
 
             <div className="sm:col-span-2 space-y-1">
-              <label className="font-semibold text-slate-800">Registered Corporate Address *</label>
+              <label className="font-semibold text-slate-800">Registered Corporate Address</label>
               <input
                 type="text"
                 value={formData.registeredAddress}
                 onChange={(e) => setFormData({ ...formData, registeredAddress: e.target.value })}
+                placeholder="Enter registered corporate address..."
                 className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-600"
-                required
               />
             </div>
 
@@ -161,15 +179,36 @@ export const CompanyProfileModal: React.FC<CompanyProfileModalProps> = ({
               </select>
             </div>
 
-            <div className="space-y-1">
-              <label className="font-semibold text-slate-800">Financial Year End</label>
-              <input
-                type="text"
-                value={formData.financialYearEnd}
-                onChange={(e) => setFormData({ ...formData, financialYearEnd: e.target.value })}
-                className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-600"
-                placeholder="e.g. 31 December"
-              />
+            <div className="space-y-1.5">
+              <label className="font-semibold text-slate-800 flex items-center gap-1.5">
+                <Calendar className="w-3.5 h-3.5 text-emerald-600" />
+                Financial Year End *
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                {(
+                  [
+                    { value: 'June 30', sub: '30.06.YYYY · Jul 1 – Jun 30' },
+                    { value: 'December 31', sub: '31.12.YYYY · Jan 1 – Dec 31' },
+                  ] as { value: FinancialYearEndOption; sub: string }[]
+                ).map((opt) => {
+                  const selected = activeFyEnd === opt.value;
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setFormData({ ...formData, financialYearEnd: opt.value })}
+                      className={`text-left px-3 py-2 rounded-lg border transition-all ${
+                        selected
+                          ? 'bg-emerald-50 border-emerald-500 text-emerald-900 ring-1 ring-emerald-500/30 shadow-xs'
+                          : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50 hover:border-slate-400'
+                      }`}
+                    >
+                      <div className="font-bold text-xs">{opt.value}</div>
+                      <div className="text-[10px] font-mono text-slate-500 mt-0.5">{opt.sub}</div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             <div className="space-y-1">

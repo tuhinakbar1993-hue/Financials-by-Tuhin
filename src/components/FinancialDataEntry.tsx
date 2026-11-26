@@ -30,6 +30,7 @@ import {
   ParsedRepaymentSchedule,
   RepaymentScheduleSnapshot,
   DebtServiceCoverageYear,
+  FinancialYearEndOption,
 } from '../types/financial';
 import {
   calculateFinancialRatios,
@@ -37,6 +38,7 @@ import {
   PRIMARY_DRIVERS_METADATA,
   calculateDriverAutoFillSeries,
   ImplementScheduleResult,
+  normalizeFinancialYearEnd,
 } from '../services/financialEngine';
 import { YearSelectorControl } from './YearSelectorControl';
 import { RepaymentScheduleStudio } from './RepaymentScheduleStudio';
@@ -74,6 +76,8 @@ interface FinancialDataEntryProps {
   onRevertScheduleSnapshot?: () => void;
   onUnlockScheduleYear?: (year: number) => void;
   initialShowScheduleStudio?: boolean;
+  onChangeFinancialYearEnd?: (fyEnd: FinancialYearEndOption) => void;
+  caseResetKey?: number;
 }
 
 export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
@@ -108,6 +112,8 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
   onRevertScheduleSnapshot,
   onUnlockScheduleYear,
   initialShowScheduleStudio = true,
+  onChangeFinancialYearEnd,
+  caseResetKey = 0,
 }) => {
   const [viewMode, setViewMode] = useState<'grid' | 'single'>('grid');
   const [selectedYear, setSelectedYear] = useState<number>(yearsData[0]?.year || 2023);
@@ -118,11 +124,23 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
   const [activeModalDriver, setActiveModalDriver] = useState<PrimaryDriverKey | null>(null);
   const [activeNotification, setActiveNotification] = useState<string | null>(null);
 
+  const currentFyEnd = normalizeFinancialYearEnd(companyProfile.financialYearEnd);
+
   useEffect(() => {
     if (initialShowScheduleStudio) {
       setShowScheduleStudio(true);
     }
   }, [initialShowScheduleStudio]);
+
+  useEffect(() => {
+    if (caseResetKey > 0) {
+      setCustomRates({});
+      setCustomBaseValues({});
+      setActiveNotification(null);
+      setActiveModalDriver(null);
+      setShowScheduleStudio(initialShowScheduleStudio);
+    }
+  }, [caseResetKey, initialShowScheduleStudio]);
 
   // Independent base-year selections for each of the 6 drivers (initialized to 2024 or first year)
   const [selectedBaseYears, setSelectedBaseYears] = useState<Record<PrimaryDriverKey, number>>({
@@ -372,6 +390,27 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
                 <Calendar className="w-3.5 h-3.5" />
                 Select Years ({histYearsCount}H+{projYearsCount}P)
               </button>
+            )}
+
+            {/* Financial Year-End Selector */}
+            {onChangeFinancialYearEnd && (
+              <div className="flex items-center bg-slate-100/95 p-1 rounded-xl border border-slate-200 text-xs">
+                <span className="text-[11px] font-semibold text-slate-500 px-2 whitespace-nowrap">FY End:</span>
+                {(['June 30', 'December 31'] as FinancialYearEndOption[]).map((opt) => (
+                  <button
+                    key={opt}
+                    type="button"
+                    onClick={() => onChangeFinancialYearEnd(opt)}
+                    className={`px-2.5 py-1 rounded-lg font-semibold transition-all whitespace-nowrap ${
+                      currentFyEnd === opt
+                        ? 'bg-emerald-600 text-white shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-white/70'
+                    }`}
+                  >
+                    {opt}
+                  </button>
+                ))}
+              </div>
             )}
 
             {/* Auto-Fill Hub Toggle */}
@@ -999,6 +1038,70 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
                       </tr>
                     );
                   })}
+
+                  {/* Dedicated Separate Year-Wise Editable Input: Long-Term Borrowings */}
+                  <tr className="bg-amber-50/40 hover:bg-amber-50/75 transition-colors border-t-2 border-amber-200/80">
+                    <td className="py-3.5 px-4 font-sans sticky left-0 bg-amber-50/95 z-10 border-r border-amber-200/90 align-top">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-bold text-slate-900 text-xs">
+                              Long-Term Borrowings
+                            </span>
+                            <span className="text-[9px] font-semibold bg-amber-100 text-amber-800 border border-amber-300 px-1.5 py-0.5 rounded">
+                              Year-Wise BS Input
+                            </span>
+                          </div>
+                          <span className="text-[11px] text-slate-600 block mt-0.5 leading-snug">
+                            Separate year-wise term debt balance reflected directly across Balance Sheet, Notes, Ratios &amp; Exports.
+                          </span>
+                        </div>
+                      </div>
+                    </td>
+
+                    {yearsData.map(y => {
+                      const rawLt = y.longTermBorrowings ?? 0;
+                      const isCustomLt = Boolean(y.hasCustomLongTermBorrowings);
+                      return (
+                        <td
+                          key={`ltb-${y.year}`}
+                          className={`py-2.5 px-3 text-right align-top border-l border-amber-200/60 ${
+                            isCustomLt ? 'bg-amber-100/45' : ''
+                          }`}
+                        >
+                          <div className="space-y-1">
+                            <div className="relative">
+                              <input
+                                type="number"
+                                step="any"
+                                min={0}
+                                value={rawLt}
+                                onChange={(e) => {
+                                  const nextVal = Math.max(0, Number(e.target.value) || 0);
+                                  onUpdatePrimaryDriver(y.year, 'longTermBorrowings', nextVal);
+                                }}
+                                aria-label={`Long-Term Borrowings ${y.year}`}
+                                className={`w-full text-right rounded-lg px-2.5 py-1.5 font-mono text-xs tabular-nums transition-all ${
+                                  isCustomLt
+                                    ? 'bg-white border-2 border-amber-500 text-amber-950 font-bold shadow-xs focus:outline-none focus:ring-1 focus:ring-amber-500'
+                                    : 'bg-white border border-slate-300 hover:border-amber-400 focus:border-amber-600 focus:ring-1 focus:ring-amber-500 text-slate-900 font-semibold'
+                                }`}
+                              />
+                              <span
+                                className={`absolute -top-1.5 right-1.5 text-[8px] px-1 rounded pointer-events-none font-semibold border ${
+                                  isCustomLt
+                                    ? 'bg-amber-100 text-amber-900 border-amber-300'
+                                    : 'bg-slate-100 text-slate-700 border-slate-300'
+                                }`}
+                              >
+                                {isCustomLt ? 'Custom' : 'Editable'}
+                              </span>
+                            </div>
+                          </div>
+                        </td>
+                      );
+                    })}
+                  </tr>
                 </tbody>
               </table>
             </div>
@@ -1650,6 +1753,44 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
                 </div>
               );
             })}
+          </div>
+
+          {/* Dedicated Separate Year-Wise Card: Long-Term Borrowings */}
+          <div className="bg-amber-50/70 backdrop-blur-md border border-amber-300/90 rounded-2xl p-5 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="space-y-1 max-w-2xl">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-slate-900">Long-Term Borrowings ({currentYearData.year})</span>
+                <span className="text-[10px] font-semibold bg-amber-100 text-amber-900 border border-amber-300 px-2 py-0.5 rounded-md">
+                  Year-Wise User Input
+                </span>
+                {currentYearData.hasCustomLongTermBorrowings && (
+                  <span className="text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 px-2 py-0.5 rounded-md">
+                    Custom Entered
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] text-slate-600">
+                Edit Long-Term Borrowings independently for each financial year. Updates automatically synchronize with Statement of Financial Position, Notes (Note 10 / 7.00), Debt-to-Equity &amp; Leverage Ratios, and all Excel/Word/PDF exports.
+              </p>
+            </div>
+            <div className="w-full md:w-64 space-y-1">
+              <label className="text-[11px] text-slate-700 font-medium flex items-center justify-between">
+                <span>Input Value ({companyProfile.reportingCurrency})</span>
+                <span className="text-[10px] font-mono text-amber-800 font-semibold">Direct Editable</span>
+              </label>
+              <input
+                type="number"
+                step="any"
+                min={0}
+                value={currentYearData.longTermBorrowings ?? 0}
+                onChange={(e) => {
+                  const nextVal = Math.max(0, Number(e.target.value) || 0);
+                  handleDriverChange(currentYearData.year, 'longTermBorrowings', nextVal);
+                }}
+                aria-label={`Long-Term Borrowings Inspector ${currentYearData.year}`}
+                className="w-full text-base font-bold rounded-xl px-3.5 py-2 font-mono tabular-nums bg-white border-2 border-amber-400 focus:border-amber-600 focus:ring-1 focus:ring-amber-500 text-slate-900"
+              />
+            </div>
           </div>
 
           {/* Single-Year Dependent Statements Preview Cards */}

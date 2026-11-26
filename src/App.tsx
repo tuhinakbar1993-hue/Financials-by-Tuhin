@@ -42,6 +42,9 @@ import {
   ImplementScheduleResult,
   STATEMENT_CONFIG_TO_OVERRIDE_KEY,
   FIXED_ASSET_CATEGORY_CONFIG_IDS,
+  createCleanCaseCompanyProfile,
+  createZeroHistoricalInputs,
+  normalizeFinancialYearEnd,
 } from './services/financialEngine';
 import { rebuildScheduleSummaries } from './services/repaymentScheduleParser';
 import {
@@ -73,6 +76,7 @@ import {
   ParsedRepaymentSchedule,
   RepaymentScheduleSnapshot,
   PreviousFormatYearData,
+  FinancialYearEndOption,
 } from './types/financial';
 
 export default function App() {
@@ -95,9 +99,11 @@ export default function App() {
   const [labelOverrides, setLabelOverrides] = useState<StatementLabelOverrides>({});
   const [noteEdits, setNoteEdits] = useState<Record<number, { title?: string; textDescription?: string }>>({});
 
-  // Modals state
+  // Modals & New Case Reset state
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isDeveloperModalOpen, setIsDeveloperModalOpen] = useState(false);
+  const [isNewCaseModalOpen, setIsNewCaseModalOpen] = useState(false);
+  const [caseResetKey, setCaseResetKey] = useState(0);
 
   // Repayment Schedule Upload, Implementation & Pre-Schedule Snapshot State
   const [parsedSchedule, setParsedSchedule] = useState<ParsedRepaymentSchedule | null>(null);
@@ -132,7 +138,7 @@ export default function App() {
   }, [assumptions, historicalYearsStore]);
 
   // Derived: Generate Projected Years based on user's selected projected years / horizon
-  const baseYearInput = activeHistoricalInputs[activeHistoricalInputs.length - 1] || INITIAL_HISTORICAL_INPUTS[INITIAL_HISTORICAL_INPUTS.length - 1];
+  const baseYearInput = activeHistoricalInputs[activeHistoricalInputs.length - 1] || createZeroHistoricalInputs([2025])[0];
   const generatedProjected = useMemo(() => {
     const raw = generateProjectedYears(baseYearInput, assumptions);
     return raw.map((y, idx) => {
@@ -215,9 +221,10 @@ export default function App() {
       cashFlowStatements,
       equityStatements,
       fixedAssetsSchedule,
-      calcOptions
+      calcOptions,
+      companyProfile.financialYearEnd
     );
-  }, [allYearsInputs, incomeStatements, balanceSheets, cashFlowStatements, equityStatements, fixedAssetsSchedule, calcOptions]);
+  }, [allYearsInputs, incomeStatements, balanceSheets, cashFlowStatements, equityStatements, fixedAssetsSchedule, calcOptions, companyProfile.financialYearEnd]);
 
   const previousComparativePairs = useMemo(() => {
     return buildPreviousComparativePairs(previousFormatData);
@@ -310,6 +317,89 @@ export default function App() {
       setParsedSchedule(rebuilt);
     }
   }, [companyProfile.financialYearEnd, modelYearsKey, parsedSchedule]);
+
+  // Switch Financial Year-End ('June 30' | 'December 31') and re-sync implemented schedule if needed
+  const syncRepaymentScheduleForFyEnd = useCallback(
+    (nextFyEnd: FinancialYearEndOption) => {
+      if (!parsedSchedule || !parsedSchedule.isValid) return;
+      const modelYears = allYearsInputs.map(y => y.year);
+      const rebuilt = rebuildScheduleSummaries(
+        parsedSchedule.rows,
+        parsedSchedule.metadata,
+        nextFyEnd,
+        modelYears
+      );
+      setParsedSchedule(rebuilt);
+
+      if (isScheduleImplemented && rebuilt.isValid) {
+        const unlockRecord = (rec: Record<number, YearDataInput>) => {
+          const out: Record<number, YearDataInput> = {};
+          for (const [k, item] of Object.entries(rec)) {
+            out[Number(k)] = {
+              ...item,
+              isScheduleLocked: false,
+              schedulePrincipalLocked: undefined,
+              scheduleFinanceCostLocked: undefined,
+            };
+          }
+          return out;
+        };
+
+        const res = implementRepaymentScheduleIntoModel({
+          schedule: rebuilt,
+          historicalYearsStore: unlockRecord(historicalYearsStore),
+          customProjectedOverrides: unlockRecord(customProjectedOverrides),
+          assumptions,
+          autoIncludeScheduleYears: true,
+          alignHistoricalScale: false,
+        });
+        setHistoricalYearsStore(res.historicalYearsStore);
+        setCustomProjectedOverrides(res.customProjectedOverrides);
+        setAssumptions(res.assumptions);
+        setLastImplementationResult(res);
+
+        const coveredSet = new Set(res.coveredYears);
+        setCellOverrides(prev => {
+          const next: StatementCellOverrides = {};
+          for (const [k, yrMap] of Object.entries(prev)) {
+            const filteredYrMap: Record<number, number> = {};
+            for (const [yrStr, val] of Object.entries(yrMap)) {
+              if (!coveredSet.has(Number(yrStr))) {
+                filteredYrMap[Number(yrStr)] = val;
+              }
+            }
+            if (Object.keys(filteredYrMap).length > 0) {
+              next[k] = filteredYrMap;
+            }
+          }
+          return next;
+        });
+      }
+    },
+    [parsedSchedule, allYearsInputs, isScheduleImplemented, historicalYearsStore, customProjectedOverrides, assumptions]
+  );
+
+  const handleChangeFinancialYearEnd = useCallback(
+    (nextFyEnd: FinancialYearEndOption) => {
+      const normalized = normalizeFinancialYearEnd(nextFyEnd);
+      if (normalizeFinancialYearEnd(companyProfile.financialYearEnd) === normalized) return;
+      setCompanyProfile(prev => ({ ...prev, financialYearEnd: normalized }));
+      syncRepaymentScheduleForFyEnd(normalized);
+    },
+    [companyProfile.financialYearEnd, syncRepaymentScheduleForFyEnd]
+  );
+
+  const handleSaveCompanyProfile = useCallback(
+    (updatedProfile: CompanyProfile) => {
+      const normalizedFy = normalizeFinancialYearEnd(updatedProfile.financialYearEnd);
+      const fyChanged = normalizeFinancialYearEnd(companyProfile.financialYearEnd) !== normalizedFy;
+      setCompanyProfile({ ...updatedProfile, financialYearEnd: normalizedFy });
+      if (fyChanged) {
+        syncRepaymentScheduleForFyEnd(normalizedFy);
+      }
+    },
+    [companyProfile.financialYearEnd, syncRepaymentScheduleForFyEnd]
+  );
 
   // Unified Assumptions Updater (keeps Horizon slider & selectedProjectedYears synchronized)
   const handleUpdateAssumptions = (updated: ProjectionAssumptions) => {
@@ -558,7 +648,7 @@ export default function App() {
     });
   };
 
-  // Handler: Update Any of the 6 Primary Financial Drivers (Interconnected Calculation Engine)
+  // Handler: Update Any of the 6 Primary Financial Drivers or Long-Term Borrowings (Interconnected Calculation Engine)
   const handleUpdatePrimaryDriver = (year: number, driver: keyof YearDataInput, val: number) => {
     const isPrimaryDriver = (
       driver === 'salesRevenue' ||
@@ -600,7 +690,28 @@ export default function App() {
       fixedAssetsGross: driver === 'fixedAssetsGross' ? val : currentYearObj.fixedAssetsGross,
     };
 
-    const recomputedYear = deriveDependentFinancials(updatedDrivers, prevYearObj, assumptions, currentYearObj);
+    const existingForCompute: YearDataInput =
+      driver === 'longTermBorrowings'
+        ? {
+            ...currentYearObj,
+            longTermBorrowings: Math.max(0, val),
+            hasCustomLongTermBorrowings: true,
+          }
+        : currentYearObj;
+
+    const recomputedYear = deriveDependentFinancials(updatedDrivers, prevYearObj, assumptions, existingForCompute);
+
+    if (driver === 'longTermBorrowings') {
+      setCellOverrides(prev => {
+        if (prev.bs_longTermBorrowings?.[year] === undefined) return prev;
+        const next = { ...prev };
+        const yrCopy = { ...next.bs_longTermBorrowings };
+        delete yrCopy[year];
+        if (Object.keys(yrCopy).length === 0) delete next.bs_longTermBorrowings;
+        else next.bs_longTermBorrowings = yrCopy;
+        return next;
+      });
+    }
 
     if (!currentYearObj.isProjected) {
       setHistoricalYearsStore(prev => ({
@@ -791,7 +902,8 @@ export default function App() {
     if (targetField && yearObj) {
       const updatedYear: YearDataInput = {
         ...yearObj,
-        [targetField]: field === 'dividendsPaid' ? Math.abs(val) : val,
+        [targetField]: field === 'dividendsPaid' ? Math.abs(val) : targetField === 'longTermBorrowings' ? Math.max(0, val) : val,
+        ...(targetField === 'longTermBorrowings' ? { hasCustomLongTermBorrowings: true } : {}),
       };
 
       if (targetField === 'repaymentOfBorrowings') {
@@ -960,6 +1072,36 @@ export default function App() {
     );
   };
 
+  // Handler: New Case Reset (clears all case-specific inputs, schedule, overrides, and generated projections while preserving templates & configurations)
+  const handleConfirmNewCase = () => {
+    const cleanHistYears = [
+      ...(DEFAULT_PROJECTION_ASSUMPTIONS.selectedHistoricalYears || INITIAL_HISTORICAL_INPUTS.map(h => h.year)),
+    ].sort((a, b) => a - b);
+    setCompanyProfile(createCleanCaseCompanyProfile(companyProfile.financialYearEnd));
+    setAssumptions({ ...DEFAULT_PROJECTION_ASSUMPTIONS });
+    setInputMode('manual');
+    setHistoricalYearsStore(
+      Object.fromEntries(createZeroHistoricalInputs(cleanHistYears).map(item => [item.year, item]))
+    );
+    setCustomProjectedOverrides({});
+    setAutoFillConfigs({});
+    setCellOverrides({});
+    setLabelOverrides({});
+    setNoteEdits({});
+    setParsedSchedule(null);
+    setScheduleSnapshot(null);
+    setIsScheduleImplemented(false);
+    setLastImplementationResult(null);
+    setOpenScheduleStudio(false);
+    setStatementConfig(prev =>
+      prev.map(item => (item.customValues ? { ...item, customValues: {} } : item))
+    );
+    setIsProfileModalOpen(false);
+    setIsNewCaseModalOpen(false);
+    setCaseResetKey(prev => prev + 1);
+    setActiveTab('data-entry');
+  };
+
   const exportSyncOptions = useMemo(
     () => ({ statementConfig, labelOverrides, cellOverrides }),
     [statementConfig, labelOverrides, cellOverrides]
@@ -1095,6 +1237,8 @@ export default function App() {
           onExportProjectedExcel={handleExportProjectedExcel}
           onExportProjectedWord={handleExportProjectedWord}
           onExportProjectedPdf={handleExportProjectedPdf}
+          onStartNewCase={() => setIsNewCaseModalOpen(true)}
+          onChangeFinancialYearEnd={handleChangeFinancialYearEnd}
         />
 
         {/* Main Workspace Body */}
@@ -1153,15 +1297,19 @@ export default function App() {
               isScheduleImplemented={isScheduleImplemented}
               parsedSchedule={parsedSchedule}
               onJumpToRepaymentSchedule={handleJumpToRepaymentSchedule}
+              onChangeFinancialYearEnd={handleChangeFinancialYearEnd}
             />
           )}
 
           {activeTab === 'data-entry' && (
             <FinancialDataEntry
+              key={caseResetKey}
               yearsData={allYearsInputs}
               onUpdatePrimaryDriver={handleUpdatePrimaryDriver}
               onUpdateYearData={handleUpdateYearData}
               companyProfile={companyProfile}
+              onChangeFinancialYearEnd={handleChangeFinancialYearEnd}
+              caseResetKey={caseResetKey}
               assumptions={assumptions}
               onUpdateAssumptions={handleUpdateAssumptions}
               inputMode={inputMode}
@@ -1236,13 +1384,52 @@ export default function App() {
           isOpen={isProfileModalOpen}
           onClose={() => setIsProfileModalOpen(false)}
           profile={companyProfile}
-          onSave={setCompanyProfile}
+          onSave={handleSaveCompanyProfile}
         />
 
         <DeveloperProfileModal
           isOpen={isDeveloperModalOpen}
           onClose={() => setIsDeveloperModalOpen(false)}
         />
+
+        {isNewCaseModalOpen && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/55 backdrop-blur-xs p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="new-case-modal-title"
+          >
+            <div className="bg-white border border-slate-200 rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-4">
+              <div className="space-y-1.5">
+                <h3 id="new-case-modal-title" className="text-base font-bold text-slate-900">
+                  Start a New Case?
+                </h3>
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  This will clear all entered entity details, year-wise financial figures, uploaded repayment schedules, custom overrides, and generated projections so you can prepare a completely clean case.
+                </p>
+                <p className="text-[11px] text-emerald-700 font-medium bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+                  Default statement formats, templates, configurations, and calculation engines will remain preserved.
+                </p>
+              </div>
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setIsNewCaseModalOpen(false)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmNewCase}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-xs transition-colors"
+                >
+                  Clear &amp; Start New Case
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Quiet Professional Footer */}
         <footer className="border-t border-slate-200/90 bg-white/80 backdrop-blur-md py-5 text-xs text-slate-600 mt-8">

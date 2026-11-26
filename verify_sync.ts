@@ -722,6 +722,142 @@ for (let i = 3; i < reschedOrdered.length; i++) {
   }
 }
 
+// 8. Enhancement Verifications:
+// (A) Two Financial Year-End Options ('June 30' & 'December 31')
+const juneProfile = { ...engine.INITIAL_COMPANY_PROFILE, financialYearEnd: 'June 30' as const };
+const decProfile = { ...engine.INITIAL_COMPANY_PROFILE, financialYearEnd: 'December 31' as const };
+const junePrev = engine.buildPreviousFormatData(
+  baseline.allInputs,
+  baseline.inc,
+  baseline.bs,
+  baseline.cf,
+  baseline.eq,
+  baseline.fa,
+  undefined,
+  'June 30'
+);
+assert(junePrev.every(p => p.dateLabel.startsWith('30.06.')), 'June 30 Previous Format must use 30.06.YYYY date labels');
+const decPrev = engine.buildPreviousFormatData(
+  baseline.allInputs,
+  baseline.inc,
+  baseline.bs,
+  baseline.cf,
+  baseline.eq,
+  baseline.fa,
+  undefined,
+  'December 31'
+);
+assert(decPrev.every(p => p.dateLabel.startsWith('31.12.')), 'December 31 Previous Format must use 31.12.YYYY date labels');
+
+const { rebuildScheduleSummaries } = await import('./src/services/repaymentScheduleParser');
+const sampleRows = [
+  { id: 'r1', installmentNo: 1, eventType: 'Installment', emiDateRaw: '15/09/2025', emiDateISO: '2025-09-15', financialYear: 2025, instPrincipal: 100000, instProfit: 50000, gestationPayment: 0, overdueGestation: 0, overdueProfit: 0, balance: 900000, totalInstallment: 150000 },
+  { id: 'r2', installmentNo: 2, eventType: 'Installment', emiDateRaw: '15/05/2026', emiDateISO: '2026-05-15', financialYear: 2026, instPrincipal: 105000, instProfit: 45000, gestationPayment: 0, overdueGestation: 0, overdueProfit: 0, balance: 795000, totalInstallment: 150000 },
+];
+const sampleMeta = {
+  sourceFileName: 'test_schedule.pdf',
+  parserMethod: 'pdf-text' as const,
+  investmentMade: 1000000,
+  disbursementDate: '01/07/2025',
+  firstInstallmentDate: '15/09/2025',
+  expiryDate: '15/05/2026',
+  interval: 'Monthly',
+  numberOfInstallments: 2,
+  dateFormatDetected: 'DD/MM/YYYY' as const,
+  uploadedAt: '2026-01-01T00:00:00.000Z',
+};
+const juneRebuilt = rebuildScheduleSummaries(sampleRows, sampleMeta, 'June 30', [2025, 2026]);
+assert.equal(juneRebuilt.annualSummaries.length, 1, 'June 30 FY should combine Sep 2025 and May 2026 into FY 2026');
+assert.equal(juneRebuilt.annualSummaries[0].financialYear, 2026);
+assert.equal(juneRebuilt.annualSummaries[0].totalPrincipal, 205000);
+const decRebuilt = rebuildScheduleSummaries(sampleRows, sampleMeta, 'December 31', [2025, 2026]);
+assert.equal(decRebuilt.annualSummaries.length, 2, 'December 31 FY should separate Sep 2025 (FY 2025) and May 2026 (FY 2026)');
+
+const juneNotes = engine.generateNotesToFinancialStatements(
+  juneProfile,
+  baseline.allInputs.map(y => y.year),
+  baseline.inc,
+  baseline.bs,
+  baseline.cf,
+  baseline.fa
+);
+capturedWorkbooks.length = 0;
+exportsMod.exportPreviousFinancialsExcel(juneProfile, junePrev.slice(0, 2), juneNotes);
+exportsMod.exportProjectedFinancialsExcel(juneProfile, baseline.proj);
+exportsMod.exportCompletePackageExcel(juneProfile, baseline.inc, baseline.bs, baseline.cf, baseline.eq, baseline.fa, juneNotes, 'june_complete.xlsx');
+for (const { filename, wb } of capturedWorkbooks) {
+  validateFormulaCells(wb);
+  const allSheetsText = wb.SheetNames.map(n => xlsxCjs.utils.sheet_to_csv(wb.Sheets[n])).join('\n');
+  assert(!allSheetsText.includes('31 December') && !allSheetsText.includes('31st December') && !allSheetsText.includes('31.12.'), `June 30 export ${filename} leaked December dates`);
+  assert(allSheetsText.includes('June') || allSheetsText.includes('30.06.'), `June 30 export ${filename} missing June 30 dates`);
+}
+
+// (B) Year-Wise Editable Long-Term Borrowings (Historical + Projected + Zero value)
+const ltModifiedInputs = baseline.allInputs.map((y, idx) => {
+  if (y.year === 2024) {
+    return engine.deriveDependentFinancials(
+      y,
+      idx > 0 ? baseline.allInputs[idx - 1] : null,
+      engine.DEFAULT_PROJECTION_ASSUMPTIONS,
+      { ...y, longTermBorrowings: 1234567, hasCustomLongTermBorrowings: true }
+    );
+  }
+  if (y.year === 2027) {
+    return engine.deriveDependentFinancials(
+      y,
+      baseline.allInputs[idx - 1],
+      engine.DEFAULT_PROJECTION_ASSUMPTIONS,
+      { ...y, longTermBorrowings: 0, hasCustomLongTermBorrowings: true }
+    );
+  }
+  return y;
+});
+const ltFa = engine.calculateScheduleOfFixedAssets(ltModifiedInputs);
+const ltInc = engine.calculateIncomeStatement(ltModifiedInputs, ltFa);
+const ltCf = engine.calculateCashFlowStatement(ltModifiedInputs, ltInc, ltFa);
+const ltEq = engine.calculateEquityStatement(ltModifiedInputs, ltInc);
+const ltBs = engine.calculateBalanceSheet(ltModifiedInputs, ltEq, ltFa, ltCf, undefined, ltInc);
+const ltProj = engine.buildProjectedFormatData(ltModifiedInputs, ltInc, ltBs, ltCf, ltEq, ltFa);
+const ltNotes = engine.generateNotesToFinancialStatements(decProfile, ltModifiedInputs.map(y => y.year), ltInc, ltBs, ltCf, ltFa);
+const ltQuantNotes = engine.buildProjectedQuantNoteRows(ltProj);
+assert.equal(ltBs.find(b => b.year === 2024)!.longTermBorrowings, 1234567, 'Historical 2024 Long-Term Borrowings must reflect custom user input');
+assert.equal(ltBs.find(b => b.year === 2027)!.longTermBorrowings, 0, 'Projected 2027 Long-Term Borrowings must reflect zero custom input');
+assert.equal(ltProj.find(p => p.year === 2027)!.longTermLoan, 0, 'Projected Format 2027 longTermLoan must reflect 0');
+const ltNote7Idx = ltProj.findIndex(p => p.year === 2027);
+assert.equal(ltQuantNotes.find(r => r.noteNo === '7.00')!.values[ltNote7Idx], 0, 'Projected Quant Note 7.00 must match user-edited LT borrowings');
+ltBs.forEach(b => assert(Math.abs(b.balanceCheck) < 0.05, `LT-edited BS unbalanced in ${b.year}: ${b.balanceCheck}`));
+ltCf.forEach(c => assert.equal(c.reconciliationStatus, 'RECONCILED', `LT-edited CF unreconciled in ${c.year}`));
+assert(ltNotes.length > 0, 'Notes generation succeeded after LT borrowings edit');
+
+// (C) New Case Clean Reset Integrity (zeroed financial data + empty company profile)
+const cleanProfile = engine.createCleanCaseCompanyProfile('June 30');
+const cleanHist = engine.createZeroHistoricalInputs([2023, 2024, 2025]);
+const cleanProj = engine.generateProjectedYears(cleanHist[cleanHist.length - 1], engine.DEFAULT_PROJECTION_ASSUMPTIONS);
+const cleanAll = [...cleanHist, ...cleanProj];
+cleanAll.forEach(y => {
+  assert.equal(y.salesRevenue, 0, `New Case year ${y.year} salesRevenue must start at 0`);
+  assert.equal(y.longTermBorrowings, 0, `New Case year ${y.year} longTermBorrowings must start at 0`);
+});
+const cFa = engine.calculateScheduleOfFixedAssets(cleanAll);
+const cInc = engine.calculateIncomeStatement(cleanAll, cFa);
+const cCf = engine.calculateCashFlowStatement(cleanAll, cInc, cFa);
+const cEq = engine.calculateEquityStatement(cleanAll, cInc);
+const cBs = engine.calculateBalanceSheet(cleanAll, cEq, cFa, cCf, undefined, cInc);
+const cNotes = engine.generateNotesToFinancialStatements(cleanProfile, cleanAll.map(y => y.year), cInc, cBs, cCf, cFa);
+const cPrev = engine.buildPreviousFormatData(cleanAll, cInc, cBs, cCf, cEq, cFa, undefined, cleanProfile.financialYearEnd);
+const cProjFmt = engine.buildProjectedFormatData(cleanAll, cInc, cBs, cCf, cEq, cFa);
+cBs.forEach(b => assert(Math.abs(b.balanceCheck) < 0.05, `New Case BS unbalanced in ${b.year}: ${b.balanceCheck}`));
+cCf.forEach(c => assert.equal(c.reconciliationStatus, 'RECONCILED', `New Case CF unreconciled in ${c.year}`));
+
+capturedWorkbooks.length = 0;
+exportsMod.exportCompletePackageExcel(cleanProfile, cInc, cBs, cCf, cEq, cFa, cNotes);
+exportsMod.exportPreviousFinancialsExcel(cleanProfile, cPrev.slice(0, 2), cNotes);
+exportsMod.exportProjectedFinancialsExcel(cleanProfile, cProjFmt);
+for (const { filename, wb } of capturedWorkbooks) {
+  assert(!filename.startsWith('_'), `Empty companyName export filename "${filename}" must use clean fallback prefix`);
+  validateFormulaCells(wb);
+}
+
 xlsxCjs.writeFile = origWriteFile;
 console.log('ALL VERIFICATION CHECKS PASSED! Workbooks validated:', capturedWorkbooks.map(c => c.filename));
 

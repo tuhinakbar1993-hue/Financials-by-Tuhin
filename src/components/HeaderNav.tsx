@@ -1,6 +1,7 @@
 import React from 'react';
-import { Download, FileSpreadsheet, FileText, Settings, Database, Sliders, Scale, Layers, ChevronDown } from 'lucide-react';
-import { CompanyProfile, PreviousComparativePair } from '../types/financial';
+import { Download, FileSpreadsheet, FileText, Settings, Database, Sliders, Scale, Layers, ChevronDown, FilePlus2, Calendar } from 'lucide-react';
+import { CompanyProfile, FinancialYearEndOption, PreviousComparativePair } from '../types/financial';
+import { formatFyEndDateCode, normalizeFinancialYearEnd } from '../services/financialEngine';
 
 interface HeaderNavProps {
   activeTab: string;
@@ -8,6 +9,8 @@ interface HeaderNavProps {
   companyProfile: CompanyProfile;
   onOpenProfileModal: () => void;
   onOpenDeveloperModal: () => void;
+  onStartNewCase?: () => void;
+  onChangeFinancialYearEnd?: (fyEnd: FinancialYearEndOption) => void;
   onExportPackageExcel: () => void;
   onExportPackageWord: () => void;
   onExportPackagePdf: () => void;
@@ -28,6 +31,8 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
   companyProfile,
   onOpenProfileModal,
   onOpenDeveloperModal,
+  onStartNewCase,
+  onChangeFinancialYearEnd,
   onExportPackageExcel,
   onExportPackageWord,
   onExportPackagePdf,
@@ -42,6 +47,7 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
   onExportProjectedPdf,
 }) => {
   const [showExportMenu, setShowExportMenu] = React.useState(false);
+  const currentFyEnd = normalizeFinancialYearEnd(companyProfile.financialYearEnd);
 
   const navItems = [
     { id: 'statements', label: 'Statements & Reports', icon: Layers, accent: 'text-emerald-700' },
@@ -74,8 +80,8 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
                     Sec 76
                   </span>
                 </div>
-                <span className="text-[11px] text-slate-500 tracking-normal block -mt-0.5 truncate max-w-[210px] font-sans">
-                  {companyProfile.companyName} · {companyProfile.reportingCurrency}
+                <span className="text-[11px] text-slate-500 tracking-normal block -mt-0.5 truncate max-w-[220px] font-sans">
+                  {companyProfile.companyName?.trim() || 'New Case (Entity Not Set)'} · {companyProfile.reportingCurrency}
                 </span>
               </div>
             </button>
@@ -124,12 +130,49 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
           </div>
 
           {/* Actions & Developer Identity */}
-          <div className="flex items-center gap-2.5 shrink-0">
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Compact Financial Year-End Toggle */}
+            {onChangeFinancialYearEnd && (
+              <div
+                className="hidden md:flex items-center bg-slate-100/90 border border-slate-200 rounded-lg p-0.5 text-[11px] font-semibold"
+                title="Select Reporting Financial Year-End"
+              >
+                <Calendar className="w-3 h-3 text-emerald-700 ml-1.5 mr-1 shrink-0" />
+                {(['June 30', 'December 31'] as FinancialYearEndOption[]).map((opt) => (
+                  <button
+                    key={opt}
+                    type="button"
+                    onClick={() => onChangeFinancialYearEnd(opt)}
+                    className={`px-2 py-1 rounded-md transition-all whitespace-nowrap ${
+                      currentFyEnd === opt
+                        ? 'bg-white text-emerald-800 shadow-xs ring-1 ring-emerald-200 font-bold'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {opt === 'June 30' ? 'Jun 30' : 'Dec 31'}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* New Case Button */}
+            {onStartNewCase && (
+              <button
+                type="button"
+                onClick={onStartNewCase}
+                title="Clear all case-specific data and start a clean New Case"
+                className="px-2.5 py-1.5 text-xs font-semibold text-rose-700 bg-rose-50/80 hover:bg-rose-100 rounded-lg border border-rose-200 hover:border-rose-300 transition-all whitespace-nowrap inline-flex items-center gap-1.5 shadow-sm"
+              >
+                <FilePlus2 className="w-3.5 h-3.5 text-rose-600" />
+                <span className="hidden sm:inline">New Case</span>
+              </button>
+            )}
+
             {/* Entity Setup Button */}
             <button
               onClick={onOpenProfileModal}
               title="Configure Company Entity & Accounting Framework"
-              className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 rounded-lg border border-slate-200 hover:border-slate-300 transition-all whitespace-nowrap hidden sm:inline-flex items-center gap-1.5 shadow-sm"
+              className="px-2.5 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 rounded-lg border border-slate-200 hover:border-slate-300 transition-all whitespace-nowrap hidden sm:inline-flex items-center gap-1.5 shadow-sm"
             >
               <Settings className="w-3.5 h-3.5 text-slate-500" />
               <span>Entity Setup</span>
@@ -160,7 +203,7 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
                             1. Previous Financials (Comparative Sets)
                           </span>
                           <span className="text-[10px] text-emerald-700">
-                            Exact 2-year comparative downloads (31.12.YYYY)
+                            Exact 2-year comparative downloads ({formatFyEndDateCode(2025, companyProfile.financialYearEnd).replace('2025', 'YYYY')})
                           </span>
                         </div>
                       </div>
