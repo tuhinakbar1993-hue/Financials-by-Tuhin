@@ -37,7 +37,7 @@ function runPipeline(
     fa,
     opts
   );
-  const dscr = engine.calculateDebtServiceCoverage(allInputs, bs, inc, cf);
+  const dscr = engine.calculateDebtServiceCoverage(allInputs, inc, bs, cf);
   const prev = engine.buildPreviousFormatData(allInputs, inc, bs, cf, eq, fa, opts);
   const proj = engine.buildProjectedFormatData(allInputs, inc, bs, cf, eq, fa, opts);
   return { allInputs, fa, inc, cf, eq, bs, notes, dscr, prev, proj, labelOverrides, cellOverrides };
@@ -856,6 +856,177 @@ exportsMod.exportProjectedFinancialsExcel(cleanProfile, cProjFmt);
 for (const { filename, wb } of capturedWorkbooks) {
   assert(!filename.startsWith('_'), `Empty companyName export filename "${filename}" must use clean fallback prefix`);
   validateFormulaCells(wb);
+}
+
+// ============================================================================
+// 6. UPLOADED REPAYMENT SCHEDULE AUTOMATION, HISTORICAL INABILITY VS PROJECTED CAPACITY, & UNEVEN RATIOS (>= 1.2pp)
+// ============================================================================
+
+// (A) Verify Historical INITIAL_HISTORICAL_INPUTS & Computed Previous Format have uneven YoY spreads >= 1.2pp
+const histAsc = [...engine.INITIAL_HISTORICAL_INPUTS].sort((a, b) => a.year - b.year);
+const histPrev = engine.buildPreviousFormatData(
+  histAsc,
+  baseline.inc.filter(i => !i.isProjected),
+  baseline.bs.filter(b => !b.isProjected),
+  baseline.cf.filter(c => !c.isProjected),
+  baseline.eq.filter(e => !e.isProjected),
+  baseline.fa.filter(f => !f.isProjected)
+).sort((a, b) => a.year - b.year);
+
+const pctDelta = (curr: number, prev: number) => ((curr - prev) / Math.max(1, Math.abs(prev))) * 100;
+const histSpreadPairs: [string, number, number][] = [
+  ['salesRevenue', pctDelta(histAsc[1].salesRevenue, histAsc[0].salesRevenue), pctDelta(histAsc[2].salesRevenue, histAsc[1].salesRevenue)],
+  ['costOfSales', pctDelta(histAsc[1].costOfSales, histAsc[0].costOfSales), pctDelta(histAsc[2].costOfSales, histAsc[1].costOfSales)],
+  ['operatingExpenses', pctDelta(histAsc[1].operatingExpenses, histAsc[0].operatingExpenses), pctDelta(histAsc[2].operatingExpenses, histAsc[1].operatingExpenses)],
+  ['closingInventory', pctDelta(histAsc[1].closingInventory, histAsc[0].closingInventory), pctDelta(histAsc[2].closingInventory, histAsc[1].closingInventory)],
+  ['tradeReceivables', pctDelta(histAsc[1].tradeReceivables, histAsc[0].tradeReceivables), pctDelta(histAsc[2].tradeReceivables, histAsc[1].tradeReceivables)],
+  ['salaryAndAllowances', pctDelta(histPrev[1].salaryAndAllowances, histPrev[0].salaryAndAllowances), pctDelta(histPrev[2].salaryAndAllowances, histPrev[1].salaryAndAllowances)],
+  ['electricCharges', pctDelta(histPrev[1].electricCharges, histPrev[0].electricCharges), pctDelta(histPrev[2].electricCharges, histPrev[1].electricCharges)],
+];
+for (const [label, g1, g2] of histSpreadPairs) {
+  assert(
+    Math.abs(g1 - g2) >= 1.2,
+    `Historical YoY spread for ${label} must be >= 1.2pp (got ${g1.toFixed(2)}% vs ${g2.toFixed(2)}%)`
+  );
+}
+
+// Verify Custom Element Uneven Ratio Series produces >= 1.2pp consecutive spreads
+const customUnevenSeries = engine.generateCustomElementUnevenSeries(
+  350000,
+  [2023, 2024, 2025, 2026, 2027, 2028],
+  2023,
+  8.0,
+  'Sukuk Profit Reserve'
+);
+const customYears = [2023, 2024, 2025, 2026, 2027, 2028];
+for (let i = 2; i < customYears.length; i++) {
+  const gPrev = pctDelta(customUnevenSeries[customYears[i - 1]], customUnevenSeries[customYears[i - 2]]);
+  const gCurr = pctDelta(customUnevenSeries[customYears[i]], customUnevenSeries[customYears[i - 1]]);
+  assert(
+    Math.abs(gCurr - gPrev) >= 1.2,
+    `Custom element uneven series spread in ${customYears[i]} must be >= 1.2pp (got ${gPrev.toFixed(2)}% vs ${gCurr.toFixed(2)}%)`
+  );
+}
+
+// (B) Automated Schedule Generation, Running Balance Auto-Calc, and Recalculation
+const {
+  generateStandardRepaymentSchedule,
+  recalculateRepaymentSchedule,
+  getAttachedReferenceRepaymentSchedule,
+} = await import('./src/services/repaymentScheduleParser');
+
+const genSched = generateStandardRepaymentSchedule({
+  investmentMade: 2500000,
+  annualProfitRatePct: 14.5,
+  numberOfInstallments: 48,
+  interval: 'Monthly',
+  disbursementDateRaw: '01/01/2026',
+  firstInstallmentDateRaw: '01/01/2026',
+  financialYearEnd: '31 December',
+  selectedModelYears: [2023, 2024, 2025, 2026, 2027, 2028, 2029],
+});
+assert(genSched.isValid, 'Generated standard repayment schedule must be valid');
+assert.equal(genSched.closingBalance, 0, 'Generated schedule closingBalance must amortize cleanly to 0');
+assert(Math.abs(genSched.grandTotalPrincipal - 2500000) < 0.05, 'Generated grandTotalPrincipal must equal Investment Made');
+
+// Inline edit row 1 principal + gestation and confirm recalculateRepaymentSchedule updates running balance and totals
+const editedSched = recalculateRepaymentSchedule(
+  {
+    ...genSched,
+    rows: genSched.rows.map((r, idx) =>
+      idx === 1 ? { ...r, instPrincipal: r.instPrincipal + 1000, gestationPayment: 500 } : r
+    ),
+  },
+  '31 December',
+  [2023, 2024, 2025, 2026, 2027, 2028, 2029]
+);
+assert.equal(editedSched.grandTotalGestationPayment, 500, 'Recalculated schedule must aggregate Gestation Payment');
+assert(Math.abs(editedSched.grandTotalDebtService - (editedSched.grandTotalPrincipal + editedSched.grandTotalProfit + 500)) < 0.05, 'Grand total debt service must include gestation payments');
+assert(Math.abs(editedSched.rows[1].balance - (2500000 - editedSched.rows[1].instPrincipal)) < 0.05, 'Recalculated row 1 balance must reflect edited principal');
+
+// (C) Client ABABIL Schedule Implementation: Historical Pre-Rescheduling Inability (< 1.0x DSCR) vs Projected Servicing Sufficiency (>= 1.25x DSCR)
+const ababilSched = getAttachedReferenceRepaymentSchedule('31 December', [2023, 2024, 2025, 2026, 2027, 2028, 2029, 2030, 2031, 2032]);
+assert.equal(ababilSched.closingBalance, 0, 'ABABIL schedule closingBalance must be 0');
+assert.equal(ababilSched.metadata.gestationPeriod, '0 Days');
+assert.equal(ababilSched.metadata.lastInstallmentMinimized, 'No');
+
+const ababilHistStore = Object.fromEntries(engine.INITIAL_HISTORICAL_INPUTS.map(i => [i.year, i]));
+const ababilResult = engine.implementRepaymentScheduleIntoModel({
+  schedule: ababilSched,
+  historicalYearsStore: ababilHistStore,
+  customProjectedOverrides: {},
+  assumptions: engine.DEFAULT_PROJECTION_ASSUMPTIONS,
+  autoIncludeScheduleYears: true,
+  alignHistoricalScale: true,
+});
+const ababilOrdered = [
+  ...(ababilResult.assumptions.selectedHistoricalYears || []).map(y => ababilResult.historicalYearsStore[y]),
+  ...(ababilResult.assumptions.selectedProjectedYears || []).map(y => ababilResult.customProjectedOverrides[y]),
+].sort((a, b) => a.year - b.year);
+
+const abFa = engine.calculateScheduleOfFixedAssets(ababilOrdered);
+const abInc = engine.calculateIncomeStatement(ababilOrdered, abFa);
+const abCf = engine.calculateCashFlowStatement(ababilOrdered, abInc, abFa);
+const abEq = engine.calculateEquityStatement(ababilOrdered, abInc);
+const abBs = engine.calculateBalanceSheet(ababilOrdered, abEq, abFa, abCf, undefined, abInc);
+const abDscr = engine.calculateDebtServiceCoverage(ababilOrdered, abInc, abBs, abCf);
+const abProj = engine.buildProjectedFormatData(ababilOrdered, abInc, abBs, abCf, abEq, abFa);
+
+abBs.forEach(b => assert(Math.abs(b.balanceCheck) < 0.05, `ABABIL BS unbalanced in ${b.year}: ${b.balanceCheck}`));
+abCf.forEach(c => assert.equal(c.reconciliationStatus, 'RECONCILED', `ABABIL CF not reconciled in ${c.year}`));
+
+const histAbDscr = abDscr.filter(d => !d.isProjected);
+const projSchedAbDscr = abDscr.filter(d => d.isProjected && d.isScheduleCovered);
+assert(histAbDscr.length >= 3 && projSchedAbDscr.length >= 5, 'ABABIL model must cover both historical and scheduled projected years');
+histAbDscr.forEach(h => {
+  assert(h.ebitdaDscr < 1.0, `Historical ${h.year} EBITDA DSCR must show inability (< 1.0x) to justify rescheduling, got ${h.ebitdaDscr}`);
+  assert.equal(h.capacityStatus, 'DEFICIT', `Historical ${h.year} capacityStatus must be DEFICIT`);
+  assert((h.reschedulingContext || '').length > 10, `Historical ${h.year} missing reschedulingContext`);
+});
+projSchedAbDscr.forEach(p => {
+  assert(p.ebitdaDscr >= 1.25, `Projected scheduled ${p.year} EBITDA DSCR must be >= 1.25x, got ${p.ebitdaDscr}`);
+  assert(p.cashDscr >= 1.15, `Projected scheduled ${p.year} Cash DSCR must be >= 1.15x, got ${p.cashDscr}`);
+  assert(p.closingCash > 0, `Projected scheduled ${p.year} Closing Cash must be positive, got ${p.closingCash}`);
+  assert(p.capacityStatus === 'STRONG' || p.capacityStatus === 'ADEQUATE', `Projected scheduled ${p.year} status must be STRONG/ADEQUATE`);
+});
+
+// (D) Export Workbooks containing 9-Column Repayment Schedule & DSCR Justification pass formula validation
+const abNotes = engine.generateNotesToFinancialStatements(
+  engine.INITIAL_COMPANY_PROFILE,
+  ababilOrdered.map(y => y.year),
+  abInc,
+  abBs,
+  abCf,
+  abFa
+);
+capturedWorkbooks.length = 0;
+exportsMod.exportRepaymentScheduleExcel(engine.INITIAL_COMPANY_PROFILE, ababilSched, abDscr);
+exportsMod.exportCompletePackageExcel(
+  engine.INITIAL_COMPANY_PROFILE,
+  abInc,
+  abBs,
+  abCf,
+  abEq,
+  abFa,
+  abNotes,
+  'ababil_complete_with_schedule.xlsx',
+  abDscr,
+  undefined,
+  ababilSched
+);
+exportsMod.exportProjectedFinancialsExcel(
+  engine.INITIAL_COMPANY_PROFILE,
+  abProj,
+  undefined,
+  undefined,
+  ababilSched,
+  abDscr
+);
+assert.equal(capturedWorkbooks.length, 3, 'Expected 3 schedule-integrated Excel exports');
+for (const { filename, wb } of capturedWorkbooks) {
+  validateFormulaCells(wb);
+  const hasScheduleSheet = wb.SheetNames.some(s => s.includes('Repayment Schedule'));
+  assert(hasScheduleSheet, `Export ${filename} must include Repayment Schedule worksheet`);
 }
 
 xlsxCjs.writeFile = origWriteFile;

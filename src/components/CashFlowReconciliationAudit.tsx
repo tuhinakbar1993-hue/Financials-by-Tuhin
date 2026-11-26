@@ -44,6 +44,10 @@ export const CashFlowReconciliationAudit: React.FC<CashFlowReconciliationAuditPr
   const isAllReconciled = reconciledCount === cashFlowYears.length;
   const balancedBSCount = balanceSheetYears.filter(bs => Math.abs(bs.balanceCheck) <= 1).length;
   const scheduleCoverageYears = debtServiceCoverage.filter(d => d.totalDebtService > 0);
+  const histDscr = debtServiceCoverage.filter(d => !d.isProjected && d.totalDebtService > 0);
+  const projDscr = debtServiceCoverage.filter(d => d.isProjected && d.totalDebtService > 0);
+  const minHistEbitdaDscr = histDscr.length > 0 ? Math.min(...histDscr.map(d => d.ebitdaDscr)) : null;
+  const minProjEbitdaDscr = projDscr.length > 0 ? Math.min(...projDscr.map(d => d.ebitdaDscr)) : null;
 
   return (
     <div className="space-y-6">
@@ -355,6 +359,21 @@ export const CashFlowReconciliationAudit: React.FC<CashFlowReconciliationAuditPr
             </span>
           </div>
 
+          {minHistEbitdaDscr !== null && minProjEbitdaDscr !== null && minHistEbitdaDscr < 1.0 && minProjEbitdaDscr >= 1.25 && (
+            <div className="px-4 py-2.5 bg-gradient-to-r from-rose-50/80 via-slate-50 to-emerald-50/80 border-b border-slate-200 grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
+              <div className="text-rose-900">
+                <strong className="font-bold">Historical Pre-Rescheduling Distress:</strong>{' '}
+                Compressed operating margins and legacy debt burden yielded Historical EBITDA DSCR of{' '}
+                <span className="font-mono font-bold">{minHistEbitdaDscr.toFixed(2)}x (&lt; 1.00x)</span>, demonstrating inability to service unrescheduled obligations.
+              </div>
+              <div className="text-emerald-900">
+                <strong className="font-bold">Projected Post-Rescheduling Viability:</strong>{' '}
+                Rescheduled repayment terms lift Projected EBITDA DSCR to{' '}
+                <span className="font-mono font-bold">≥ {minProjEbitdaDscr.toFixed(2)}x</span> with positive liquidity across scheduled periods.
+              </div>
+            </div>
+          )}
+
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs font-mono">
               <thead className="bg-slate-100/95 text-slate-700 border-b border-slate-200 text-[11px]">
@@ -373,7 +392,7 @@ export const CashFlowReconciliationAudit: React.FC<CashFlowReconciliationAuditPr
               </thead>
               <tbody className="divide-y divide-slate-200/70 tabular-nums">
                 {debtServiceCoverage.map(row => (
-                  <tr key={row.year} className="hover:bg-slate-50">
+                  <tr key={row.year} title={row.reschedulingContext || ''} className="hover:bg-slate-50">
                     <td className="py-2.5 px-4 font-bold text-slate-900">
                       {row.year}{' '}
                       <span className="text-[9px] font-normal text-slate-500">
@@ -397,15 +416,18 @@ export const CashFlowReconciliationAudit: React.FC<CashFlowReconciliationAuditPr
                     </td>
                     <td className="py-2.5 px-3 text-right text-emerald-700 font-medium">{fmtAuditNum(row.closingCash)}</td>
                     <td className="py-2.5 px-4 text-right font-sans">
-                      <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded border ${
-                        row.capacityStatus === 'STRONG'
-                          ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
-                          : row.capacityStatus === 'ADEQUATE'
-                          ? 'bg-sky-50 text-sky-800 border-sky-300'
-                          : row.capacityStatus === 'TIGHT'
-                          ? 'bg-amber-50 text-amber-900 border-amber-300'
-                          : 'bg-rose-50 text-rose-800 border-rose-300'
-                      }`}>
+                      <span
+                        title={row.reschedulingContext || ''}
+                        className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded border ${
+                          row.capacityStatus === 'STRONG'
+                            ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                            : row.capacityStatus === 'ADEQUATE'
+                            ? 'bg-sky-50 text-sky-800 border-sky-300'
+                            : row.capacityStatus === 'TIGHT'
+                            ? 'bg-amber-50 text-amber-900 border-amber-300'
+                            : 'bg-rose-50 text-rose-800 border-rose-300'
+                        }`}
+                      >
                         {row.capacityStatus}
                       </span>
                     </td>

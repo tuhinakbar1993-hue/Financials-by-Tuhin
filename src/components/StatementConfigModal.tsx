@@ -9,8 +9,10 @@ import {
   Square,
   RefreshCw,
   Search,
+  Sparkles,
 } from 'lucide-react';
 import { StatementConfigItem } from '../types/financial';
+import { generateCustomElementUnevenSeries } from '../services/financialEngine';
 
 interface StatementConfigViewProps {
   configItems: StatementConfigItem[];
@@ -154,6 +156,20 @@ export const StatementConfigView: React.FC<StatementConfigViewProps> = ({
   const handleCustomSignChange = (id: string, sign: 'positive' | 'negative') => {
     onUpdateConfig(
       configItems.map(item => (item.id === id ? { ...item, sign } : item))
+    );
+  };
+
+  const handleFillCustomUnevenRatios = (item: StatementConfigItem) => {
+    if (years.length === 0) return;
+    const sortedYears = [...years].sort((a, b) => a - b);
+    const firstNonZeroYear = sortedYears.find(yr => Math.abs(item.customValues?.[yr] || 0) > 0);
+    const baseYear = firstNonZeroYear ?? sortedYears[0];
+    const baseVal = firstNonZeroYear ? Math.abs(item.customValues![firstNonZeroYear]) : 250000;
+    const labelKey = item.label || item.id;
+    const seed = labelKey.split('').reduce((acc, ch, i) => (acc + ch.charCodeAt(0) * (i + 1)) % 97, 17);
+    const series = generateCustomElementUnevenSeries(baseVal, sortedYears, baseYear, 8.2, seed);
+    onUpdateConfig(
+      configItems.map(ci => (ci.id === item.id ? { ...ci, customValues: series } : ci))
     );
   };
 
@@ -490,19 +506,30 @@ export const StatementConfigView: React.FC<StatementConfigViewProps> = ({
                           <span className="text-[11px] font-semibold text-sky-900">
                             Year-Wise Amounts for "{item.label}"
                           </span>
-                          <select
-                            value={item.sign || 'positive'}
-                            onChange={e =>
-                              handleCustomSignChange(
-                                item.id,
-                                e.target.value as 'positive' | 'negative'
-                              )
-                            }
-                            className="text-[11px] bg-white border border-sky-200 rounded px-2 py-0.5 text-slate-800"
-                          >
-                            <option value="positive">Positive / Inflow (+)</option>
-                            <option value="negative">Negative / Outflow (-)</option>
-                          </select>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleFillCustomUnevenRatios(item)}
+                              className="px-2.5 py-0.5 text-[10px] font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded inline-flex items-center gap-1 transition-colors"
+                              title="Populate logically varied uneven ratios across all years (>= 1.2% YoY variance)"
+                            >
+                              <Sparkles className="w-3 h-3" />
+                              Fill Uneven Ratios
+                            </button>
+                            <select
+                              value={item.sign || 'positive'}
+                              onChange={e =>
+                                handleCustomSignChange(
+                                  item.id,
+                                  e.target.value as 'positive' | 'negative'
+                                )
+                              }
+                              className="text-[11px] bg-white border border-sky-200 rounded px-2 py-0.5 text-slate-800"
+                            >
+                              <option value="positive">Positive / Inflow (+)</option>
+                              <option value="negative">Negative / Outflow (-)</option>
+                            </select>
+                          </div>
                         </div>
                         <div className="grid grid-cols-3 sm:grid-cols-6 md:grid-cols-9 gap-2">
                           {years.map(yr => (

@@ -55,9 +55,9 @@ Return every Disbursement and Repayment installment row across all pages without
 Important rules:
 1. Extract exact numeric amounts (strip Indian/Western commas like "24,30,778.97" -> 2430778.97). Preserve 2 decimal places accurately.
 2. Keep the original EMI Date text verbatim (e.g., "01/02/2027").
-3. Do NOT swap Inst. Principal and Inst. Profit.
+3. Do NOT swap Inst. Principal and Inst. Profit. Include Gestation Payment, Over due Gest., and Overdue Profit when present.
 4. For the Disbursement row, set isDisbursement=true, instPrincipal=0, instProfit=0, and balance=disbursed principal amount.
-5. Extract stated header metadata (investmentMade, interval, numberOfInstallments, disbursementDate, firstInstallmentDate, expiryDate) and footer Total row (statedTotalPrincipal, statedTotalProfit) if present.`;
+5. Extract stated header metadata (investmentMade, interval, numberOfInstallments, gestationPeriod, disbursementDate, firstInstallmentDate, expiryDate, lastInstallmentMinimized) and footer Total row (statedTotalPrincipal, statedTotalProfit) if present.`;
 
       const response = await ai.models.generateContent({
         model: 'gemini-4-hydrogen',
@@ -80,9 +80,11 @@ Important rules:
               investmentMade: { type: Type.NUMBER },
               interval: { type: Type.STRING },
               numberOfInstallments: { type: Type.INTEGER },
+              gestationPeriod: { type: Type.STRING },
               disbursementDate: { type: Type.STRING },
               firstInstallmentDate: { type: Type.STRING },
               expiryDate: { type: Type.STRING },
+              lastInstallmentMinimized: { type: Type.STRING },
               statedTotalPrincipal: { type: Type.NUMBER },
               statedTotalProfit: { type: Type.NUMBER },
               rows: {
@@ -94,6 +96,9 @@ Important rules:
                     emiDate: { type: Type.STRING },
                     instPrincipal: { type: Type.NUMBER },
                     instProfit: { type: Type.NUMBER },
+                    gestationPayment: { type: Type.NUMBER },
+                    overdueGestation: { type: Type.NUMBER },
+                    overdueProfit: { type: Type.NUMBER },
                     balance: { type: Type.NUMBER },
                     total: { type: Type.NUMBER },
                     isDisbursement: { type: Type.BOOLEAN },

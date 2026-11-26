@@ -14,6 +14,9 @@ import {
   ShieldCheck,
   Sparkles,
   Trash2,
+  Calculator,
+  Download,
+  SlidersHorizontal,
 } from 'lucide-react';
 import {
   CompanyProfile,
@@ -24,12 +27,19 @@ import {
 } from '../types/financial';
 import { ImplementScheduleResult } from '../services/financialEngine';
 import {
+  generateStandardRepaymentSchedule,
   getAttachedReferenceRepaymentSchedule,
   parseRepaymentScheduleText,
   parseScheduleNumber,
   parseUploadedRepaymentSchedule,
   rebuildScheduleSummaries,
+  recalculateRepaymentSchedule,
 } from '../services/repaymentScheduleParser';
+import {
+  exportRepaymentScheduleExcel,
+  exportRepaymentScheduleWord,
+  exportRepaymentSchedulePdf,
+} from '../services/exportService';
 
 interface RepaymentScheduleStudioProps {
   companyProfile: CompanyProfile;
@@ -78,10 +88,19 @@ export const RepaymentScheduleStudio: React.FC<RepaymentScheduleStudioProps> = (
   const [parseError, setParseError] = useState<string | null>(null);
   const [isDragActive, setIsDragActive] = useState(false);
   const [showPasteDrawer, setShowPasteDrawer] = useState(false);
+  const [showGeneratorDrawer, setShowGeneratorDrawer] = useState(false);
   const [pasteText, setPasteText] = useState('');
   const [showInstallmentLedger, setShowInstallmentLedger] = useState(false);
   const [autoIncludeScheduleYears, setAutoIncludeScheduleYears] = useState(true);
   const [alignHistoricalScale, setAlignHistoricalScale] = useState(true);
+
+  const [genPrincipal, setGenPrincipal] = useState('2430778.97');
+  const [genRatePct, setGenRatePct] = useState('15.5');
+  const [genInstallments, setGenInstallments] = useState('60');
+  const [genInterval, setGenInterval] = useState<'Monthly' | 'Quarterly' | 'Half-Yearly' | 'Yearly'>('Monthly');
+  const [genDisbDate, setGenDisbDate] = useState('01/01/2027');
+  const [genFirstDate, setGenFirstDate] = useState('01/01/2027');
+  const [genGestationDays, setGenGestationDays] = useState('0');
 
   const handleFileSelected = async (file: File) => {
     setIsParsing(true);
@@ -163,26 +182,37 @@ export const RepaymentScheduleStudio: React.FC<RepaymentScheduleStudioProps> = (
 
   const handleUpdateInstallmentCell = (
     rowId: string,
-    field: 'instPrincipal' | 'instProfit' | 'emiDateRaw',
+    field:
+      | 'instPrincipal'
+      | 'instProfit'
+      | 'gestationPayment'
+      | 'overdueGestation'
+      | 'overdueProfit'
+      | 'emiDateRaw',
     rawVal: string
   ) => {
     if (!parsedSchedule) return;
     const nextRows: RepaymentInstallmentRow[] = parsedSchedule.rows.map(r => {
       if (r.id !== rowId) return r;
-      if (field === 'instPrincipal') {
-        const p = Math.max(0, parseScheduleNumber(rawVal));
-        return { ...r, instPrincipal: p, totalInstallment: Number((p + r.instProfit).toFixed(2)) };
+      if (field === 'emiDateRaw') {
+        return { ...r, emiDateRaw: rawVal.trim() };
       }
-      if (field === 'instProfit') {
-        const pr = Math.max(0, parseScheduleNumber(rawVal));
-        return { ...r, instProfit: pr, totalInstallment: Number((r.instPrincipal + pr).toFixed(2)) };
-      }
-      return { ...r, emiDateRaw: rawVal.trim() };
+      const numVal = Math.max(0, parseScheduleNumber(rawVal));
+      const updated = { ...r, [field]: numVal };
+      updated.totalInstallment = Number(
+        (
+          updated.instPrincipal +
+          updated.instProfit +
+          (updated.gestationPayment || 0) +
+          (updated.overdueGestation || 0) +
+          (updated.overdueProfit || 0)
+        ).toFixed(2)
+      );
+      return updated;
     });
 
-    const rebuilt = rebuildScheduleSummaries(
-      nextRows,
-      parsedSchedule.metadata,
+    const rebuilt = recalculateRepaymentSchedule(
+      { ...parsedSchedule, rows: nextRows },
       companyProfile.financialYearEnd,
       allModelYears,
       parsedSchedule.metadata.dateFormatDetected === 'MM/DD/YYYY' ? 'MM/DD/YYYY' : 'DD/MM/YYYY'
@@ -190,7 +220,43 @@ export const RepaymentScheduleStudio: React.FC<RepaymentScheduleStudioProps> = (
     onSetParsedSchedule(rebuilt);
   };
 
+  const handleAutoRecalculateAll = () => {
+    if (!parsedSchedule) return;
+    const recalculated = recalculateRepaymentSchedule(
+      parsedSchedule,
+      companyProfile.financialYearEnd,
+      allModelYears,
+      parsedSchedule.metadata.dateFormatDetected === 'MM/DD/YYYY' ? 'MM/DD/YYYY' : 'DD/MM/YYYY'
+    );
+    onSetParsedSchedule(recalculated);
+  };
+
+  const handleGenerateSchedule = () => {
+    setParseError(null);
+    const principal = Math.max(1000, parseScheduleNumber(genPrincipal) || 2430778.97);
+    const rate = Math.max(0, parseFloat(genRatePct) || 15.5);
+    const count = Math.max(1, Math.round(parseFloat(genInstallments) || 60));
+    const gest = Math.max(0, Math.round(parseFloat(genGestationDays) || 0));
+    const generated = generateStandardRepaymentSchedule({
+      investmentMade: principal,
+      annualProfitRatePct: rate,
+      numberOfInstallments: count,
+      interval: genInterval,
+      disbursementDateRaw: genDisbDate.trim() || '01/01/2027',
+      firstInstallmentDateRaw: genFirstDate.trim() || genDisbDate.trim() || '01/01/2027',
+      gestationPeriodDays: gest,
+      financialYearEnd: companyProfile.financialYearEnd,
+      selectedModelYears: allModelYears,
+    });
+    onSetParsedSchedule(generated);
+    setShowGeneratorDrawer(false);
+  };
+
   const coveredYearsCount = debtServiceCoverage.filter(d => d.isScheduleCovered).length;
+  const histDscrRows = debtServiceCoverage.filter(d => !d.isProjected && d.totalDebtService > 0);
+  const projDscrRows = debtServiceCoverage.filter(d => d.isProjected && d.totalDebtService > 0);
+  const minHistDscr = histDscrRows.length > 0 ? Math.min(...histDscrRows.map(r => r.ebitdaDscr)) : null;
+  const minProjDscr = projDscrRows.length > 0 ? Math.min(...projDscrRows.map(r => r.ebitdaDscr)) : null;
 
   return (
     <div className="bg-white/92 backdrop-blur-md border border-slate-200/90 rounded-2xl p-5 space-y-5 shadow-sm">
@@ -231,7 +297,26 @@ export const RepaymentScheduleStudio: React.FC<RepaymentScheduleStudioProps> = (
 
           <button
             type="button"
-            onClick={() => setShowPasteDrawer(!showPasteDrawer)}
+            onClick={() => {
+              setShowGeneratorDrawer(!showGeneratorDrawer);
+              if (!showGeneratorDrawer) setShowPasteDrawer(false);
+            }}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors flex items-center gap-1.5 ${
+              showGeneratorDrawer
+                ? 'bg-emerald-600 text-white border-emerald-600'
+                : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-300'
+            }`}
+          >
+            <SlidersHorizontal className="w-3.5 h-3.5" />
+            Generate Schedule
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setShowPasteDrawer(!showPasteDrawer);
+              if (!showPasteDrawer) setShowGeneratorDrawer(false);
+            }}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors flex items-center gap-1.5 ${
               showPasteDrawer
                 ? 'bg-indigo-600 text-white border-indigo-600'
@@ -360,6 +445,111 @@ export const RepaymentScheduleStudio: React.FC<RepaymentScheduleStudioProps> = (
         </div>
       )}
 
+      {/* Automated Schedule Generator Drawer (Exact 9-Column ABABIL Format) */}
+      {showGeneratorDrawer && (
+        <div className="p-4 bg-emerald-50/55 border border-emerald-200 rounded-xl space-y-3 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="font-bold text-emerald-950">
+              Generate Automated Amortization Schedule (Exact 9-Column Uploaded Format)
+            </span>
+            <span className="text-[11px] text-emerald-800">
+              Computes exact installments, running Balance, and zero closing balance
+            </span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2.5">
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-semibold text-slate-600">Investment Made</span>
+              <input
+                type="number"
+                step="0.01"
+                value={genPrincipal}
+                onChange={(e) => setGenPrincipal(e.target.value)}
+                className="bg-white border border-slate-300 rounded px-2 py-1 text-xs font-mono text-slate-900"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-semibold text-slate-600">Profit Rate (% p.a.)</span>
+              <input
+                type="number"
+                step="0.05"
+                value={genRatePct}
+                onChange={(e) => setGenRatePct(e.target.value)}
+                className="bg-white border border-slate-300 rounded px-2 py-1 text-xs font-mono text-slate-900"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-semibold text-slate-600">Installments</span>
+              <input
+                type="number"
+                min="1"
+                value={genInstallments}
+                onChange={(e) => setGenInstallments(e.target.value)}
+                className="bg-white border border-slate-300 rounded px-2 py-1 text-xs font-mono text-slate-900"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-semibold text-slate-600">Interval</span>
+              <select
+                value={genInterval}
+                onChange={(e) => setGenInterval(e.target.value as 'Monthly' | 'Quarterly' | 'Half-Yearly' | 'Yearly')}
+                className="bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-900"
+              >
+                <option value="Monthly">Monthly</option>
+                <option value="Quarterly">Quarterly</option>
+                <option value="Half-Yearly">Half-Yearly</option>
+                <option value="Yearly">Yearly</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-semibold text-slate-600">Disbursement Date</span>
+              <input
+                type="text"
+                value={genDisbDate}
+                onChange={(e) => setGenDisbDate(e.target.value)}
+                placeholder="01/01/2027"
+                className="bg-white border border-slate-300 rounded px-2 py-1 text-xs font-mono text-slate-900"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-semibold text-slate-600">1st Inst. Date</span>
+              <input
+                type="text"
+                value={genFirstDate}
+                onChange={(e) => setGenFirstDate(e.target.value)}
+                placeholder="01/01/2027"
+                className="bg-white border border-slate-300 rounded px-2 py-1 text-xs font-mono text-slate-900"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-semibold text-slate-600">Gestation (Days)</span>
+              <input
+                type="number"
+                min="0"
+                value={genGestationDays}
+                onChange={(e) => setGenGestationDays(e.target.value)}
+                className="bg-white border border-slate-300 rounded px-2 py-1 text-xs font-mono text-slate-900"
+              />
+            </label>
+          </div>
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setShowGeneratorDrawer(false)}
+              className="px-3 py-1.5 rounded-lg text-xs text-slate-700 bg-white hover:bg-slate-50 border border-slate-300"
+            >
+              Close
+            </button>
+            <button
+              type="button"
+              onClick={handleGenerateSchedule}
+              className="px-4 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white"
+            >
+              Build Automated Schedule
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Parse Error Banner */}
       {parseError && (
         <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-300 text-rose-800 text-xs flex items-start gap-2.5">
@@ -436,6 +626,96 @@ export const RepaymentScheduleStudio: React.FC<RepaymentScheduleStudioProps> = (
             </div>
           </div>
 
+          {/* Uploaded Format 2-Column Metadata Header Block + Export Strip */}
+          <div className="bg-slate-50/95 border border-slate-200 rounded-xl p-3.5 text-xs space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
+              <div className="font-bold text-slate-900 flex items-center gap-2">
+                <span>Repayment Schedule Header Parameters</span>
+                <span className="text-[10px] font-mono text-slate-500 font-normal">
+                  ({parsedSchedule.metadata.sourceFileName})
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleAutoRecalculateAll}
+                  className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-white hover:bg-emerald-50 text-emerald-800 border border-emerald-300 inline-flex items-center gap-1 transition-colors"
+                  title="Auto-calculate row Totals, running Balances, and annual sums"
+                >
+                  <Calculator className="w-3 h-3" />
+                  Auto-Calculate Balances &amp; Totals
+                </button>
+                <button
+                  type="button"
+                  onClick={() => exportRepaymentScheduleExcel(companyProfile, parsedSchedule, debtServiceCoverage)}
+                  className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-emerald-600 hover:bg-emerald-500 text-white inline-flex items-center gap-1 transition-colors"
+                >
+                  <Download className="w-3 h-3" />
+                  .XLSX
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void exportRepaymentScheduleWord(companyProfile, parsedSchedule, debtServiceCoverage)}
+                  className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-blue-600 hover:bg-blue-500 text-white inline-flex items-center gap-1 transition-colors"
+                >
+                  <Download className="w-3 h-3" />
+                  .DOCX
+                </button>
+                <button
+                  type="button"
+                  onClick={() => exportRepaymentSchedulePdf(companyProfile, parsedSchedule, debtServiceCoverage)}
+                  className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-rose-600 hover:bg-rose-500 text-white inline-flex items-center gap-1 transition-colors"
+                >
+                  <Download className="w-3 h-3" />
+                  .PDF
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-1.5 font-mono text-[11px]">
+              <div className="flex justify-between border-b border-slate-200/70 py-0.5">
+                <span className="font-sans text-slate-600 font-semibold">Investment Made :</span>
+                <span className="font-bold text-slate-900">
+                  {companyProfile.reportingCurrency} {fmtAmt(parsedSchedule.metadata.investmentMade || parsedSchedule.grandTotalPrincipal)}
+                </span>
+              </div>
+              <div className="flex justify-between border-b border-slate-200/70 py-0.5">
+                <span className="font-sans text-slate-600 font-semibold">Disbursement Date :</span>
+                <span className="text-slate-900">{parsedSchedule.metadata.disbursementDate || parsedSchedule.rows[0]?.emiDateRaw || '-'}</span>
+              </div>
+              <div className="flex justify-between border-b border-slate-200/70 py-0.5">
+                <span className="font-sans text-slate-600 font-semibold">Interval :</span>
+                <span className="text-slate-900">{parsedSchedule.metadata.interval || 'Monthly'}</span>
+              </div>
+              <div className="flex justify-between border-b border-slate-200/70 py-0.5">
+                <span className="font-sans text-slate-600 font-semibold">1st Installment Date :</span>
+                <span className="text-slate-900">
+                  {parsedSchedule.metadata.firstInstallmentDate || parsedSchedule.rows.find(r => !r.isDisbursement)?.emiDateRaw || '-'}
+                </span>
+              </div>
+              <div className="flex justify-between border-b border-slate-200/70 py-0.5">
+                <span className="font-sans text-slate-600 font-semibold">Number of Installment :</span>
+                <span className="text-slate-900">
+                  {parsedSchedule.metadata.numberOfInstallments ?? parsedSchedule.rows.filter(r => !r.isDisbursement).length}
+                </span>
+              </div>
+              <div className="flex justify-between border-b border-slate-200/70 py-0.5">
+                <span className="font-sans text-slate-600 font-semibold">Expiry Date :</span>
+                <span className="text-slate-900">
+                  {parsedSchedule.metadata.expiryDate || [...parsedSchedule.rows].reverse().find(r => !r.isDisbursement)?.emiDateRaw || '-'}
+                </span>
+              </div>
+              <div className="flex justify-between py-0.5">
+                <span className="font-sans text-slate-600 font-semibold">Gestation Period :</span>
+                <span className="text-slate-900">{parsedSchedule.metadata.gestationPeriod || '0 Days'}</span>
+              </div>
+              <div className="flex justify-between py-0.5">
+                <span className="font-sans text-slate-600 font-semibold">Last Installment size minimized :</span>
+                <span className="text-slate-900">{parsedSchedule.metadata.lastInstallmentMinimized || 'No'}</span>
+              </div>
+            </div>
+          </div>
+
           {/* Validation Errors / Warnings */}
           {(parsedSchedule.validationErrors.length > 0 || parsedSchedule.validationWarnings.length > 0) && (
             <div className="space-y-2 text-xs">
@@ -467,8 +747,8 @@ export const RepaymentScheduleStudio: React.FC<RepaymentScheduleStudioProps> = (
               >
                 {showInstallmentLedger ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                 {showInstallmentLedger
-                  ? 'Hide Installment-by-Installment Ledger'
-                  : `Inspect & Edit ${parsedSchedule.rows.length} Installment Rows`}
+                  ? 'Hide 9-Column Uploaded Repayment Ledger'
+                  : `Inspect & Edit ${parsedSchedule.rows.length} Installment Rows (Exact Format)`}
               </button>
             </div>
 
@@ -533,7 +813,7 @@ export const RepaymentScheduleStudio: React.FC<RepaymentScheduleStudioProps> = (
                     <td className="py-2.5 px-3 text-right text-slate-900">
                       {fmtAmt(parsedSchedule.grandTotalDebtService)}
                     </td>
-                    <td className="py-2.5 px-3 text-right">0</td>
+                    <td className="py-2.5 px-3 text-right">{fmtAmt(parsedSchedule.closingBalance ?? 0)}</td>
                     <td className="py-2.5 px-4 text-right font-sans text-[11px]">
                       100% Exact Preservation
                     </td>
@@ -543,35 +823,40 @@ export const RepaymentScheduleStudio: React.FC<RepaymentScheduleStudioProps> = (
             </div>
           </div>
 
-          {/* Expandable Installment-Level Editable Ledger */}
+          {/* Expandable Installment-Level Editable Ledger (Exact 9-Column Uploaded Format) */}
           {showInstallmentLedger && (
             <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs">
-              <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between text-xs">
+              <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 text-xs">
                 <span className="font-semibold text-slate-900">
-                  Full Installment Ledger (Editable Verification Fallback)
+                  Repayment Schedule (Exact 9-Column Uploaded Format)
                 </span>
                 <span className="text-[11px] text-slate-600">
-                  Editing any cell automatically recalculates year-wise totals
+                  Editing any installment auto-recalculates running Balance, row Total, and fiscal totals
                 </span>
               </div>
-              <div className="max-h-72 overflow-y-auto overflow-x-auto">
+              <div className="max-h-80 overflow-y-auto overflow-x-auto">
                 <table className="w-full text-xs font-mono">
                   <thead className="bg-slate-100 sticky top-0 text-slate-700 border-b border-slate-200 text-[10px]">
                     <tr>
-                      <th className="py-2 px-3 text-left font-sans font-semibold">Event</th>
-                      <th className="py-2 px-3 text-left font-sans font-semibold">EMI Date</th>
-                      <th className="py-2 px-3 text-center font-sans font-semibold">FY</th>
-                      <th className="py-2 px-3 text-right font-sans font-semibold">Inst. Principal</th>
-                      <th className="py-2 px-3 text-right font-sans font-semibold">Inst. Profit</th>
+                      <th className="py-2 px-3 text-left font-sans font-semibold">Event Type.</th>
+                      <th className="py-2 px-2 text-left font-sans font-semibold">EMI Date</th>
+                      <th className="py-2 px-2 text-right font-sans font-semibold">Inst. Principal</th>
+                      <th className="py-2 px-2 text-right font-sans font-semibold">Inst. Profit</th>
+                      <th className="py-2 px-2 text-right font-sans font-semibold">Gestation Payment</th>
+                      <th className="py-2 px-2 text-right font-sans font-semibold">Over due Gest.</th>
+                      <th className="py-2 px-2 text-right font-sans font-semibold">Overdue Profit</th>
+                      <th className="py-2 px-2 text-right font-sans font-semibold">Balance</th>
                       <th className="py-2 px-3 text-right font-sans font-semibold">Total</th>
-                      <th className="py-2 px-3 text-right font-sans font-semibold">Balance</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200/70 tabular-nums">
                     {parsedSchedule.rows.map(r => (
                       <tr key={r.id} className={r.isDisbursement ? 'bg-sky-50/70 text-sky-900' : 'hover:bg-slate-50'}>
-                        <td className="py-1.5 px-3 font-sans text-slate-800">{r.eventType}</td>
-                        <td className="py-1.5 px-3">
+                        <td className="py-1.5 px-3 font-sans text-slate-800 whitespace-nowrap">
+                          {r.eventType}
+                          <span className="ml-1.5 text-[9px] text-slate-400">FY{r.financialYear}</span>
+                        </td>
+                        <td className="py-1.5 px-2">
                           <input
                             type="text"
                             value={r.emiDateRaw}
@@ -579,39 +864,81 @@ export const RepaymentScheduleStudio: React.FC<RepaymentScheduleStudioProps> = (
                             className="w-24 bg-white border border-slate-300 rounded px-1.5 py-0.5 text-xs text-slate-900 focus:outline-none focus:border-emerald-600"
                           />
                         </td>
-                        <td className="py-1.5 px-3 text-center text-slate-700">{r.financialYear}</td>
-                        <td className="py-1.5 px-3 text-right">
-                          {r.isDisbursement ? (
-                            '0.00'
-                          ) : (
+                        <td className="py-1.5 px-2 text-right">
+                          {r.isDisbursement ? '0.00' : (
                             <input
                               type="number"
                               step="0.01"
                               value={r.instPrincipal}
                               onChange={(e) => handleUpdateInstallmentCell(r.id, 'instPrincipal', e.target.value)}
-                              className="w-28 bg-white border border-slate-300 rounded px-1.5 py-0.5 text-right text-xs text-rose-700 font-semibold focus:outline-none focus:border-emerald-600"
+                              className="w-24 bg-white border border-slate-300 rounded px-1.5 py-0.5 text-right text-xs text-rose-700 font-semibold focus:outline-none focus:border-emerald-600"
                             />
                           )}
                         </td>
-                        <td className="py-1.5 px-3 text-right">
-                          {r.isDisbursement ? (
-                            '0.00'
-                          ) : (
+                        <td className="py-1.5 px-2 text-right">
+                          {r.isDisbursement ? '0.00' : (
                             <input
                               type="number"
                               step="0.01"
                               value={r.instProfit}
                               onChange={(e) => handleUpdateInstallmentCell(r.id, 'instProfit', e.target.value)}
-                              className="w-28 bg-white border border-slate-300 rounded px-1.5 py-0.5 text-right text-xs text-amber-800 font-semibold focus:outline-none focus:border-emerald-600"
+                              className="w-24 bg-white border border-slate-300 rounded px-1.5 py-0.5 text-right text-xs text-amber-800 font-semibold focus:outline-none focus:border-emerald-600"
                             />
                           )}
                         </td>
+                        <td className="py-1.5 px-2 text-right">
+                          {r.isDisbursement ? '0.00' : (
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={r.gestationPayment || 0}
+                              onChange={(e) => handleUpdateInstallmentCell(r.id, 'gestationPayment', e.target.value)}
+                              className="w-20 bg-white border border-slate-300 rounded px-1.5 py-0.5 text-right text-xs text-slate-700 focus:outline-none focus:border-emerald-600"
+                            />
+                          )}
+                        </td>
+                        <td className="py-1.5 px-2 text-right">
+                          {r.isDisbursement ? '0.00' : (
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={r.overdueGestation || 0}
+                              onChange={(e) => handleUpdateInstallmentCell(r.id, 'overdueGestation', e.target.value)}
+                              className="w-20 bg-white border border-slate-300 rounded px-1.5 py-0.5 text-right text-xs text-slate-700 focus:outline-none focus:border-emerald-600"
+                            />
+                          )}
+                        </td>
+                        <td className="py-1.5 px-2 text-right">
+                          {r.isDisbursement ? '0.00' : (
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={r.overdueProfit || 0}
+                              onChange={(e) => handleUpdateInstallmentCell(r.id, 'overdueProfit', e.target.value)}
+                              className="w-20 bg-white border border-slate-300 rounded px-1.5 py-0.5 text-right text-xs text-slate-700 focus:outline-none focus:border-emerald-600"
+                            />
+                          )}
+                        </td>
+                        <td className="py-1.5 px-2 text-right text-slate-600">{fmtAmt(r.balance)}</td>
                         <td className="py-1.5 px-3 text-right text-slate-900 font-medium">{fmtAmt(r.totalInstallment)}</td>
-                        <td className="py-1.5 px-3 text-right text-slate-600">{fmtAmt(r.balance)}</td>
                       </tr>
                     ))}
+                    <tr className="bg-emerald-50/85 font-bold text-slate-900 border-t-2 border-emerald-300">
+                      <td className="py-2 px-3 font-sans">Total :</td>
+                      <td className="py-2 px-2"></td>
+                      <td className="py-2 px-2 text-right text-rose-700">{fmtAmt(parsedSchedule.grandTotalPrincipal)}</td>
+                      <td className="py-2 px-2 text-right text-amber-800">{fmtAmt(parsedSchedule.grandTotalProfit)}</td>
+                      <td className="py-2 px-2 text-right">{fmtAmt(parsedSchedule.grandTotalGestationPayment ?? 0)}</td>
+                      <td className="py-2 px-2 text-right">{fmtAmt(parsedSchedule.grandTotalOverdueGestation ?? 0)}</td>
+                      <td className="py-2 px-2 text-right">{fmtAmt(parsedSchedule.grandTotalOverdueProfit ?? 0)}</td>
+                      <td className="py-2 px-2 text-right">{fmtAmt(parsedSchedule.closingBalance ?? 0)}</td>
+                      <td className="py-2 px-3 text-right">{fmtAmt(parsedSchedule.grandTotalDebtService)}</td>
+                    </tr>
                   </tbody>
                 </table>
+              </div>
+              <div className="px-4 py-2 bg-slate-50 border-t border-slate-200 text-[10px] text-slate-500 font-sans">
+                {parsedSchedule.metadata.preparedByNote || 'Prepared By : ABABIL, Developed By : Millennium Information Solution Limited'}
               </div>
             </div>
           )}
@@ -702,6 +1029,21 @@ export const RepaymentScheduleStudio: React.FC<RepaymentScheduleStudioProps> = (
             </span>
           </div>
 
+          {minHistDscr !== null && minProjDscr !== null && minHistDscr < 1.0 && minProjDscr >= 1.25 && (
+            <div className="px-4 py-2.5 bg-gradient-to-r from-rose-50/80 via-slate-50 to-emerald-50/80 border-b border-slate-200 grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
+              <div className="text-rose-900">
+                <strong className="font-bold">Historical Pre-Rescheduling Inability:</strong>{' '}
+                Compressed margins and heavy legacy debt obligations constrained Historical EBITDA DSCR to{' '}
+                <span className="font-mono font-bold">{minHistDscr.toFixed(2)}x (&lt; 1.00x)</span>, substantiating rescheduling necessity.
+              </div>
+              <div className="text-emerald-900">
+                <strong className="font-bold">Projected Post-Rescheduling Capacity:</strong>{' '}
+                Restructured tenor &amp; stabilized operating margins lift Projected EBITDA DSCR to{' '}
+                <span className="font-mono font-bold">≥ {minProjDscr.toFixed(2)}x</span> with positive liquidity across the repayment horizon.
+              </div>
+            </div>
+          )}
+
           <div className="overflow-x-auto">
             <table className="w-full text-xs font-mono">
               <thead className="bg-slate-100 text-slate-700 border-b border-slate-200 text-[11px]">
@@ -722,6 +1064,7 @@ export const RepaymentScheduleStudio: React.FC<RepaymentScheduleStudioProps> = (
                 {debtServiceCoverage.map(row => (
                   <tr
                     key={row.year}
+                    title={row.reschedulingContext || ''}
                     className={row.isScheduleCovered ? 'bg-emerald-50/45 hover:bg-emerald-50/80' : 'hover:bg-slate-50'}
                   >
                     <td className="py-2 px-3 font-bold text-slate-900 whitespace-nowrap">
@@ -754,15 +1097,18 @@ export const RepaymentScheduleStudio: React.FC<RepaymentScheduleStudioProps> = (
                       {fmtAmt(row.closingCash)}
                     </td>
                     <td className="py-2 px-3 text-right font-sans">
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
-                        row.capacityStatus === 'STRONG'
-                          ? 'text-emerald-800 bg-emerald-50 border-emerald-300'
-                          : row.capacityStatus === 'ADEQUATE'
-                          ? 'text-sky-800 bg-sky-50 border-sky-300'
-                          : row.capacityStatus === 'TIGHT'
-                          ? 'text-amber-900 bg-amber-50 border-amber-300'
-                          : 'text-rose-800 bg-rose-50 border-rose-300'
-                      }`}>
+                      <span
+                        title={row.reschedulingContext || ''}
+                        className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
+                          row.capacityStatus === 'STRONG'
+                            ? 'text-emerald-800 bg-emerald-50 border-emerald-300'
+                            : row.capacityStatus === 'ADEQUATE'
+                            ? 'text-sky-800 bg-sky-50 border-sky-300'
+                            : row.capacityStatus === 'TIGHT'
+                            ? 'text-amber-900 bg-amber-50 border-amber-300'
+                            : 'text-rose-800 bg-rose-50 border-rose-300'
+                        }`}
+                      >
                         {row.capacityStatus}
                       </span>
                     </td>

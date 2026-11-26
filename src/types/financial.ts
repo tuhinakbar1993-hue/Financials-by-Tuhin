@@ -559,13 +559,17 @@ export interface RepaymentInstallmentRow {
 
 export interface RepaymentScheduleMetadata {
   sourceFileName: string;
-  parserMethod: 'pdf-text' | 'excel' | 'csv' | 'gemini-ocr' | 'manual-paste' | 'ababil-reference';
+  parserMethod: 'pdf-text' | 'excel' | 'csv' | 'gemini-ocr' | 'manual-paste' | 'ababil-reference' | 'generated';
   investmentMade?: number;
   interval?: string;
   numberOfInstallments?: number;
+  gestationPeriod?: string;
   disbursementDate?: string;
   firstInstallmentDate?: string;
   expiryDate?: string;
+  lastInstallmentMinimized?: string;
+  preparedByNote?: string;
+  annualProfitRatePct?: number;
   statedTotalPrincipal?: number;
   statedTotalProfit?: number;
   dateFormatDetected: 'DD/MM/YYYY' | 'MM/DD/YYYY' | 'YYYY-MM-DD' | 'EXCEL_SERIAL';
@@ -577,6 +581,9 @@ export interface AnnualRepaymentSummary {
   installmentCount: number;
   totalPrincipal: number; // Exact sum of Inst. Principal -> Repayment from Borrowings and Financing
   totalProfit: number; // Exact sum of Inst. Profit -> Finance Cost
+  totalGestationPayment?: number;
+  totalOverdueGestation?: number;
+  totalOverdueProfit?: number;
   totalDebtService: number;
   disbursementAmount: number;
   closingBalance: number;
@@ -589,7 +596,11 @@ export interface ParsedRepaymentSchedule {
   annualSummaries: AnnualRepaymentSummary[];
   grandTotalPrincipal: number;
   grandTotalProfit: number;
+  grandTotalGestationPayment?: number;
+  grandTotalOverdueGestation?: number;
+  grandTotalOverdueProfit?: number;
   grandTotalDebtService: number;
+  closingBalance?: number;
   validationErrors: string[];
   validationWarnings: string[];
   isValid: boolean;
@@ -610,6 +621,7 @@ export interface DebtServiceCoverageYear {
   netCashAfterDebtService: number;
   isScheduleCovered: boolean;
   capacityStatus: 'STRONG' | 'ADEQUATE' | 'TIGHT' | 'DEFICIT';
+  reschedulingContext?: string;
 }
 
 export interface RepaymentScheduleSnapshot {

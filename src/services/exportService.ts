@@ -26,6 +26,7 @@ import {
   PreviousFormatYearData,
   ProjectedFormatYearData,
   DebtServiceCoverageYear,
+  ParsedRepaymentSchedule,
   StatementConfigItem,
   StatementLabelOverrides,
   StatementCellOverrides,
@@ -1282,6 +1283,7 @@ function buildDebtServiceCoverageWorksheet(
     'Cash DSCR (x)',
     'Closing Cash',
     'Capacity Status',
+    'Rescheduling Assessment',
   ];
   const r = STD_DATA_START_ROW;
   const rows: ExcelCellValue[][] = dscrData.map((d, idx) => {
@@ -1298,12 +1300,471 @@ function buildDebtServiceCoverageWorksheet(
       Number(d.cashDscr.toFixed(2)),
       nCell(d.closingCash),
       d.capacityStatus,
+      d.reschedulingContext || '',
     ];
   });
   const sheetData = createTableDataForStatement('Debt Servicing & Repayment Capacity (DSCR)', company, headers, rows);
   const ws = XLSX.utils.aoa_to_sheet(sheetData);
-  applyColumnWidths(ws, [10, 12, 16, 16, 26, 26, 20, 14, 14, 18, 16]);
+  applyColumnWidths(ws, [10, 12, 16, 16, 26, 26, 20, 14, 14, 18, 16, 48]);
   return ws;
+}
+
+function buildRepaymentScheduleMetadataRows(schedule: ParsedRepaymentSchedule): (string | number)[][] {
+  const repaymentCount = schedule.rows.filter(r => !r.isDisbursement).length;
+  const firstRepRow = schedule.rows.find(r => !r.isDisbursement);
+  const lastRepRow = [...schedule.rows].reverse().find(r => !r.isDisbursement);
+  const invAmt = schedule.metadata.investmentMade ?? schedule.grandTotalPrincipal;
+  return [
+    [
+      'Investment Made :',
+      invAmt,
+      '',
+      '',
+      '',
+      'Disbursement Date :',
+      schedule.metadata.disbursementDate || schedule.rows[0]?.emiDateRaw || '',
+      '',
+      '',
+    ],
+    [
+      'Interval :',
+      schedule.metadata.interval || 'Monthly',
+      '',
+      '',
+      '',
+      '1st Installment Date :',
+      schedule.metadata.firstInstallmentDate || firstRepRow?.emiDateRaw || '',
+      '',
+      '',
+    ],
+    [
+      'Number of Installment :',
+      schedule.metadata.numberOfInstallments ?? repaymentCount,
+      '',
+      '',
+      '',
+      'Expiry Date :',
+      schedule.metadata.expiryDate || lastRepRow?.emiDateRaw || '',
+      '',
+      '',
+    ],
+    [
+      'Gestation Period :',
+      schedule.metadata.gestationPeriod || '0 Days',
+      '',
+      '',
+      '',
+      'Last Installment size minimized :',
+      schedule.metadata.lastInstallmentMinimized || 'No',
+      '',
+      '',
+    ],
+  ];
+}
+
+function buildRepaymentScheduleWorksheet(
+  company: CompanyProfile,
+  schedule: ParsedRepaymentSchedule
+): XLSX.WorkSheet {
+  const metaRows = buildRepaymentScheduleMetadataRows(schedule);
+  const headers = [
+    'Event Type.',
+    'EMI Date',
+    'Inst. Principal',
+    'Inst. Profit',
+    'Gestation Payment',
+    'Over due Gest.',
+    'Overdue Profit',
+    'Balance',
+    'Total',
+  ];
+  const sheetRows: ExcelCellValue[][] = [
+    [safeCompanyUpper(company)],
+    ['Repayment Schedule'],
+    ...metaRows.map(mr =>
+      mr.map((cell, idx) => (idx === 1 && typeof cell === 'number' ? nCell(cell) : cell))
+    ),
+    [],
+    headers,
+  ];
+
+  const dataStartRow = sheetRows.length + 1;
+  schedule.rows.forEach((row, idx) => {
+    const currRowNum = dataStartRow + idx;
+    const prevRowNum = currRowNum - 1;
+    const isFirstDisb = idx === 0 || Boolean(row.isDisbursement);
+    const balCell: ExcelCellValue = isFirstDisb
+      ? nCell(row.balance)
+      : fCell(`MAX(0,H${prevRowNum}-C${currRowNum})`, row.balance);
+    const totCell: ExcelCellValue = row.isDisbursement
+      ? nCell(0)
+      : fCell(`SUM(C${currRowNum}:G${currRowNum})`, row.totalInstallment);
+
+    sheetRows.push([
+      row.eventType,
+      row.emiDateRaw,
+      nCell(row.instPrincipal),
+      nCell(row.instProfit),
+      nCell(row.gestationPayment || 0),
+      nCell(row.overdueGestation || 0),
+      nCell(row.overdueProfit || 0),
+      balCell,
+      totCell,
+    ]);
+  });
+
+  if (schedule.rows.length > 0) {
+    const endRow = dataStartRow + schedule.rows.length - 1;
+    sheetRows.push([
+      'Total :',
+      '',
+      fCell(`SUM(C${dataStartRow}:C${endRow})`, schedule.grandTotalPrincipal),
+      fCell(`SUM(D${dataStartRow}:D${endRow})`, schedule.grandTotalProfit),
+      fCell(`SUM(E${dataStartRow}:E${endRow})`, schedule.grandTotalGestationPayment ?? 0),
+      fCell(`SUM(F${dataStartRow}:F${endRow})`, schedule.grandTotalOverdueGestation ?? 0),
+      fCell(`SUM(G${dataStartRow}:G${endRow})`, schedule.grandTotalOverdueProfit ?? 0),
+      nCell(schedule.closingBalance ?? 0),
+      fCell(`SUM(I${dataStartRow}:I${endRow})`, schedule.grandTotalDebtService),
+    ]);
+  }
+
+  sheetRows.push([]);
+  sheetRows.push([
+    schedule.metadata.preparedByNote ||
+      'Prepared By : ABABIL, Developed By : Millennium Information Solution Limited',
+  ]);
+
+  const ws = XLSX.utils.aoa_to_sheet(sheetRows);
+  applyColumnWidths(ws, [20, 14, 18, 16, 18, 16, 16, 18, 18]);
+  return ws;
+}
+
+function buildAnnualScheduleSummaryWorksheet(
+  company: CompanyProfile,
+  schedule: ParsedRepaymentSchedule
+): XLSX.WorkSheet {
+  const headers = [
+    'Financial Year',
+    'Installments',
+    'Inst. Principal',
+    'Inst. Profit',
+    'Gestation Payment',
+    'Over due Gest.',
+    'Overdue Profit',
+    'Total Debt Service',
+    'Closing Balance',
+  ];
+  const r = STD_DATA_START_ROW;
+  const rows: ExcelCellValue[][] = schedule.annualSummaries.map((s, idx) => {
+    const rowNum = r + idx;
+    return [
+      `FY ${s.financialYear}`,
+      s.installmentCount,
+      nCell(s.totalPrincipal),
+      nCell(s.totalProfit),
+      nCell(s.totalGestationPayment ?? 0),
+      nCell(s.totalOverdueGestation ?? 0),
+      nCell(s.totalOverdueProfit ?? 0),
+      fCell(`SUM(C${rowNum}:G${rowNum})`, s.totalDebtService),
+      nCell(s.closingBalance),
+    ];
+  });
+  if (schedule.annualSummaries.length > 0) {
+    const endRow = r + schedule.annualSummaries.length - 1;
+    rows.push([
+      'Total :',
+      fCell(`SUM(B${r}:B${endRow})`, schedule.annualSummaries.reduce((sum, a) => sum + a.installmentCount, 0)),
+      fCell(`SUM(C${r}:C${endRow})`, schedule.grandTotalPrincipal),
+      fCell(`SUM(D${r}:D${endRow})`, schedule.grandTotalProfit),
+      fCell(`SUM(E${r}:E${endRow})`, schedule.grandTotalGestationPayment ?? 0),
+      fCell(`SUM(F${r}:F${endRow})`, schedule.grandTotalOverdueGestation ?? 0),
+      fCell(`SUM(G${r}:G${endRow})`, schedule.grandTotalOverdueProfit ?? 0),
+      fCell(`SUM(H${r}:H${endRow})`, schedule.grandTotalDebtService),
+      nCell(schedule.closingBalance ?? 0),
+    ]);
+  }
+  const sheetData = createTableDataForStatement(
+    'Annualized Repayment Schedule Summary',
+    company,
+    headers,
+    rows
+  );
+  const ws = XLSX.utils.aoa_to_sheet(sheetData);
+  applyColumnWidths(ws, [16, 14, 18, 16, 18, 16, 16, 18, 18]);
+  return ws;
+}
+
+export function exportRepaymentScheduleExcel(
+  company: CompanyProfile,
+  schedule: ParsedRepaymentSchedule,
+  dscrData?: DebtServiceCoverageYear[],
+  filename = `${sanitizeFilePrefix(company.companyName)}_Repayment_Schedule.xlsx`
+) {
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, buildRepaymentScheduleWorksheet(company, schedule), '1. Repayment Schedule');
+  XLSX.utils.book_append_sheet(wb, buildAnnualScheduleSummaryWorksheet(company, schedule), '2. Annual Debt Summary');
+  const activeDscr = (dscrData || []).filter(d => d.totalDebtService > 0 || d.ebitda !== 0);
+  if (activeDscr.length > 0) {
+    XLSX.utils.book_append_sheet(wb, buildDebtServiceCoverageWorksheet(company, activeDscr), '3. DSCR Justification');
+  }
+  XLSX.writeFile(wb, filename);
+}
+
+export async function exportRepaymentScheduleWord(
+  company: CompanyProfile,
+  schedule: ParsedRepaymentSchedule,
+  dscrData?: DebtServiceCoverageYear[],
+  filename = `${sanitizeFilePrefix(company.companyName)}_Repayment_Schedule.docx`
+) {
+  const metaRows = buildRepaymentScheduleMetadataRows(schedule);
+  const schedHeaders = [
+    'Event Type.',
+    'EMI Date',
+    'Inst. Principal',
+    'Inst. Profit',
+    'Gestation Payment',
+    'Over due Gest.',
+    'Overdue Profit',
+    'Balance',
+    'Total',
+  ];
+  const schedRows: (string | number)[][] = [
+    ...schedule.rows.map(row => [
+      row.eventType,
+      row.emiDateRaw,
+      row.instPrincipal,
+      row.instProfit,
+      row.gestationPayment || 0,
+      row.overdueGestation || 0,
+      row.overdueProfit || 0,
+      row.balance,
+      row.totalInstallment,
+    ]),
+    [
+      'Total :',
+      '',
+      schedule.grandTotalPrincipal,
+      schedule.grandTotalProfit,
+      schedule.grandTotalGestationPayment ?? 0,
+      schedule.grandTotalOverdueGestation ?? 0,
+      schedule.grandTotalOverdueProfit ?? 0,
+      schedule.closingBalance ?? 0,
+      schedule.grandTotalDebtService,
+    ],
+  ];
+
+  const activeDscr = (dscrData || []).filter(d => d.totalDebtService > 0);
+  const doc = new Document({
+    sections: [
+      {
+        children: [
+          new Paragraph({ text: safeCompanyName(company), heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER }),
+          new Paragraph({ text: 'Repayment Schedule', heading: HeadingLevel.HEADING_1, alignment: AlignmentType.CENTER }),
+          createDocxTable(
+            ['Facility Parameter', 'Value', 'Schedule Dates', 'Date / Setting'],
+            metaRows.map(mr => [
+              String(mr[0]),
+              typeof mr[1] === 'number' ? fmtExportNum(mr[1]) : String(mr[1]),
+              String(mr[5]),
+              String(mr[6]),
+            ]),
+            4
+          ),
+          new Paragraph({ text: '' }),
+          createDocxTable(schedHeaders, schedRows, 2),
+          new Paragraph({ text: '' }),
+          new Paragraph({
+            text:
+              schedule.metadata.preparedByNote ||
+              'Prepared By : ABABIL, Developed By : Millennium Information Solution Limited',
+          }),
+          new Paragraph({ text: '' }),
+          new Paragraph({ text: 'Annualized Repayment Schedule Aggregation', heading: HeadingLevel.HEADING_2 }),
+          createDocxTable(
+            ['Financial Year', 'Installments', 'Inst. Principal', 'Inst. Profit', 'Total Debt Service', 'Closing Balance'],
+            [
+              ...schedule.annualSummaries.map(s => [
+                `FY ${s.financialYear}`,
+                s.installmentCount,
+                s.totalPrincipal,
+                s.totalProfit,
+                s.totalDebtService,
+                s.closingBalance,
+              ]),
+              [
+                'Total :',
+                schedule.annualSummaries.reduce((sum, a) => sum + a.installmentCount, 0),
+                schedule.grandTotalPrincipal,
+                schedule.grandTotalProfit,
+                schedule.grandTotalDebtService,
+                schedule.closingBalance ?? 0,
+              ],
+            ],
+            1
+          ),
+          ...(activeDscr.length > 0
+            ? [
+                new Paragraph({ text: '' }),
+                new Paragraph({
+                  text: 'Debt Servicing & Rescheduling Justification (Historical vs Projected DSCR)',
+                  heading: HeadingLevel.HEADING_2,
+                }),
+                createDocxTable(
+                  ['Year', 'EBITDA', 'Pre-Fin OCF', 'Principal', 'Finance Cost', 'Debt Service', 'EBITDA DSCR', 'Cash DSCR', 'Status', 'Assessment'],
+                  activeDscr.map(d => [
+                    `${d.year}${d.isProjected ? ' (P)' : ' (H)'}`,
+                    d.ebitda,
+                    d.operatingCashFlowBeforeFinance,
+                    d.scheduledPrincipal,
+                    d.scheduledFinanceCost,
+                    d.totalDebtService,
+                    `${d.ebitdaDscr.toFixed(2)}x`,
+                    `${d.cashDscr.toFixed(2)}x`,
+                    d.capacityStatus,
+                    d.reschedulingContext || '',
+                  ]),
+                  1
+                ),
+              ]
+            : []),
+        ],
+      },
+    ],
+  });
+
+  const blob = await Packer.toBlob(doc);
+  downloadBlob(blob, filename);
+}
+
+export function exportRepaymentSchedulePdf(
+  company: CompanyProfile,
+  schedule: ParsedRepaymentSchedule,
+  dscrData?: DebtServiceCoverageYear[],
+  filename = `${sanitizeFilePrefix(company.companyName)}_Repayment_Schedule.pdf`
+) {
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  renderPdfHeader(doc, company, 'REPAYMENT SCHEDULE (EXACT AUTOMATED INSTALLMENT LEDGER)');
+  const metaRows = buildRepaymentScheduleMetadataRows(schedule);
+
+  autoTable(doc, {
+    body: metaRows.map(mr => [
+      String(mr[0]),
+      typeof mr[1] === 'number' ? fmtExportNum(mr[1]) : String(mr[1]),
+      String(mr[5]),
+      String(mr[6]),
+    ]),
+    startY: 26,
+    theme: 'grid',
+    styles: { fontSize: 7.5, cellPadding: 1.5, textColor: [15, 23, 42] },
+    columnStyles: {
+      0: { fontStyle: 'bold', cellWidth: 46 },
+      1: { halign: 'right', cellWidth: 45 },
+      2: { fontStyle: 'bold', cellWidth: 56 },
+      3: { halign: 'right', cellWidth: 45 },
+    },
+    margin: { left: 14, right: 14 },
+  });
+
+  const metaEndY = ((doc as unknown as { lastAutoTable?: { finalY?: number } }).lastAutoTable?.finalY ?? 50) + 4;
+  const schedBody: string[][] = [
+    ...schedule.rows.map(row => [
+      row.eventType,
+      row.emiDateRaw,
+      fmtExportNum(row.instPrincipal),
+      fmtExportNum(row.instProfit),
+      fmtExportNum(row.gestationPayment || 0),
+      fmtExportNum(row.overdueGestation || 0),
+      fmtExportNum(row.overdueProfit || 0),
+      fmtExportNum(row.balance),
+      fmtExportNum(row.totalInstallment),
+    ]),
+    [
+      'Total :',
+      '',
+      fmtExportNum(schedule.grandTotalPrincipal),
+      fmtExportNum(schedule.grandTotalProfit),
+      fmtExportNum(schedule.grandTotalGestationPayment ?? 0),
+      fmtExportNum(schedule.grandTotalOverdueGestation ?? 0),
+      fmtExportNum(schedule.grandTotalOverdueProfit ?? 0),
+      fmtExportNum(schedule.closingBalance ?? 0),
+      fmtExportNum(schedule.grandTotalDebtService),
+    ],
+  ];
+
+  autoTable(doc, {
+    head: [['Event Type.', 'EMI Date', 'Inst. Principal', 'Inst. Profit', 'Gestation Payment', 'Over due Gest.', 'Overdue Profit', 'Balance', 'Total']],
+    body: schedBody,
+    startY: metaEndY,
+    styles: { fontSize: 7.2, cellPadding: 1.4, font: 'helvetica' },
+    headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: 'bold' },
+    alternateRowStyles: { fillColor: [248, 250, 252] },
+    columnStyles: {
+      0: { halign: 'left' },
+      1: { halign: 'center' },
+      2: { halign: 'right' },
+      3: { halign: 'right' },
+      4: { halign: 'right' },
+      5: { halign: 'right' },
+      6: { halign: 'right' },
+      7: { halign: 'right' },
+      8: { halign: 'right' },
+    },
+    didParseCell: (data) => {
+      if (data.section === 'body' && data.row.index === schedBody.length - 1) {
+        data.cell.styles.fontStyle = 'bold';
+        data.cell.styles.fillColor = [236, 253, 245];
+      }
+    },
+    margin: { left: 14, right: 14 },
+  });
+
+  const endSchedY = ((doc as unknown as { lastAutoTable?: { finalY?: number } }).lastAutoTable?.finalY ?? 180) + 5;
+  if (endSchedY < 194) {
+    doc.setFontSize(7.5);
+    doc.setTextColor(71, 85, 105);
+    doc.text(
+      schedule.metadata.preparedByNote ||
+        'Prepared By : ABABIL, Developed By : Millennium Information Solution Limited',
+      14,
+      endSchedY
+    );
+  }
+
+  const activeDscr = (dscrData || []).filter(d => d.totalDebtService > 0);
+  if (activeDscr.length > 0) {
+    doc.addPage();
+    renderPdfHeader(doc, company, 'DEBT SERVICING & RESCHEDULING JUSTIFICATION (HISTORICAL VS PROJECTED DSCR)');
+    autoTable(doc, {
+      head: [['Year', 'EBITDA', 'Pre-Fin OCF', 'Inst. Principal', 'Finance Cost', 'Debt Service', 'EBITDA DSCR', 'Cash DSCR', 'Closing Cash', 'Status', 'Assessment']],
+      body: activeDscr.map(d => [
+        `${d.year}${d.isProjected ? ' (P)' : ' (H)'}`,
+        fmtExportNum(d.ebitda),
+        fmtExportNum(d.operatingCashFlowBeforeFinance),
+        fmtExportNum(d.scheduledPrincipal),
+        fmtExportNum(d.scheduledFinanceCost),
+        fmtExportNum(d.totalDebtService),
+        `${d.ebitdaDscr.toFixed(2)}x`,
+        `${d.cashDscr.toFixed(2)}x`,
+        fmtExportNum(d.closingCash),
+        d.capacityStatus,
+        d.reschedulingContext || '',
+      ]),
+      startY: 28,
+      styles: { fontSize: 7.2, cellPadding: 1.6 },
+      headStyles: { fillColor: [30, 41, 59] },
+    });
+  }
+
+  const totalPages = doc.getNumberOfPages();
+  for (let i = 1; i <= totalPages; i++) {
+    doc.setPage(i);
+    doc.setFontSize(8);
+    doc.setTextColor(148, 163, 184);
+    doc.text(`Financials with Tuhin · Page ${i} of ${totalPages}`, 14, 210 - 8);
+    doc.text(`Repayment Schedule & DSCR Justification`, 297 - 14, 210 - 8, { align: 'right' });
+  }
+
+  doc.save(filename);
 }
 
 // COMPLETE COMBINED EXCEL PACKAGE (Section 76.11.A)
@@ -1317,7 +1778,8 @@ export function exportCompletePackageExcel(
   notes: FinancialNoteItem[],
   filename = `${sanitizeFilePrefix(company.companyName)}_Complete_Financial_Package.xlsx`,
   debtServiceCoverage?: DebtServiceCoverageYear[],
-  options?: ExportSyncOptions
+  options?: ExportSyncOptions,
+  parsedSchedule?: ParsedRepaymentSchedule | null
 ) {
   const wb = XLSX.utils.book_new();
 
@@ -1353,6 +1815,11 @@ export function exportCompletePackageExcel(
   const activeDscr = (debtServiceCoverage || []).filter(d => d.totalDebtService > 0);
   if (activeDscr.length > 0) {
     XLSX.utils.book_append_sheet(wb, buildDebtServiceCoverageWorksheet(company, activeDscr), '7. Debt Servicing & DSCR');
+  }
+
+  if (parsedSchedule && parsedSchedule.rows.length > 0) {
+    const schedTab = activeDscr.length > 0 ? '8. Repayment Schedule' : '7. Repayment Schedule';
+    XLSX.utils.book_append_sheet(wb, buildRepaymentScheduleWorksheet(company, parsedSchedule), schedTab);
   }
 
   XLSX.writeFile(wb, filename);
@@ -1687,7 +2154,8 @@ export async function exportCompletePackageWord(
   notes: FinancialNoteItem[],
   filename = `${sanitizeFilePrefix(company.companyName)}_Complete_Package.docx`,
   debtServiceCoverage?: DebtServiceCoverageYear[],
-  options?: ExportSyncOptions
+  options?: ExportSyncOptions,
+  parsedSchedule?: ParsedRepaymentSchedule | null
 ) {
   const isHeaders = ['Item', ...incomeData.map(d => `${d.year}${d.isProjected ? ' (P)' : ''}`)];
   const isRows = buildSyncIncomeTextRows(incomeData, options);
@@ -1759,11 +2227,11 @@ export async function exportCompletePackageWord(
             ? [
                 new Paragraph({ text: '7. Debt Servicing & Repayment Capacity Analysis (DSCR)', heading: HeadingLevel.HEADING_2 }),
                 createDocxTable(
-                  ['Year', 'EBITDA', 'Pre-Fin OCF', 'Inst. Principal', 'Finance Cost', 'Total Debt Service', 'EBITDA DSCR', 'Cash DSCR', 'Closing Cash', 'Status'],
+                  ['Year', 'EBITDA', 'Pre-Fin OCF', 'Inst. Principal', 'Finance Cost', 'Total Debt Service', 'EBITDA DSCR', 'Cash DSCR', 'Closing Cash', 'Status', 'Rescheduling Assessment'],
                   (debtServiceCoverage || [])
                     .filter(d => d.totalDebtService > 0)
                     .map(d => [
-                      `${d.year}${d.isProjected ? ' (P)' : ''}`,
+                      `${d.year}${d.isProjected ? ' (P)' : ' (H)'}`,
                       d.ebitda,
                       d.operatingCashFlowBeforeFinance,
                       d.scheduledPrincipal,
@@ -1773,8 +2241,63 @@ export async function exportCompletePackageWord(
                       `${d.cashDscr.toFixed(2)}x`,
                       d.closingCash,
                       d.capacityStatus,
+                      d.reschedulingContext || '',
                     ])
                 ),
+              ]
+            : []),
+
+          ...(parsedSchedule && parsedSchedule.rows.length > 0
+            ? [
+                new Paragraph({ text: '' }),
+                new Paragraph({
+                  text: `${(debtServiceCoverage || []).some(d => d.totalDebtService > 0) ? '8' : '7'}. Repayment Schedule (Exact Installment Ledger)`,
+                  heading: HeadingLevel.HEADING_2,
+                }),
+                createDocxTable(
+                  ['Facility Parameter', 'Value', 'Schedule Dates', 'Date / Setting'],
+                  buildRepaymentScheduleMetadataRows(parsedSchedule).map(mr => [
+                    String(mr[0]),
+                    typeof mr[1] === 'number' ? fmtExportNum(mr[1]) : String(mr[1]),
+                    String(mr[5]),
+                    String(mr[6]),
+                  ]),
+                  4
+                ),
+                new Paragraph({ text: '' }),
+                createDocxTable(
+                  ['Event Type.', 'EMI Date', 'Inst. Principal', 'Inst. Profit', 'Gestation Payment', 'Over due Gest.', 'Overdue Profit', 'Balance', 'Total'],
+                  [
+                    ...parsedSchedule.rows.map(r => [
+                      r.eventType,
+                      r.emiDateRaw,
+                      r.instPrincipal,
+                      r.instProfit,
+                      r.gestationPayment || 0,
+                      r.overdueGestation || 0,
+                      r.overdueProfit || 0,
+                      r.balance,
+                      r.totalInstallment,
+                    ]),
+                    [
+                      'Total :',
+                      '',
+                      parsedSchedule.grandTotalPrincipal,
+                      parsedSchedule.grandTotalProfit,
+                      parsedSchedule.grandTotalGestationPayment ?? 0,
+                      parsedSchedule.grandTotalOverdueGestation ?? 0,
+                      parsedSchedule.grandTotalOverdueProfit ?? 0,
+                      parsedSchedule.closingBalance ?? 0,
+                      parsedSchedule.grandTotalDebtService,
+                    ],
+                  ],
+                  2
+                ),
+                new Paragraph({
+                  text:
+                    parsedSchedule.metadata.preparedByNote ||
+                    'Prepared By : ABABIL, Developed By : Millennium Information Solution Limited',
+                }),
               ]
             : []),
         ],
@@ -1956,7 +2479,8 @@ export function exportCompletePackagePdf(
   notes: FinancialNoteItem[],
   filename = `${sanitizeFilePrefix(company.companyName)}_Complete_Financial_Package.pdf`,
   debtServiceCoverage?: DebtServiceCoverageYear[],
-  options?: ExportSyncOptions
+  options?: ExportSyncOptions,
+  parsedSchedule?: ParsedRepaymentSchedule | null
 ) {
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
 
@@ -2123,9 +2647,9 @@ export function exportCompletePackagePdf(
     doc.addPage();
     renderPdfHeader(doc, company, '7. DEBT SERVICING & REPAYMENT CAPACITY ANALYSIS (DSCR)');
     autoTable(doc, {
-      head: [['Year', 'EBITDA', 'Pre-Fin OCF', 'Inst. Principal', 'Finance Cost', 'Total Debt Service', 'EBITDA DSCR', 'Cash DSCR', 'Closing Cash', 'Status']],
+      head: [['Year', 'EBITDA', 'Pre-Fin OCF', 'Inst. Principal', 'Finance Cost', 'Total Debt Service', 'EBITDA DSCR', 'Cash DSCR', 'Closing Cash', 'Status', 'Assessment']],
       body: activeDscr.map(d => [
-        `${d.year}${d.isProjected ? ' (P)' : ''}`,
+        `${d.year}${d.isProjected ? ' (P)' : ' (H)'}`,
         fmtExportNum(d.ebitda),
         fmtExportNum(d.operatingCashFlowBeforeFinance),
         fmtExportNum(d.scheduledPrincipal),
@@ -2135,10 +2659,78 @@ export function exportCompletePackagePdf(
         `${d.cashDscr.toFixed(2)}x`,
         fmtExportNum(d.closingCash),
         d.capacityStatus,
+        d.reschedulingContext || '',
       ]),
       startY: 28,
-      styles: { fontSize: 8, cellPadding: 2 },
+      styles: { fontSize: 7.4, cellPadding: 1.8 },
       headStyles: { fillColor: [30, 41, 59] },
+    });
+  }
+
+  if (parsedSchedule && parsedSchedule.rows.length > 0) {
+    doc.addPage();
+    renderPdfHeader(
+      doc,
+      company,
+      `${activeDscr.length > 0 ? '8' : '7'}. REPAYMENT SCHEDULE (EXACT AUTOMATED INSTALLMENT LEDGER)`
+    );
+    const metaRows = buildRepaymentScheduleMetadataRows(parsedSchedule);
+    autoTable(doc, {
+      body: metaRows.map(mr => [
+        String(mr[0]),
+        typeof mr[1] === 'number' ? fmtExportNum(mr[1]) : String(mr[1]),
+        String(mr[5]),
+        String(mr[6]),
+      ]),
+      startY: 26,
+      theme: 'grid',
+      styles: { fontSize: 7.4, cellPadding: 1.4, textColor: [15, 23, 42] },
+      columnStyles: {
+        0: { fontStyle: 'bold', cellWidth: 46 },
+        1: { halign: 'right', cellWidth: 45 },
+        2: { fontStyle: 'bold', cellWidth: 56 },
+        3: { halign: 'right', cellWidth: 45 },
+      },
+      margin: { left: 14, right: 14 },
+    });
+    const metaEndY = ((doc as unknown as { lastAutoTable?: { finalY?: number } }).lastAutoTable?.finalY ?? 50) + 4;
+    const schedBody: string[][] = [
+      ...parsedSchedule.rows.map(r => [
+        r.eventType,
+        r.emiDateRaw,
+        fmtExportNum(r.instPrincipal),
+        fmtExportNum(r.instProfit),
+        fmtExportNum(r.gestationPayment || 0),
+        fmtExportNum(r.overdueGestation || 0),
+        fmtExportNum(r.overdueProfit || 0),
+        fmtExportNum(r.balance),
+        fmtExportNum(r.totalInstallment),
+      ]),
+      [
+        'Total :',
+        '',
+        fmtExportNum(parsedSchedule.grandTotalPrincipal),
+        fmtExportNum(parsedSchedule.grandTotalProfit),
+        fmtExportNum(parsedSchedule.grandTotalGestationPayment ?? 0),
+        fmtExportNum(parsedSchedule.grandTotalOverdueGestation ?? 0),
+        fmtExportNum(parsedSchedule.grandTotalOverdueProfit ?? 0),
+        fmtExportNum(parsedSchedule.closingBalance ?? 0),
+        fmtExportNum(parsedSchedule.grandTotalDebtService),
+      ],
+    ];
+    autoTable(doc, {
+      head: [['Event Type.', 'EMI Date', 'Inst. Principal', 'Inst. Profit', 'Gestation Payment', 'Over due Gest.', 'Overdue Profit', 'Balance', 'Total']],
+      body: schedBody,
+      startY: metaEndY,
+      styles: { fontSize: 7.0, cellPadding: 1.3 },
+      headStyles: { fillColor: [30, 41, 59] },
+      didParseCell: (data) => {
+        if (data.section === 'body' && data.row.index === schedBody.length - 1) {
+          data.cell.styles.fontStyle = 'bold';
+          data.cell.styles.fillColor = [236, 253, 245];
+        }
+      },
+      margin: { left: 14, right: 14 },
     });
   }
 
@@ -3485,7 +4077,9 @@ export function exportProjectedFinancialsExcel(
   company: CompanyProfile,
   projData: ProjectedFormatYearData[],
   filenameOrOptions?: string | ExportSyncOptions,
-  explicitOptions?: ExportSyncOptions
+  explicitOptions?: ExportSyncOptions,
+  parsedSchedule?: ParsedRepaymentSchedule | null,
+  debtServiceCoverage?: DebtServiceCoverageYear[]
 ) {
   if (projData.length === 0) return;
   const { filename: resolvedFilename, options } = resolveFilenameAndOptions(
@@ -4068,6 +4662,15 @@ export function exportProjectedFinancialsExcel(
   applyColumnWidths(wsSched, [8, 28, 18, 20, 20, 20, 14, 26, 20]);
   XLSX.utils.book_append_sheet(wb, wsSched, '5. Schedule-A PPE');
 
+  const activeDscr = (debtServiceCoverage || []).filter(d => d.totalDebtService > 0);
+  if (parsedSchedule && parsedSchedule.rows.length > 0) {
+    XLSX.utils.book_append_sheet(wb, buildRepaymentScheduleWorksheet(company, parsedSchedule), '6. Repayment Schedule');
+  }
+  if (activeDscr.length > 0) {
+    const dscrTab = parsedSchedule && parsedSchedule.rows.length > 0 ? '7. DSCR Justification' : '6. DSCR Justification';
+    XLSX.utils.book_append_sheet(wb, buildDebtServiceCoverageWorksheet(company, activeDscr), dscrTab);
+  }
+
   XLSX.writeFile(wb, resolvedFilename);
 }
 
@@ -4075,7 +4678,9 @@ export async function exportProjectedFinancialsWord(
   company: CompanyProfile,
   projData: ProjectedFormatYearData[],
   filenameOrOptions?: string | ExportSyncOptions,
-  explicitOptions?: ExportSyncOptions
+  explicitOptions?: ExportSyncOptions,
+  parsedSchedule?: ParsedRepaymentSchedule | null,
+  debtServiceCoverage?: DebtServiceCoverageYear[]
 ) {
   if (projData.length === 0) return;
   const { filename: resolvedFilename, options } = resolveFilenameAndOptions(
@@ -4157,6 +4762,87 @@ export async function exportProjectedFinancialsWord(
             ),
             new Paragraph({ text: '' }),
           ]),
+
+          ...(parsedSchedule && parsedSchedule.rows.length > 0
+            ? [
+                new Paragraph({ children: [new PageBreak()] }),
+                new Paragraph({ text: safeCompanyName(company), heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER }),
+                new Paragraph({ children: [new TextRun({ text: 'Repayment Schedule', bold: true, size: 22 })], alignment: AlignmentType.CENTER }),
+                new Paragraph({ text: '' }),
+                createDocxTable(
+                  ['Facility Parameter', 'Value', 'Schedule Dates', 'Date / Setting'],
+                  buildRepaymentScheduleMetadataRows(parsedSchedule).map(mr => [
+                    String(mr[0]),
+                    typeof mr[1] === 'number' ? fmtExportNum(mr[1]) : String(mr[1]),
+                    String(mr[5]),
+                    String(mr[6]),
+                  ]),
+                  4
+                ),
+                new Paragraph({ text: '' }),
+                createDocxTable(
+                  ['Event Type.', 'EMI Date', 'Inst. Principal', 'Inst. Profit', 'Gestation Payment', 'Over due Gest.', 'Overdue Profit', 'Balance', 'Total'],
+                  [
+                    ...parsedSchedule.rows.map(r => [
+                      r.eventType,
+                      r.emiDateRaw,
+                      r.instPrincipal,
+                      r.instProfit,
+                      r.gestationPayment || 0,
+                      r.overdueGestation || 0,
+                      r.overdueProfit || 0,
+                      r.balance,
+                      r.totalInstallment,
+                    ]),
+                    [
+                      'Total :',
+                      '',
+                      parsedSchedule.grandTotalPrincipal,
+                      parsedSchedule.grandTotalProfit,
+                      parsedSchedule.grandTotalGestationPayment ?? 0,
+                      parsedSchedule.grandTotalOverdueGestation ?? 0,
+                      parsedSchedule.grandTotalOverdueProfit ?? 0,
+                      parsedSchedule.closingBalance ?? 0,
+                      parsedSchedule.grandTotalDebtService,
+                    ],
+                  ],
+                  2
+                ),
+                new Paragraph({
+                  text:
+                    parsedSchedule.metadata.preparedByNote ||
+                    'Prepared By : ABABIL, Developed By : Millennium Information Solution Limited',
+                }),
+              ]
+            : []),
+
+          ...((debtServiceCoverage || []).some(d => d.totalDebtService > 0)
+            ? [
+                new Paragraph({ children: [new PageBreak()] }),
+                new Paragraph({
+                  text: 'Debt Servicing & Rescheduling Justification (Historical vs Projected DSCR)',
+                  heading: HeadingLevel.HEADING_2,
+                }),
+                createDocxTable(
+                  ['Year', 'EBITDA', 'Pre-Fin OCF', 'Inst. Principal', 'Finance Cost', 'Debt Service', 'EBITDA DSCR', 'Cash DSCR', 'Status', 'Assessment'],
+                  (debtServiceCoverage || [])
+                    .filter(d => d.totalDebtService > 0)
+                    .map(d => [
+                      `${d.year}${d.isProjected ? ' (P)' : ' (H)'}`,
+                      d.ebitda,
+                      d.operatingCashFlowBeforeFinance,
+                      d.scheduledPrincipal,
+                      d.scheduledFinanceCost,
+                      d.totalDebtService,
+                      `${d.ebitdaDscr.toFixed(2)}x`,
+                      `${d.cashDscr.toFixed(2)}x`,
+                      d.capacityStatus,
+                      d.reschedulingContext || '',
+                    ]),
+                  1
+                ),
+              ]
+            : []),
         ],
       },
     ],
@@ -4170,7 +4856,9 @@ export function exportProjectedFinancialsPdf(
   company: CompanyProfile,
   projData: ProjectedFormatYearData[],
   filenameOrOptions?: string | ExportSyncOptions,
-  explicitOptions?: ExportSyncOptions
+  explicitOptions?: ExportSyncOptions,
+  parsedSchedule?: ParsedRepaymentSchedule | null,
+  debtServiceCoverage?: DebtServiceCoverageYear[]
 ) {
   if (projData.length === 0) return;
   const { filename: resolvedFilename, options } = resolveFilenameAndOptions(
@@ -4506,6 +5194,95 @@ export function exportProjectedFinancialsPdf(
     });
     ySched = ((doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? ySched + 24) + 5;
   });
+
+  if (parsedSchedule && parsedSchedule.rows.length > 0) {
+    doc.addPage();
+    const schedStartY = drawProjHeader('Repayment Schedule', safeCompanyName(company));
+    const metaRows = buildRepaymentScheduleMetadataRows(parsedSchedule);
+    autoTable(doc, {
+      body: metaRows.map(mr => [
+        String(mr[0]),
+        typeof mr[1] === 'number' ? fmtExactNum(mr[1]) : String(mr[1]),
+        String(mr[5]),
+        String(mr[6]),
+      ]),
+      startY: schedStartY,
+      theme: 'grid',
+      styles: { fontSize: 7.4, cellPadding: 1.4, textColor: [15, 23, 42] },
+      columnStyles: {
+        0: { fontStyle: 'bold', cellWidth: 46 },
+        1: { halign: 'right', cellWidth: 45 },
+        2: { fontStyle: 'bold', cellWidth: 56 },
+        3: { halign: 'right', cellWidth: 45 },
+      },
+      margin: { left: 10, right: 10 },
+    });
+    const metaEndY = ((doc as unknown as { lastAutoTable?: { finalY?: number } }).lastAutoTable?.finalY ?? schedStartY + 24) + 3;
+    const schedBody: string[][] = [
+      ...parsedSchedule.rows.map(r => [
+        r.eventType,
+        r.emiDateRaw,
+        fmtExactNum(r.instPrincipal),
+        fmtExactNum(r.instProfit),
+        fmtExactNum(r.gestationPayment || 0),
+        fmtExactNum(r.overdueGestation || 0),
+        fmtExactNum(r.overdueProfit || 0),
+        fmtExactNum(r.balance),
+        fmtExactNum(r.totalInstallment),
+      ]),
+      [
+        'Total :',
+        '',
+        fmtExactNum(parsedSchedule.grandTotalPrincipal),
+        fmtExactNum(parsedSchedule.grandTotalProfit),
+        fmtExactNum(parsedSchedule.grandTotalGestationPayment ?? 0),
+        fmtExactNum(parsedSchedule.grandTotalOverdueGestation ?? 0),
+        fmtExactNum(parsedSchedule.grandTotalOverdueProfit ?? 0),
+        fmtExactNum(parsedSchedule.closingBalance ?? 0),
+        fmtExactNum(parsedSchedule.grandTotalDebtService),
+      ],
+    ];
+    autoTable(doc, {
+      head: [['Event Type.', 'EMI Date', 'Inst. Principal', 'Inst. Profit', 'Gestation Payment', 'Over due Gest.', 'Overdue Profit', 'Balance', 'Total']],
+      body: schedBody,
+      startY: metaEndY,
+      styles: { fontSize: 6.8, cellPadding: 1.2 },
+      headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: 'bold' },
+      didParseCell: (data) => {
+        if (data.section === 'body' && data.row.index === schedBody.length - 1) {
+          data.cell.styles.fontStyle = 'bold';
+          data.cell.styles.fillColor = [236, 253, 245];
+        }
+      },
+      margin: { left: 10, right: 10 },
+    });
+  }
+
+  const activeDscr = (debtServiceCoverage || []).filter(d => d.totalDebtService > 0);
+  if (activeDscr.length > 0) {
+    doc.addPage();
+    const dscrY = drawProjHeader('Debt Servicing & Rescheduling Justification (DSCR)', formatFyProjectedAsAt(maxYear, company.financialYearEnd));
+    autoTable(doc, {
+      head: [['Year', 'EBITDA', 'Pre-Fin OCF', 'Principal', 'Finance Cost', 'Debt Service', 'EBITDA DSCR', 'Cash DSCR', 'Closing Cash', 'Status', 'Assessment']],
+      body: activeDscr.map(d => [
+        `${d.year}${d.isProjected ? ' (P)' : ' (H)'}`,
+        fmtExactNum(d.ebitda),
+        fmtExactNum(d.operatingCashFlowBeforeFinance),
+        fmtExactNum(d.scheduledPrincipal),
+        fmtExactNum(d.scheduledFinanceCost),
+        fmtExactNum(d.totalDebtService),
+        `${d.ebitdaDscr.toFixed(2)}x`,
+        `${d.cashDscr.toFixed(2)}x`,
+        fmtExactNum(d.closingCash),
+        d.capacityStatus,
+        d.reschedulingContext || '',
+      ]),
+      startY: dscrY,
+      styles: { fontSize: 7.2, cellPadding: 1.5 },
+      headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: 'bold' },
+      margin: { left: 10, right: 10 },
+    });
+  }
 
   doc.save(resolvedFilename);
 }

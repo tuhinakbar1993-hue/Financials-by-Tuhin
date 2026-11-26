@@ -1119,7 +1119,8 @@ export default function App() {
       effectiveNotes,
       undefined,
       isScheduleImplemented ? debtServiceCoverage : undefined,
-      exportSyncOptions
+      exportSyncOptions,
+      parsedSchedule
     );
   };
 
@@ -1134,7 +1135,8 @@ export default function App() {
       effectiveNotes,
       undefined,
       isScheduleImplemented ? debtServiceCoverage : undefined,
-      exportSyncOptions
+      exportSyncOptions,
+      parsedSchedule
     );
   };
 
@@ -1149,7 +1151,8 @@ export default function App() {
       effectiveNotes,
       undefined,
       isScheduleImplemented ? debtServiceCoverage : undefined,
-      exportSyncOptions
+      exportSyncOptions,
+      parsedSchedule
     );
   };
 
@@ -1188,11 +1191,32 @@ export default function App() {
   };
 
   const handleExportProjectedExcel = () =>
-    exportProjectedFinancialsExcel(companyProfile, projectedFormatData, exportSyncOptions);
+    exportProjectedFinancialsExcel(
+      companyProfile,
+      projectedFormatData,
+      exportSyncOptions,
+      undefined,
+      parsedSchedule,
+      isScheduleImplemented ? debtServiceCoverage : undefined
+    );
   const handleExportProjectedWord = () =>
-    exportProjectedFinancialsWord(companyProfile, projectedFormatData, exportSyncOptions);
+    exportProjectedFinancialsWord(
+      companyProfile,
+      projectedFormatData,
+      exportSyncOptions,
+      undefined,
+      parsedSchedule,
+      isScheduleImplemented ? debtServiceCoverage : undefined
+    );
   const handleExportProjectedPdf = () =>
-    exportProjectedFinancialsPdf(companyProfile, projectedFormatData, exportSyncOptions);
+    exportProjectedFinancialsPdf(
+      companyProfile,
+      projectedFormatData,
+      exportSyncOptions,
+      undefined,
+      parsedSchedule,
+      isScheduleImplemented ? debtServiceCoverage : undefined
+    );
 
   const selectedHistYears = activeHistoricalInputs.map(y => y.year);
   const selectedProjYears = generatedProjected.map(y => y.year);

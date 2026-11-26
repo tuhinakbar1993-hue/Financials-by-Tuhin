@@ -24,6 +24,8 @@ import {
   StatementCellOverrides,
   StatementLabelOverrides,
   YearDataInput,
+  ParsedRepaymentSchedule,
+  DebtServiceCoverageYear,
 } from '../types/financial';
 import {
   resolveEffectiveLabel,
@@ -1515,6 +1517,8 @@ interface ProjectedFormatSuiteViewProps {
   onResetStatementConfig?: () => void;
   labelOverrides?: StatementLabelOverrides;
   cellOverrides?: StatementCellOverrides;
+  parsedSchedule?: ParsedRepaymentSchedule | null;
+  debtServiceCoverage?: DebtServiceCoverageYear[];
 }
 
 export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> = ({
@@ -1527,6 +1531,8 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
   onResetStatementConfig,
   labelOverrides = {},
   cellOverrides = {},
+  parsedSchedule = null,
+  debtServiceCoverage = [],
 }) => {
   const [subTab, setSubTab] = useState<'all' | 'bs' | 'pl' | 'cf' | 'notes' | 'sched'>('all');
   const [isCustomizeMode, setIsCustomizeMode] = useState<boolean>(false);
@@ -1687,7 +1693,7 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
           )}
           <button
             type="button"
-            onClick={() => exportProjectedFinancialsExcel(companyProfile, projData, exportSyncOptions)}
+            onClick={() => exportProjectedFinancialsExcel(companyProfile, projData, exportSyncOptions, undefined, parsedSchedule, debtServiceCoverage)}
             className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors whitespace-nowrap shrink-0"
           >
             <FileSpreadsheet className="w-3.5 h-3.5" />
@@ -1695,7 +1701,7 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
           </button>
           <button
             type="button"
-            onClick={() => exportProjectedFinancialsWord(companyProfile, projData, exportSyncOptions)}
+            onClick={() => exportProjectedFinancialsWord(companyProfile, projData, exportSyncOptions, undefined, parsedSchedule, debtServiceCoverage)}
             className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors whitespace-nowrap shrink-0"
           >
             <FileText className="w-3.5 h-3.5" />
@@ -1703,7 +1709,7 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
           </button>
           <button
             type="button"
-            onClick={() => exportProjectedFinancialsPdf(companyProfile, projData, exportSyncOptions)}
+            onClick={() => exportProjectedFinancialsPdf(companyProfile, projData, exportSyncOptions, undefined, parsedSchedule, debtServiceCoverage)}
             className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors whitespace-nowrap shrink-0"
           >
             <Download className="w-3.5 h-3.5" />

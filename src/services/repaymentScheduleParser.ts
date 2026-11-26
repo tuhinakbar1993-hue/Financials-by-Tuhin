@@ -220,20 +220,30 @@ export function parseScheduleDate(
   return null;
 }
 
+export interface RebuildScheduleOptions {
+  recalculateRunningBalances?: boolean;
+  recalculateRowTotals?: boolean;
+}
+
 /**
  * Rebuilds year-wise Principal (`Repayment from Borrowings`) and Profit (`Finance Cost`)
- * summaries and runs structural & mathematical validation checks.
+ * summaries, auto-computes running balances & row totals when needed/requested,
+ * and runs structural & mathematical validation checks.
  */
 export function rebuildScheduleSummaries(
   rows: RepaymentInstallmentRow[],
   metadata: RepaymentScheduleMetadata,
   financialYearEnd: string,
   selectedModelYears: number[],
-  dateFormatOverride?: 'DD/MM/YYYY' | 'MM/DD/YYYY'
+  dateFormatOverride?: 'DD/MM/YYYY' | 'MM/DD/YYYY',
+  options?: RebuildScheduleOptions
 ): ParsedRepaymentSchedule {
   const effectiveFmt = dateFormatOverride || (metadata.dateFormatDetected === 'MM/DD/YYYY' ? 'MM/DD/YYYY' : 'DD/MM/YYYY');
+  const hasAnyUploadedBalance = rows.some(r => !r.isDisbursement && r.balance > 0);
+  const shouldRecalcBalances = Boolean(options?.recalculateRunningBalances) || !hasAnyUploadedBalance;
+  const shouldRecalcRowTotals = Boolean(options?.recalculateRowTotals);
 
-  const normalizedRows = rows.map((row, idx) => {
+  const mappedRows: RepaymentInstallmentRow[] = rows.map((row, idx) => {
     let iso = row.emiDateISO;
     if (dateFormatOverride && row.emiDateRaw) {
       const reparsed = parseScheduleDate(row.emiDateRaw, dateFormatOverride);
@@ -242,23 +252,89 @@ export function rebuildScheduleSummaries(
     const fy = getFinancialYearForDate(iso, financialYearEnd);
     const instPrincipal = r2(Math.max(0, row.instPrincipal));
     const instProfit = r2(Math.max(0, row.instProfit));
+    const gestationPayment = r2(Math.max(0, row.gestationPayment || 0));
+    const overdueGestation = r2(Math.max(0, row.overdueGestation || 0));
+    const overdueProfit = r2(Math.max(0, row.overdueProfit || 0));
+    const computedRowTotal = row.isDisbursement
+      ? 0
+      : r2(instPrincipal + instProfit + gestationPayment + overdueGestation + overdueProfit);
+    const totalInstallment = shouldRecalcRowTotals || (!row.isDisbursement && row.totalInstallment <= 0)
+      ? computedRowTotal
+      : r2(row.totalInstallment);
     return {
       ...row,
-      installmentNo: row.installmentNo || idx + 1,
+      installmentNo: row.isDisbursement ? 0 : (row.installmentNo || idx + 1),
       emiDateISO: iso,
       financialYear: fy,
       instPrincipal,
       instProfit,
-      totalInstallment: row.totalInstallment > 0 ? r2(row.totalInstallment) : r2(instPrincipal + instProfit + row.gestationPayment),
+      gestationPayment,
+      overdueGestation,
+      overdueProfit,
+      totalInstallment,
     };
   });
 
   // Sort chronologically by ISO date & installment number
-  normalizedRows.sort((a, b) => {
+  mappedRows.sort((a, b) => {
     if (a.emiDateISO !== b.emiDateISO) return a.emiDateISO.localeCompare(b.emiDateISO);
     if (a.isDisbursement && !b.isDisbursement) return -1;
     if (!a.isDisbursement && b.isDisbursement) return 1;
     return a.installmentNo - b.installmentNo;
+  });
+
+  // Auto-calculate running Balance if requested or missing from uploaded data
+  const disbRow = mappedRows.find(r => r.isDisbursement);
+  const rawTotalPrincipal = r2(mappedRows.filter(r => !r.isDisbursement).reduce((s, r) => s + r.instPrincipal, 0));
+  const openingPrincipal = r2(
+    (metadata.investmentMade && metadata.investmentMade > 0 ? metadata.investmentMade : 0) ||
+    (disbRow && disbRow.balance > 0 ? disbRow.balance : 0) ||
+    rawTotalPrincipal
+  );
+
+  let runningBalance = openingPrincipal;
+  let repCounter = 0;
+  const balanceDiscrepancyCount = { count: 0 };
+  const rowTotalDiscrepancyCount = { count: 0 };
+
+  const normalizedRows = mappedRows.map(row => {
+    if (row.isDisbursement) {
+      const disbBal = shouldRecalcBalances
+        ? openingPrincipal
+        : (row.balance > 0 ? r2(row.balance) : openingPrincipal);
+      runningBalance = disbBal;
+      return {
+        ...row,
+        installmentNo: 0,
+        instPrincipal: 0,
+        instProfit: 0,
+        gestationPayment: 0,
+        overdueGestation: 0,
+        overdueProfit: 0,
+        balance: disbBal,
+        totalInstallment: 0,
+      };
+    }
+
+    repCounter += 1;
+    const expectedBal = r2(Math.max(0, runningBalance - row.instPrincipal));
+    const finalBal = shouldRecalcBalances ? expectedBal : r2(row.balance);
+    if (!shouldRecalcBalances && Math.abs(expectedBal - row.balance) > 1.0) {
+      balanceDiscrepancyCount.count += 1;
+    }
+    const expectedRowTot = r2(
+      row.instPrincipal + row.instProfit + row.gestationPayment + row.overdueGestation + row.overdueProfit
+    );
+    if (!shouldRecalcRowTotals && row.totalInstallment > 0 && Math.abs(expectedRowTot - row.totalInstallment) > 1.0) {
+      rowTotalDiscrepancyCount.count += 1;
+    }
+    runningBalance = expectedBal;
+
+    return {
+      ...row,
+      installmentNo: repCounter,
+      balance: finalBal,
+    };
   });
 
   const selectedSet = new Set(selectedModelYears);
@@ -270,6 +346,9 @@ export function rebuildScheduleSummaries(
       installmentCount: 0,
       totalPrincipal: 0,
       totalProfit: 0,
+      totalGestationPayment: 0,
+      totalOverdueGestation: 0,
+      totalOverdueProfit: 0,
       totalDebtService: 0,
       disbursementAmount: 0,
       closingBalance: 0,
@@ -285,7 +364,16 @@ export function rebuildScheduleSummaries(
       existing.installmentCount += 1;
       existing.totalPrincipal = r2(existing.totalPrincipal + row.instPrincipal);
       existing.totalProfit = r2(existing.totalProfit + row.instProfit);
-      existing.totalDebtService = r2(existing.totalPrincipal + existing.totalProfit);
+      existing.totalGestationPayment = r2((existing.totalGestationPayment || 0) + row.gestationPayment);
+      existing.totalOverdueGestation = r2((existing.totalOverdueGestation || 0) + row.overdueGestation);
+      existing.totalOverdueProfit = r2((existing.totalOverdueProfit || 0) + row.overdueProfit);
+      existing.totalDebtService = r2(
+        existing.totalPrincipal +
+        existing.totalProfit +
+        (existing.totalGestationPayment || 0) +
+        (existing.totalOverdueGestation || 0) +
+        (existing.totalOverdueProfit || 0)
+      );
       existing.closingBalance = r2(row.balance);
     }
 
@@ -312,7 +400,17 @@ export function rebuildScheduleSummaries(
 
   const grandTotalPrincipal = r2(repaymentOnlyRows.reduce((s, r) => s + r.instPrincipal, 0));
   const grandTotalProfit = r2(repaymentOnlyRows.reduce((s, r) => s + r.instProfit, 0));
-  const grandTotalDebtService = r2(grandTotalPrincipal + grandTotalProfit);
+  const grandTotalGestationPayment = r2(repaymentOnlyRows.reduce((s, r) => s + r.gestationPayment, 0));
+  const grandTotalOverdueGestation = r2(repaymentOnlyRows.reduce((s, r) => s + r.overdueGestation, 0));
+  const grandTotalOverdueProfit = r2(repaymentOnlyRows.reduce((s, r) => s + r.overdueProfit, 0));
+  const grandTotalDebtService = r2(
+    grandTotalPrincipal +
+    grandTotalProfit +
+    grandTotalGestationPayment +
+    grandTotalOverdueGestation +
+    grandTotalOverdueProfit
+  );
+  const finalClosingBalance = normalizedRows.length > 0 ? r2(normalizedRows[normalizedRows.length - 1].balance) : 0;
 
   const validationErrors: string[] = [];
   const validationWarnings: string[] = [];
@@ -331,7 +429,7 @@ export function rebuildScheduleSummaries(
     const diff = Math.abs(grandTotalPrincipal - metadata.statedTotalPrincipal);
     if (diff > 1.0) {
       validationWarnings.push(
-        `Extracted Principal sum (${grandTotalPrincipal.toLocaleString(undefined, { maximumFractionDigits: 2 })}) differs from stated Schedule Total (${metadata.statedTotalPrincipal.toLocaleString(undefined, { maximumFractionDigits: 2 })}) by ${diff.toFixed(2)}. Review rows before implementing.`
+        `Extracted Principal sum (${grandTotalPrincipal.toLocaleString(undefined, { maximumFractionDigits: 2 })}) differs from stated Schedule Total (${metadata.statedTotalPrincipal.toLocaleString(undefined, { maximumFractionDigits: 2 })}) by ${diff.toFixed(2)}. Review rows or click Auto-Recalculate.`
       );
     }
   }
@@ -340,9 +438,20 @@ export function rebuildScheduleSummaries(
     const diff = Math.abs(grandTotalProfit - metadata.statedTotalProfit);
     if (diff > 1.0) {
       validationWarnings.push(
-        `Extracted Profit sum (${grandTotalProfit.toLocaleString(undefined, { maximumFractionDigits: 2 })}) differs from stated Schedule Total (${metadata.statedTotalProfit.toLocaleString(undefined, { maximumFractionDigits: 2 })}) by ${diff.toFixed(2)}. Review rows before implementing.`
+        `Extracted Profit sum (${grandTotalProfit.toLocaleString(undefined, { maximumFractionDigits: 2 })}) differs from stated Schedule Total (${metadata.statedTotalProfit.toLocaleString(undefined, { maximumFractionDigits: 2 })}) by ${diff.toFixed(2)}. Review rows or click Auto-Recalculate.`
       );
     }
+  }
+
+  if (balanceDiscrepancyCount.count > 0) {
+    validationWarnings.push(
+      `${balanceDiscrepancyCount.count} row(s) show running Balance variance against (Previous Balance - Inst. Principal). Click "Auto-Calculate Balances & Totals" to normalize.`
+    );
+  }
+  if (rowTotalDiscrepancyCount.count > 0) {
+    validationWarnings.push(
+      `${rowTotalDiscrepancyCount.count} row(s) show row Total variance against component sums. Click "Auto-Calculate Balances & Totals" to normalize.`
+    );
   }
 
   if (metadata.investmentMade && metadata.investmentMade > 0) {
@@ -365,17 +474,172 @@ export function rebuildScheduleSummaries(
   return {
     metadata: {
       ...metadata,
+      investmentMade: metadata.investmentMade ?? openingPrincipal,
+      gestationPeriod: metadata.gestationPeriod ?? '0 Days',
+      lastInstallmentMinimized: metadata.lastInstallmentMinimized ?? 'No',
       dateFormatDetected: effectiveFmt,
     },
     rows: normalizedRows,
     annualSummaries,
     grandTotalPrincipal,
     grandTotalProfit,
+    grandTotalGestationPayment,
+    grandTotalOverdueGestation,
+    grandTotalOverdueProfit,
     grandTotalDebtService,
+    closingBalance: finalClosingBalance,
     validationErrors,
     validationWarnings,
     isValid: validationErrors.length === 0 && repaymentOnlyRows.length > 0,
   };
+}
+
+/**
+ * Automatically recalculates every row's Total Installment, sequential Running Balance,
+ * annual aggregations, and stated totals after inline edits or structural adjustments.
+ */
+export function recalculateRepaymentSchedule(
+  schedule: ParsedRepaymentSchedule,
+  financialYearEnd: string,
+  selectedModelYears: number[],
+  dateFormatOverride?: 'DD/MM/YYYY' | 'MM/DD/YYYY'
+): ParsedRepaymentSchedule {
+  const rebuilt = rebuildScheduleSummaries(
+    schedule.rows,
+    schedule.metadata,
+    financialYearEnd,
+    selectedModelYears,
+    dateFormatOverride,
+    { recalculateRunningBalances: true, recalculateRowTotals: true }
+  );
+  return {
+    ...rebuilt,
+    metadata: {
+      ...rebuilt.metadata,
+      statedTotalPrincipal: rebuilt.grandTotalPrincipal,
+      statedTotalProfit: rebuilt.grandTotalProfit,
+    },
+  };
+}
+
+/**
+ * Generates an exact 9-column ABABIL-format amortization Repayment Schedule
+ * with automated EMI/installment calculation, running balance, and zero final balance.
+ */
+export function generateStandardRepaymentSchedule(params: {
+  investmentMade: number;
+  annualProfitRatePct: number;
+  numberOfInstallments: number;
+  interval?: 'Monthly' | 'Quarterly' | 'Half-Yearly' | 'Yearly';
+  disbursementDateRaw?: string;
+  firstInstallmentDateRaw?: string;
+  gestationPeriodDays?: number;
+  financialYearEnd?: string;
+  selectedModelYears?: number[];
+}): ParsedRepaymentSchedule {
+  const principal = r2(Math.max(1000, params.investmentMade));
+  const interval = params.interval || 'Monthly';
+  const periodsPerYear = interval === 'Quarterly' ? 4 : interval === 'Half-Yearly' ? 2 : interval === 'Yearly' ? 1 : 12;
+  const nInst = Math.max(1, Math.round(params.numberOfInstallments));
+  const ratePerPeriod = (Math.max(0, params.annualProfitRatePct) / 100) / periodsPerYear;
+  const fyEnd = params.financialYearEnd || '31 December';
+  const disbRaw = params.disbursementDateRaw || '01/01/2027';
+  const disbISO = parseScheduleDate(disbRaw, 'DD/MM/YYYY') || '2027-01-01';
+  const firstRaw = params.firstInstallmentDateRaw || disbRaw;
+  const firstISO = parseScheduleDate(firstRaw, 'DD/MM/YYYY') || disbISO;
+
+  const [fy0, fm0, fd0] = firstISO.split('-').map(Number);
+  const addMonthsFormat = (baseY: number, baseM: number, baseD: number, monthsToAdd: number): { raw: string; iso: string } => {
+    const dt = new Date(Date.UTC(baseY, baseM - 1 + monthsToAdd, baseD));
+    const yy = dt.getUTCFullYear();
+    const mm = dt.getUTCMonth() + 1;
+    const dd = dt.getUTCDate();
+    return {
+      raw: `${String(dd).padStart(2, '0')}/${String(mm).padStart(2, '0')}/${yy}`,
+      iso: `${yy}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`,
+    };
+  };
+
+  const stepMonths = 12 / periodsPerYear;
+  const emi = ratePerPeriod > 0
+    ? r2((principal * ratePerPeriod * Math.pow(1 + ratePerPeriod, nInst)) / (Math.pow(1 + ratePerPeriod, nInst) - 1))
+    : r2(principal / nInst);
+
+  const rows: RepaymentInstallmentRow[] = [
+    {
+      id: 'gen_0',
+      installmentNo: 0,
+      eventType: 'Disbursement',
+      emiDateRaw: disbRaw,
+      emiDateISO: disbISO,
+      financialYear: getFinancialYearForDate(disbISO, fyEnd),
+      instPrincipal: 0,
+      instProfit: 0,
+      gestationPayment: 0,
+      overdueGestation: 0,
+      overdueProfit: 0,
+      balance: principal,
+      totalInstallment: 0,
+      isDisbursement: true,
+    },
+  ];
+
+  let balance = principal;
+  let lastDateRaw = firstRaw;
+  for (let i = 1; i <= nInst; i++) {
+    const dt = addMonthsFormat(fy0, fm0, fd0, i * stepMonths);
+    lastDateRaw = dt.raw;
+    const instProfit = r2(balance * ratePerPeriod);
+    let instPrincipal = i === nInst ? r2(balance) : r2(Math.min(balance, Math.max(0, emi - instProfit)));
+    if (i === nInst) instPrincipal = r2(balance);
+    const nextBalance = r2(Math.max(0, balance - instPrincipal));
+    const totalInstallment = r2(instPrincipal + instProfit);
+    balance = nextBalance;
+    rows.push({
+      id: `gen_${i}`,
+      installmentNo: i,
+      eventType: `Repayment ${i}`,
+      emiDateRaw: dt.raw,
+      emiDateISO: dt.iso,
+      financialYear: getFinancialYearForDate(dt.iso, fyEnd),
+      instPrincipal,
+      instProfit,
+      gestationPayment: 0,
+      overdueGestation: 0,
+      overdueProfit: 0,
+      balance: nextBalance,
+      totalInstallment,
+      isDisbursement: false,
+    });
+  }
+
+  const totP = r2(rows.filter(r => !r.isDisbursement).reduce((s, r) => s + r.instPrincipal, 0));
+  const totPr = r2(rows.filter(r => !r.isDisbursement).reduce((s, r) => s + r.instProfit, 0));
+
+  return rebuildScheduleSummaries(
+    rows,
+    {
+      sourceFileName: 'Generated_Rescheduled_Repayment_Schedule.pdf',
+      parserMethod: 'generated',
+      investmentMade: principal,
+      interval,
+      numberOfInstallments: nInst,
+      gestationPeriod: `${params.gestationPeriodDays ?? 0} Days`,
+      disbursementDate: disbRaw,
+      firstInstallmentDate: firstRaw,
+      expiryDate: lastDateRaw,
+      lastInstallmentMinimized: 'No',
+      annualProfitRatePct: params.annualProfitRatePct,
+      statedTotalPrincipal: totP,
+      statedTotalProfit: totPr,
+      dateFormatDetected: 'DD/MM/YYYY',
+      uploadedAt: new Date().toISOString(),
+    },
+    fyEnd,
+    params.selectedModelYears || [],
+    'DD/MM/YYYY',
+    { recalculateRunningBalances: true, recalculateRowTotals: true }
+  );
 }
 
 // ---------------- TABLE GRID PARSER (SHARED FOR PDF, EXCEL, CSV, PASTE) ---------------- //
@@ -457,9 +721,11 @@ function parseRowsFromStringMatrix(
   let metaInvestment = metadataBase.investmentMade;
   let metaInterval = metadataBase.interval;
   let metaNumInst = metadataBase.numberOfInstallments;
+  let metaGestationPeriod = metadataBase.gestationPeriod;
   let metaDisbDate = metadataBase.disbursementDate;
   let metaFirstDate = metadataBase.firstInstallmentDate;
   let metaExpiryDate = metadataBase.expiryDate;
+  let metaLastMin = metadataBase.lastInstallmentMinimized;
   let statedTotalPrincipal = metadataBase.statedTotalPrincipal;
   let statedTotalProfit = metadataBase.statedTotalProfit;
 
@@ -476,12 +742,16 @@ function parseRowsFromStringMatrix(
       if (intM) metaInterval = intM[1];
       const numM = joined.match(/number\s*of\s*installment\s*:?\s*(\d+)/i);
       if (numM) metaNumInst = Number(numM[1]);
+      const gestM = joined.match(/gestation\s*period\s*:?\s*([0-9]+\s*(?:days?|months?|years?)?)/i);
+      if (gestM) metaGestationPeriod = gestM[1].trim();
       const disbM = joined.match(/disbursement\s*date\s*:?\s*(\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}|\d{4}-\d{2}-\d{2})/i);
       if (disbM) metaDisbDate = disbM[1];
       const firstM = joined.match(/1st\s*installment\s*date\s*:?\s*(\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}|\d{4}-\d{2}-\d{2})/i);
       if (firstM) metaFirstDate = firstM[1];
       const expM = joined.match(/expiry\s*date\s*:?\s*(\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}|\d{4}-\d{2}-\d{2})/i);
       if (expM) metaExpiryDate = expM[1];
+      const minM = joined.match(/last\s*installment\s*size\s*minimized\s*:?\s*(yes|no)/i);
+      if (minM) metaLastMin = minM[1];
       if (headerIdx !== -1) continue;
     }
 
@@ -594,9 +864,11 @@ function parseRowsFromStringMatrix(
       investmentMade: metaInvestment,
       interval: metaInterval,
       numberOfInstallments: metaNumInst,
+      gestationPeriod: metaGestationPeriod,
       disbursementDate: metaDisbDate,
       firstInstallmentDate: metaFirstDate,
       expiryDate: metaExpiryDate,
+      lastInstallmentMinimized: metaLastMin,
       statedTotalPrincipal,
       statedTotalProfit,
       dateFormatDetected: detectedDateFmt,
@@ -628,9 +900,12 @@ export async function parseRepaymentSchedulePDF(
   let metaInvestment: number | undefined;
   let metaInterval: string | undefined;
   let metaNumInst: number | undefined;
+  let metaGestationPeriod: string | undefined;
   let metaDisbDate: string | undefined;
   let metaFirstDate: string | undefined;
   let metaExpiryDate: string | undefined;
+  let metaLastMin: string | undefined;
+  let metaPreparedByNote: string | undefined;
   let statedTotalPrincipal: number | undefined;
   let statedTotalProfit: number | undefined;
 
@@ -672,12 +947,19 @@ export async function parseRepaymentSchedulePDF(
       if (intM) metaInterval = intM[1];
       const numM = lineJoined.match(/Number\s*of\s*Installment\s*:\s*(\d+)/i);
       if (numM) metaNumInst = Number(numM[1]);
+      const gestM = lineJoined.match(/Gestation\s*Period\s*:\s*([0-9]+\s*(?:Days?|Months?|Years?)?)/i);
+      if (gestM) metaGestationPeriod = gestM[1].trim();
       const disbM = lineJoined.match(/Disbursement\s*Date\s*:\s*(\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}|\d{4}-\d{2}-\d{2})/i);
       if (disbM) metaDisbDate = disbM[1];
       const firstM = lineJoined.match(/1st\s*Installment\s*Date\s*:\s*(\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}|\d{4}-\d{2}-\d{2})/i);
       if (firstM) metaFirstDate = firstM[1];
       const expM = lineJoined.match(/Expiry\s*Date\s*:\s*(\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}|\d{4}-\d{2}-\d{2})/i);
       if (expM) metaExpiryDate = expM[1];
+      const minM = lineJoined.match(/Last\s*Installment\s*size\s*minimized\s*:\s*(Yes|No)/i);
+      if (minM) metaLastMin = minM[1];
+      if (/Prepared\s*By\s*:/i.test(lineJoined)) {
+        metaPreparedByNote = lineJoined.trim();
+      }
 
       // Check if this row is a table header row
       const matchedCols: { role: ColumnRole; x: number; text: string }[] = [];
@@ -758,9 +1040,12 @@ export async function parseRepaymentSchedulePDF(
       investmentMade: metaInvestment,
       interval: metaInterval,
       numberOfInstallments: metaNumInst,
+      gestationPeriod: metaGestationPeriod,
       disbursementDate: metaDisbDate,
       firstInstallmentDate: metaFirstDate,
       expiryDate: metaExpiryDate,
+      lastInstallmentMinimized: metaLastMin,
+      preparedByNote: metaPreparedByNote,
       statedTotalPrincipal,
       statedTotalProfit,
     },
@@ -884,6 +1169,9 @@ export async function parseRepaymentScheduleViaServerAI(
     emiDate: string;
     instPrincipal: number;
     instProfit: number;
+    gestationPayment?: number;
+    overdueGestation?: number;
+    overdueProfit?: number;
     balance?: number;
     total?: number;
     isDisbursement?: boolean;
@@ -903,8 +1191,11 @@ export async function parseRepaymentScheduleViaServerAI(
       if (!isDisb) repCount += 1;
       const p = r2(parseScheduleNumber(r.instPrincipal));
       const pr = r2(parseScheduleNumber(r.instProfit));
+      const g = r2(parseScheduleNumber(r.gestationPayment ?? 0));
+      const og = r2(parseScheduleNumber(r.overdueGestation ?? 0));
+      const op = r2(parseScheduleNumber(r.overdueProfit ?? 0));
       const bal = r2(parseScheduleNumber(r.balance ?? 0));
-      const tot = r.total ? r2(parseScheduleNumber(r.total)) : r2(p + pr);
+      const tot = r.total ? r2(parseScheduleNumber(r.total)) : r2(p + pr + g + og + op);
       return {
         id: `ai_inst_${i + 1}`,
         installmentNo: isDisb ? 0 : repCount,
@@ -914,9 +1205,9 @@ export async function parseRepaymentScheduleViaServerAI(
         financialYear: getFinancialYearForDate(iso, financialYearEnd),
         instPrincipal: p,
         instProfit: pr,
-        gestationPayment: 0,
-        overdueGestation: 0,
-        overdueProfit: 0,
+        gestationPayment: g,
+        overdueGestation: og,
+        overdueProfit: op,
         balance: bal,
         totalInstallment: tot,
         isDisbursement: isDisb,
@@ -932,9 +1223,11 @@ export async function parseRepaymentScheduleViaServerAI(
       investmentMade: payload.investmentMade ? parseScheduleNumber(payload.investmentMade) : undefined,
       interval: payload.interval,
       numberOfInstallments: payload.numberOfInstallments,
+      gestationPeriod: payload.gestationPeriod,
       disbursementDate: payload.disbursementDate,
       firstInstallmentDate: payload.firstInstallmentDate,
       expiryDate: payload.expiryDate,
+      lastInstallmentMinimized: payload.lastInstallmentMinimized,
       statedTotalPrincipal: payload.statedTotalPrincipal ? parseScheduleNumber(payload.statedTotalPrincipal) : undefined,
       statedTotalProfit: payload.statedTotalProfit ? parseScheduleNumber(payload.statedTotalProfit) : undefined,
       dateFormatDetected: detectedFmt,
@@ -1090,9 +1383,12 @@ export function getAttachedReferenceRepaymentSchedule(
       investmentMade: 2430778.97,
       interval: 'Monthly',
       numberOfInstallments: 96,
+      gestationPeriod: '0 Days',
       disbursementDate: '01/01/2027',
       firstInstallmentDate: '01/01/2027',
       expiryDate: '01/01/2032',
+      lastInstallmentMinimized: 'No',
+      preparedByNote: 'Prepared By : ABABIL, Developed By : Millennium Information Solution Limited',
       statedTotalPrincipal: 2430778.97,
       statedTotalProfit: 1093775.03,
       dateFormatDetected: 'DD/MM/YYYY',
