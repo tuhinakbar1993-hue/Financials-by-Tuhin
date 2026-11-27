@@ -54,7 +54,7 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
     { id: 'data-entry', label: 'Financial Data Entry', icon: Database, accent: 'text-sky-700' },
     { id: 'configuration', label: 'Cash Flow Config', icon: Settings, accent: 'text-indigo-700' },
     { id: 'projections', label: 'Projections Engine', icon: Sliders, accent: 'text-amber-700' },
-    { id: 'reconciliation', label: 'Audit Matrix', icon: Scale, accent: 'text-teal-700' },
+    { id: 'reconciliation', label: 'CA Audit & Rectify', icon: Scale, accent: 'text-teal-700' },
   ];
 
   return (

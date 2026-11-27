@@ -243,6 +243,7 @@ export const DEFAULT_PROJECTION_ASSUMPTIONS: ProjectionAssumptions = {
   payableDays: 42,
   dividendPayoutRatio: 30.0,
   projectedFinancingCashFlowGrowth: -4.0,
+  loanInterestRatePct: 15.5,
 };
 
 export function createCleanCaseCompanyProfile(currentFyEnd?: string): CompanyProfile {
@@ -944,19 +945,32 @@ export function generateAutomaticPrimaryDrivers(
     1.55
   );
 
-  // 3. Finance Cost: smooth rate transition from prior effective debt yield + non-uniform debt service timing
+  // 3. Finance Cost: converges smoothly toward configured loan interest rate (default 15.50%) with realistic servicing timing variation
+  const targetLoanRate = clampVal((assumptions.loanInterestRatePct ?? 15.5) / 100, 0, 0.38);
   const hasPrevDebt = prevYear.longTermBorrowings > 0 || prevYear.shortTermBorrowings > 0 || prevYear.financeCost > 0;
   const prevTotalDebt = hasPrevDebt
     ? Math.max(1, prevYear.longTermBorrowings + prevYear.shortTermBorrowings)
     : 0;
-  const rawPrevYield = prevYear.financeCost > 0 && prevTotalDebt > 0 ? prevYear.financeCost / prevTotalDebt : 0.085;
-  const clampedPrevYield = clampVal(rawPrevYield, 0.045, 0.155);
-  const blendedYield = clampedPrevYield * 0.42 + 0.085 * 0.58;
-  const effectiveInterestRate = varyBounded(blendedYield, yearNumber, 14, 0.0085, 0.045, 0.16);
-  const midYearDeleveragingAdj = varyBounded(0.95, yearNumber, 18, 0.028, 0.89, 0.995);
-  const financeCost = prevTotalDebt > 0
-    ? Math.max(120, Math.round(prevTotalDebt * effectiveInterestRate * midYearDeleveragingAdj))
-    : 0;
+  let financeCost = 0;
+  if (prevTotalDebt > 0 && targetLoanRate > 0) {
+    const minRateBound = Math.max(0.01, targetLoanRate * 0.72);
+    const maxRateBound = Math.min(0.40, targetLoanRate * 1.28);
+    const rawPrevYield = prevYear.financeCost > 0 ? prevYear.financeCost / prevTotalDebt : targetLoanRate;
+    const clampedPrevYield = clampVal(rawPrevYield, minRateBound, maxRateBound);
+    const blendedYield = prevYear.isProjected
+      ? clampedPrevYield * 0.18 + targetLoanRate * 0.82
+      : clampedPrevYield * 0.35 + targetLoanRate * 0.65;
+    const effectiveInterestRate = varyBounded(
+      blendedYield,
+      yearNumber,
+      14,
+      Math.max(0.006, targetLoanRate * 0.055),
+      minRateBound,
+      maxRateBound
+    );
+    const midYearDeleveragingAdj = varyBounded(0.95, yearNumber, 18, 0.028, 0.89, 0.995);
+    financeCost = Math.max(120, Math.round(prevTotalDebt * effectiveInterestRate * midYearDeleveragingAdj));
+  }
   const gFin = yoyPct(financeCost, prevYear.financeCost);
 
   // 4. Fixed Assets Additions, Disposals & Asset-Mix Depreciation
@@ -1755,12 +1769,15 @@ export function deriveDependentFinancials(
   const hasCustomLT = Boolean(
     existingFullYear?.hasCustomLongTermBorrowings && existingFullYear.longTermBorrowings !== undefined
   );
+  const hasCustomST = Boolean(
+    existingFullYear?.hasCustomShortTermBorrowings && existingFullYear.shortTermBorrowings !== undefined
+  );
 
   const shareCapital = prevYear
     ? prevYear.shareCapital
     : (existingFullYear?.shareCapital ?? (isZeroSeed ? 0 : 12000));
 
-  // 7. Borrowings & Financing Cash Flow preserving fixed repaymentOfBorrowings & custom Long-Term Borrowings
+  // 7. Borrowings & Financing Cash Flow preserving fixed repaymentOfBorrowings & custom LT/ST Borrowings
   const absRepayment = Math.max(0, repaymentOfBorrowings);
   const financingProceedsShares = existingFullYear?.financingProceedsShares ?? 0;
 
@@ -1771,7 +1788,7 @@ export function deriveDependentFinancials(
   let longTermBorrowings = 0;
   let shortTermBorrowings = 0;
 
-  if (isZeroSeed) {
+  if (isZeroSeed && !hasCustomLT && !hasCustomST) {
     longTermBorrowings = Math.max(0, existingFullYear?.longTermBorrowings ?? 0);
     shortTermBorrowings = Math.max(0, existingFullYear?.shortTermBorrowings ?? 0);
     financingProceedsBorrowings = existingFullYear?.financingProceedsBorrowings ?? 0;
@@ -1779,7 +1796,9 @@ export function deriveDependentFinancials(
     const prevLT = prevYear
       ? prevYear.longTermBorrowings
       : (hasCustomLT ? Math.max(0, existingFullYear!.longTermBorrowings!) : Math.max(8000, absRepayment * 4));
-    const prevST = prevYear ? prevYear.shortTermBorrowings : Math.max(2500, Math.round(salesRevenue * 0.06));
+    const prevST = prevYear
+      ? prevYear.shortTermBorrowings
+      : (hasCustomST ? Math.max(0, existingFullYear!.shortTermBorrowings!) : Math.max(2500, Math.round(salesRevenue * 0.06)));
     const prevTotalDebt = prevLT + prevST;
 
     // Proportionate working-capital facility proceeds with varied annual utilization; sustain operational credit headroom as business scales
@@ -1796,11 +1815,19 @@ export function deriveDependentFinancials(
       financingProceedsBorrowings = absRepayment - prevTotalDebt + Math.round(salesRevenue * varyBounded(0.03, year, 20, 0.006, 0.018, 0.045));
     }
 
-    if (hasCustomLT) {
+    if (hasCustomLT && hasCustomST) {
+      longTermBorrowings = Math.max(0, existingFullYear!.longTermBorrowings!);
+      shortTermBorrowings = Math.max(0, existingFullYear!.shortTermBorrowings!);
+    } else if (hasCustomLT) {
       longTermBorrowings = Math.max(0, existingFullYear!.longTermBorrowings!);
       shortTermBorrowings = prevYear
         ? Math.max(0, Math.round(prevYear.shortTermBorrowings * (1 + clampVal(gRev / 100, -0.08, 0.15))))
         : (existingFullYear?.shortTermBorrowings ?? Math.max(2500, Math.round(salesRevenue * 0.06)));
+    } else if (hasCustomST) {
+      shortTermBorrowings = Math.max(0, existingFullYear!.shortTermBorrowings!);
+      longTermBorrowings = prevYear
+        ? Math.max(0, prevYear.longTermBorrowings - absRepayment + Math.round(financingProceedsBorrowings * 0.4))
+        : (existingFullYear?.longTermBorrowings ?? Math.max(8000, absRepayment * 4));
     } else {
       const netDebtChange = financingProceedsBorrowings - absRepayment;
       const targetTotalDebt = Math.max(0, prevTotalDebt + netDebtChange);
@@ -1869,6 +1896,7 @@ export function deriveDependentFinancials(
     shortTermBorrowings,
     longTermBorrowings,
     hasCustomLongTermBorrowings: hasCustomLT,
+    hasCustomShortTermBorrowings: hasCustomST,
     shareCapital,
     dividendsPaid,
     financingProceedsShares,
@@ -1876,6 +1904,76 @@ export function deriveDependentFinancials(
     financingRepaymentBorrowings,
     financingDividendsPaid,
   };
+}
+
+/**
+ * Chartered-Accountancy rational recalculation when Long-Term Borrowings, Short-Term Borrowings,
+ * or the Loan Interest Rate (% p.a.) changes for a year: preserves Revenue/COGS/OpEx (EBITDA)
+ * while dynamically adjusting Finance Cost -> PBT -> Tax Expense -> Net Profit -> Equity -> Cash Flow.
+ */
+export function recalculateYearOnLoanOrRateChange(
+  yearInput: YearDataInput,
+  prevYear: YearDataInput | null,
+  assumptions: ProjectionAssumptions,
+  overrides?: {
+    longTermBorrowings?: number;
+    shortTermBorrowings?: number;
+    hasCustomLongTermBorrowings?: boolean;
+    hasCustomShortTermBorrowings?: boolean;
+    loanRateOverridePct?: number;
+    recalculateFinanceCostFromDebt?: boolean;
+  }
+): YearDataInput {
+  const newLT = Math.max(0, overrides?.longTermBorrowings ?? yearInput.longTermBorrowings);
+  const newST = Math.max(0, overrides?.shortTermBorrowings ?? yearInput.shortTermBorrowings);
+  const totalDebt = r2(newLT + newST);
+  const hasCustomLT = overrides?.hasCustomLongTermBorrowings ?? yearInput.hasCustomLongTermBorrowings;
+  const hasCustomST = overrides?.hasCustomShortTermBorrowings ?? yearInput.hasCustomShortTermBorrowings;
+
+  const ratePct = clampVal(overrides?.loanRateOverridePct ?? assumptions.loanInterestRatePct ?? 15.5, 0, 45);
+  const shouldRecalcInterest =
+    !yearInput.isScheduleLocked && (overrides?.recalculateFinanceCostFromDebt ?? true);
+
+  let nextFinanceCost = yearInput.financeCost;
+  let nextNetProfit = yearInput.netProfit;
+
+  if (shouldRecalcInterest) {
+    nextFinanceCost = totalDebt > 0 && ratePct > 0 ? Math.round(totalDebt * (ratePct / 100)) : 0;
+    const taxRate = yearInput.taxRate || assumptions.taxRatePct || 25;
+    const oldTax =
+      yearInput.netProfit >= 0
+        ? Math.round(yearInput.netProfit / Math.max(0.01, 1 - taxRate / 100) - yearInput.netProfit)
+        : 0;
+    const oldPBT = r2(yearInput.netProfit + oldTax);
+    const deltaFin = nextFinanceCost - yearInput.financeCost;
+    const newPBT = r2(oldPBT - deltaFin);
+    const newTax = newPBT > 0 ? Math.round(newPBT * (taxRate / 100)) : 0;
+    nextNetProfit = r2(newPBT - newTax);
+  }
+
+  return deriveDependentFinancials(
+    {
+      year: yearInput.year,
+      isProjected: yearInput.isProjected,
+      salesRevenue: yearInput.salesRevenue,
+      closingInventory: yearInput.closingInventory,
+      financeCost: nextFinanceCost,
+      netProfit: nextNetProfit,
+      repaymentOfBorrowings: yearInput.repaymentOfBorrowings,
+      fixedAssetsGross: yearInput.fixedAssetsGross,
+    },
+    prevYear,
+    assumptions,
+    {
+      ...yearInput,
+      longTermBorrowings: newLT,
+      shortTermBorrowings: newST,
+      hasCustomLongTermBorrowings: hasCustomLT,
+      hasCustomShortTermBorrowings: hasCustomST,
+      financeCost: nextFinanceCost,
+      netProfit: nextNetProfit,
+    }
+  );
 }
 
 /**
@@ -3846,9 +3944,7 @@ export function buildPreviousFormatData(
     const customCurrentLiabBS = getVisibleCustomItemsSum(options?.statementConfig, 'balanceSheet', inp.year, 'Current Liabilities');
     const customNonCurrentLiabBS = getVisibleCustomItemsSum(options?.statementConfig, 'balanceSheet', inp.year, 'Non-Current Liabilities');
     const customEquityBS = getVisibleCustomItemsSum(options?.statementConfig, 'balanceSheet', inp.year, 'Equity');
-    const advancesDepositsPrepayments = vis('bs_otherReceivables')
-      ? r2(bs.otherReceivables + bs.otherCurrentAssets)
-      : 0;
+    const advancesDepositsPrepayments = r2(bs.otherReceivables + bs.otherCurrentAssets);
     const billsReceivable = bs.tradeReceivables;
     const cashAndCashEquivalents = bs.cashAndEquivalents;
     const totalCurrentAssets = r2(
@@ -3858,9 +3954,7 @@ export function buildPreviousFormatData(
 
     const forExpenses = bs.otherPayables;
     const accountsPayable = bs.tradePayables;
-    const shortTermLoan = vis('bs_shortTermBorrowings')
-      ? r2(bs.shortTermBorrowings + bs.longTermBorrowings)
-      : 0;
+    const shortTermLoan = r2(bs.shortTermBorrowings + bs.longTermBorrowings);
     const provisionForTaxation = bs.currentTaxPayable;
     const totalCurrentLiabilities = r2(
       forExpenses + accountsPayable + shortTermLoan + provisionForTaxation + customCurrentLiabBS
@@ -4148,9 +4242,7 @@ export function buildProjectedFormatData(
     const customNonCurrentLiabBS = getVisibleCustomItemsSum(options?.statementConfig, 'balanceSheet', inp.year, 'Non-Current Liabilities');
     const propertyPlantEquipments = r2(bs.propertyPlantEquipment + customNonCurrentAssetsBS);
     const tradeAndOtherReceivables = bs.tradeReceivables;
-    const advanceDepositPrepayments = vis('bs_otherReceivables')
-      ? r2(bs.otherReceivables + bs.otherCurrentAssets)
-      : 0;
+    const advanceDepositPrepayments = r2(bs.otherReceivables + bs.otherCurrentAssets);
 
     // Liabilities
     const longTermLoan = r2(bs.longTermBorrowings + customNonCurrentLiabBS);
@@ -4459,7 +4551,7 @@ export function buildProjectedQuantNoteRows(
     );
   }
 
-  if (keep('bs_otherReceivables')) {
+  if (keep('bs_otherReceivables') || keep('bs_otherCurrentAssets')) {
     rows.push(
       { noteNo: '5.00', label: advLbl, configId: 'bs_otherReceivables', isSectionHeader: true, isBold: true, values: nulls() },
       { noteNo: '', label: 'As Per Last Year', configId: 'bs_otherReceivables', indent: true, values: projData.map(d => d.note5AdvanceOpening) },
@@ -4743,7 +4835,7 @@ export function calculateDebtServiceCoverage(
     const totalDebtService = r2(scheduledPrincipal + scheduledFinanceCost);
 
     const ebitda = r2((inc?.operatingProfit ?? 0) + (inc?.depreciationExpense ?? 0));
-    const operatingCashFlowBeforeFinance = r2((cf?.netCashFromOperating ?? 0) + (inc?.financeCost ?? 0));
+    const operatingCashFlowBeforeFinance = r2((cf?.netCashFromOperating ?? 0) - (cf?.financeCostPaid ?? 0));
     const ebitdaDscr = totalDebtService > 0 ? Number((ebitda / totalDebtService).toFixed(2)) : 99.99;
     const cashDscr = totalDebtService > 0 ? Number((operatingCashFlowBeforeFinance / totalDebtService).toFixed(2)) : 99.99;
     const interestCoverage = scheduledFinanceCost > 0
@@ -5142,8 +5234,31 @@ export function implementRepaymentScheduleIntoModel({
       exactFinanceCost = shouldScaleHist ? Math.round(existingInput.financeCost * histRevenueScale) : existingInput.financeCost;
       exactRepayment = shouldScaleHist ? Math.round(existingInput.repaymentOfBorrowings * histRevenueScale) : existingInput.repaymentOfBorrowings;
     } else {
-      exactFinanceCost = Math.max(100, Math.round((prevYear ? prevYear.longTermBorrowings + prevYear.shortTermBorrowings : salesRevenue * 0.15) * varyBounded(0.085, yr, 14, 0.0085, 0.045, 0.15)));
-      exactRepayment = Math.round((prevYear ? prevYear.longTermBorrowings : salesRevenue * 0.1) * varyBounded(0.12, yr, 15, 0.022, 0.065, 0.22));
+      const targetProjRate = clampVal((assumptions.loanInterestRatePct ?? 15.5) / 100, 0, 0.38);
+      const debtBase = prevYear ? prevYear.longTermBorrowings + prevYear.shortTermBorrowings : salesRevenue * 0.15;
+      exactFinanceCost =
+        debtBase > 0 && targetProjRate > 0
+          ? Math.max(
+              100,
+              Math.round(
+                debtBase *
+                  varyBounded(
+                    targetProjRate,
+                    yr,
+                    14,
+                    Math.max(0.006, targetProjRate * 0.055),
+                    Math.max(0.01, targetProjRate * 0.72),
+                    Math.min(0.40, targetProjRate * 1.28)
+                  )
+              )
+            )
+          : 0;
+      const inPreScheduleMoratorium = Boolean(
+        isProjected && hasFutureReschedule && schedSummaries[0] && yr < schedSummaries[0].financialYear
+      );
+      exactRepayment = inPreScheduleMoratorium
+        ? 0
+        : Math.round((prevYear ? prevYear.longTermBorrowings : salesRevenue * 0.1) * varyBounded(0.12, yr, 15, 0.022, 0.065, 0.22));
     }
 
     // P&L forward calculation incorporating exact Finance Cost, keeping NP spread distinct from Rev/CoS/OpEx
@@ -5334,11 +5449,17 @@ export function implementRepaymentScheduleIntoModel({
     if (!isFirstProjYear && prevTotalDebt + financingProceedsBorrowings < exactRepayment) {
       financingProceedsBorrowings = r2(exactRepayment - prevTotalDebt + (sched?.closingBalance || 0));
     }
+    const preserveCustomHistLT = Boolean(!isProjected && existingInput && !shouldScaleHist && existingInput.hasCustomLongTermBorrowings);
+    const preserveCustomHistST = Boolean(!isProjected && existingInput && !shouldScaleHist && existingInput.hasCustomShortTermBorrowings);
     const targetTotalDebt = Math.max(sched?.closingBalance ?? 0, r2(prevTotalDebt + financingProceedsBorrowings - exactRepayment));
     const currentMatOfLT = nextYrSched ? nextYrSched.totalPrincipal : 0;
     const stSalesFloor = Math.round(salesRevenue * varyBounded(0.03, yr, 17, 0.009, 0.015, 0.045));
-    const shortTermBorrowings = r2(Math.min(targetTotalDebt, Math.max(currentMatOfLT, stSalesFloor)));
-    const longTermBorrowings = r2(Math.max(0, targetTotalDebt - shortTermBorrowings));
+    const shortTermBorrowings = preserveCustomHistST
+      ? Math.max(0, existingInput!.shortTermBorrowings)
+      : r2(Math.min(targetTotalDebt, Math.max(currentMatOfLT, stSalesFloor)));
+    const longTermBorrowings = preserveCustomHistLT
+      ? Math.max(0, existingInput!.longTermBorrowings)
+      : r2(Math.max(0, targetTotalDebt - shortTermBorrowings));
 
     const yearDivPayout = isDistressedHistorical
       ? 0
@@ -5409,7 +5530,6 @@ export function implementRepaymentScheduleIntoModel({
         : Math.round((existingInput?.otherNonCurrentAssets || 3900) * (shouldScaleHist ? histRevenueScale : 1)),
       shortTermBorrowings,
       longTermBorrowings,
-      hasCustomLongTermBorrowings: false,
       shareCapital,
       retainedEarningsOpening: prevYear
         ? undefined
@@ -5421,6 +5541,8 @@ export function implementRepaymentScheduleIntoModel({
       financingProceedsBorrowings,
       financingRepaymentBorrowings: -exactRepayment,
       financingDividendsPaid: -dividendsPaid,
+      hasCustomLongTermBorrowings: existingInput?.hasCustomLongTermBorrowings,
+      hasCustomShortTermBorrowings: existingInput?.hasCustomShortTermBorrowings,
       isScheduleLocked: Boolean(sched),
       schedulePrincipalLocked: sched ? sched.totalPrincipal : undefined,
       scheduleFinanceCostLocked: sched ? sched.totalProfit : undefined,
@@ -5444,14 +5566,52 @@ export function implementRepaymentScheduleIntoModel({
     prevBuilt = built;
   }
 
-  // Evaluate achieved DSCR across covered years
-  const allOrdered = [
+  // Prudent Chartered Accountancy Dividend Restraint: if a transition projected year dips into negative closing cash while paying dividends, suspend/trim discretionary dividends in that year
+  let allOrdered = [
     ...histYears.map(y => updatedHistStore[y]),
     ...projYears.map(y => updatedProjOverrides[y]),
   ];
-  const fa = calculateScheduleOfFixedAssets(allOrdered);
-  const inc = calculateIncomeStatement(allOrdered, fa);
-  const cf = calculateCashFlowStatement(allOrdered, inc, fa);
+  let fa = calculateScheduleOfFixedAssets(allOrdered);
+  let inc = calculateIncomeStatement(allOrdered, fa);
+  let cf = calculateCashFlowStatement(allOrdered, inc, fa);
+
+  let dividendAdjusted = false;
+  let cumCashGain = 0;
+  for (let i = 0; i < allOrdered.length; i++) {
+    const yObj = allOrdered[i];
+    if (!yObj.isProjected) continue;
+    const cfYear = cf[i];
+    if (!cfYear) continue;
+    const projectedCashWithPrevSavings = r2(cfYear.closingCashCalculated + cumCashGain);
+    if (projectedCashWithPrevSavings < 0 && yObj.dividendsPaid > 0) {
+      const cashNeeded = Math.abs(projectedCashWithPrevSavings) + Math.max(1000, Math.round(yObj.salesRevenue * 0.005));
+      const newDiv = cashNeeded >= yObj.dividendsPaid ? 0 : Math.max(0, r2(yObj.dividendsPaid - cashNeeded));
+      const saved = r2(yObj.dividendsPaid - newDiv);
+      cumCashGain = r2(cumCashGain + saved);
+      updatedProjOverrides[yObj.year] = {
+        ...updatedProjOverrides[yObj.year],
+        dividendsPaid: newDiv,
+        financingDividendsPaid: -newDiv,
+        cashFlowFromFinancing: r2(
+          (updatedProjOverrides[yObj.year].financingProceedsBorrowings || 0) -
+            (updatedProjOverrides[yObj.year].repaymentOfBorrowings || 0) -
+            newDiv
+        ),
+      };
+      dividendAdjusted = true;
+    }
+  }
+
+  if (dividendAdjusted) {
+    allOrdered = [
+      ...histYears.map(y => updatedHistStore[y]),
+      ...projYears.map(y => updatedProjOverrides[y]),
+    ];
+    fa = calculateScheduleOfFixedAssets(allOrdered);
+    inc = calculateIncomeStatement(allOrdered, fa);
+    cf = calculateCashFlowStatement(allOrdered, inc, fa);
+  }
+
   const eq = calculateEquityStatement(allOrdered, inc);
   const bs = calculateBalanceSheet(allOrdered, eq, fa, cf);
   const dscrList = calculateDebtServiceCoverage(allOrdered, inc, bs, cf, schedule);

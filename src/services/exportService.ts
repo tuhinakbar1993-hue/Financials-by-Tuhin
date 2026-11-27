@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx';
+import XLSXStyle from 'xlsx-js-style';
 import {
   Document,
   Packer,
@@ -7,11 +8,18 @@ import {
   TableRow,
   TableCell,
   TextRun,
-  HeadingLevel,
   AlignmentType,
   WidthType,
   BorderStyle,
   PageBreak,
+  PageOrientation,
+  convertMillimetersToTwip,
+  VerticalAlign,
+  ShadingType,
+  TableLayoutType,
+  HeightRule,
+  Footer,
+  PageNumber,
 } from 'docx';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -253,6 +261,7 @@ function excelDiffExpr(col: string, addRows: number[], subRows: number[]): strin
 }
 
 function downloadBlob(blob: Blob, filename: string) {
+  if (typeof document === 'undefined') return;
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -261,6 +270,37 @@ function downloadBlob(blob: Blob, filename: string) {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+const exportedDocxBuffersForTest: { filename: string; size: number }[] = [];
+export function getCapturedDocxExportsForTest() {
+  return exportedDocxBuffersForTest;
+}
+export function clearCapturedDocxExportsForTest() {
+  exportedDocxBuffersForTest.length = 0;
+}
+
+async function emitDocxDocument(doc: Document, filename: string) {
+  if (typeof document === 'undefined') {
+    const buf = await Packer.toBuffer(doc);
+    exportedDocxBuffersForTest.push({ filename, size: buf.byteLength });
+    return;
+  }
+  const blob = await Packer.toBlob(doc);
+  downloadBlob(blob, filename);
+}
+
+const getXlsxStyleEngine = (): typeof XLSX => {
+  const mod = XLSXStyle as unknown as { writeFile?: typeof XLSX.writeFile; default?: typeof XLSX };
+  return (mod && typeof mod.writeFile === 'function' ? mod : mod?.default) as typeof XLSX;
+};
+
+function writeWorkbookStyled(wb: XLSX.WorkBook, filename: string) {
+  if (typeof window === 'undefined') {
+    XLSX.writeFile(wb, filename);
+    return;
+  }
+  getXlsxStyleEngine().writeFile(wb, filename);
 }
 
 // ---------------- EXCEL FORMULA & WORKSHEET HELPERS ---------------- //
@@ -308,6 +348,894 @@ function nCell(value: number): XLSX.CellObject {
 
 function applyColumnWidths(ws: XLSX.WorkSheet, widths: number[]) {
   ws['!cols'] = widths.map(wch => ({ wch }));
+}
+
+type ExcelBorderSide = { style: 'thin' | 'medium' | 'double'; color: { rgb: string } };
+type ExcelCellStyle = {
+  font?: { name?: string; sz?: number; bold?: boolean; italic?: boolean; color?: { rgb: string } };
+  fill?: { patternType: 'solid'; fgColor: { rgb: string } };
+  alignment?: { horizontal?: 'left' | 'center' | 'right'; vertical?: 'top' | 'center' | 'bottom'; wrapText?: boolean };
+  border?: {
+    top?: ExcelBorderSide;
+    bottom?: ExcelBorderSide;
+    left?: ExcelBorderSide;
+    right?: ExcelBorderSide;
+  };
+};
+
+type StyledCellObj = XLSX.CellObject & { s?: ExcelCellStyle };
+
+function setWorksheetPrintSetup(
+  ws: XLSX.WorkSheet,
+  orientation: 'landscape' | 'portrait',
+  marginMm = 14,
+  fitToWidth = 1
+) {
+  const marginIn = Number((marginMm / 25.4).toFixed(3));
+  (ws as Record<string, unknown>)['!pageSetup'] = {
+    paperSize: 9, // ISO A4
+    orientation,
+    fitToWidth,
+    fitToHeight: 0,
+    scale: 100,
+  };
+  (ws as Record<string, unknown>)['!margins'] = {
+    left: marginIn,
+    right: marginIn,
+    top: marginIn,
+    bottom: marginIn,
+    header: 0.25,
+    footer: 0.25,
+  };
+}
+
+function setRowHeightPt(ws: XLSX.WorkSheet, rowZeroBased: number, hpt: number) {
+  if (!ws['!rows']) ws['!rows'] = [];
+  ws['!rows'][rowZeroBased] = { hpt };
+}
+
+function addWorksheetMerge(ws: XLSX.WorkSheet, sR: number, sC: number, eR: number, eC: number) {
+  if (!ws['!merges']) ws['!merges'] = [];
+  ws['!merges'].push({ s: { r: sR, c: sC }, e: { r: eR, c: eC } });
+}
+
+function applyCellStyle(ws: XLSX.WorkSheet, r: number, c: number, style: ExcelCellStyle, createIfMissing = true) {
+  const addr = XLSX.utils.encode_cell({ r, c });
+  let cell = ws[addr] as StyledCellObj | undefined;
+  if (!cell) {
+    if (!createIfMissing) return;
+    cell = { t: 's', v: '' };
+    ws[addr] = cell;
+  }
+  cell.s = style;
+}
+
+function getRowStringVal(ws: XLSX.WorkSheet, r: number, c = 0): string {
+  const addr = XLSX.utils.encode_cell({ r, c });
+  const cell = ws[addr] as XLSX.CellObject | undefined;
+  return cell && cell.v !== undefined && cell.v !== null ? String(cell.v) : '';
+}
+
+function getSheetRowCount(ws: XLSX.WorkSheet): number {
+  const ref = ws['!ref'];
+  if (!ref) return 0;
+  return XLSX.utils.decode_range(ref).e.r + 1;
+}
+
+const BORDER_THIN_SLATE: ExcelBorderSide = { style: 'thin', color: { rgb: 'CBD5E1' } };
+const BORDER_THIN_GRID: ExcelBorderSide = { style: 'thin', color: { rgb: '334155' } };
+const BORDER_THIN_DARK: ExcelBorderSide = { style: 'thin', color: { rgb: '0F172A' } };
+const BORDER_DOUBLE_DARK: ExcelBorderSide = { style: 'double', color: { rgb: '0F172A' } };
+
+const FULL_THIN_SLATE = {
+  top: BORDER_THIN_SLATE,
+  bottom: BORDER_THIN_SLATE,
+  left: BORDER_THIN_SLATE,
+  right: BORDER_THIN_SLATE,
+};
+
+const FULL_THIN_GRID = {
+  top: BORDER_THIN_GRID,
+  bottom: BORDER_THIN_GRID,
+  left: BORDER_THIN_GRID,
+  right: BORDER_THIN_GRID,
+};
+
+function styleSection76Sheet(
+  ws: XLSX.WorkSheet,
+  colCount: number,
+  opts?: { centerFirstCols?: number; centerAllHeaders?: boolean }
+) {
+  setWorksheetPrintSetup(ws, 'landscape', 14, 1);
+  const totalRows = getSheetRowCount(ws);
+  if (totalRows === 0) return;
+
+  // Masthead Rows 0..3 matching PDF #0F172A dark slate banner
+  for (let r = 0; r <= 3; r++) {
+    if (colCount > 1) addWorksheetMerge(ws, r, 0, r, colCount - 1);
+    setRowHeightPt(ws, r, r === 0 ? 25 : 17);
+    for (let c = 0; c < colCount; c++) {
+      applyCellStyle(ws, r, c, {
+        font: {
+          name: 'Helvetica',
+          sz: r === 0 ? 13 : r === 1 ? 10 : 8.5,
+          bold: r === 0 || r === 1,
+          color: { rgb: r <= 1 ? 'FFFFFF' : 'CBD5E1' },
+        },
+        fill: { patternType: 'solid', fgColor: { rgb: '0F172A' } },
+        alignment: { horizontal: 'left', vertical: 'center' },
+      });
+    }
+  }
+  setRowHeightPt(ws, 4, 8);
+
+  // Header Row 5 matching PDF #1E293B dark navy header
+  const headerRow = 5;
+  setRowHeightPt(ws, headerRow, 22);
+  const leftCols = opts?.centerFirstCols ?? 1;
+  for (let c = 0; c < colCount; c++) {
+    applyCellStyle(ws, headerRow, c, {
+      font: { name: 'Helvetica', sz: 8.5, bold: true, color: { rgb: 'FFFFFF' } },
+      fill: { patternType: 'solid', fgColor: { rgb: '1E293B' } },
+      alignment: {
+        horizontal: opts?.centerAllHeaders ? 'center' : c < leftCols ? 'left' : 'right',
+        vertical: 'center',
+        wrapText: true,
+      },
+      border: FULL_THIN_GRID,
+    });
+  }
+
+  let zebraIdx = 0;
+  for (let r = 6; r < totalRows; r++) {
+    const label = getRowStringVal(ws, r, 0).trim();
+    const col1 = getRowStringVal(ws, r, 1).trim();
+    if (!label && !col1) {
+      setRowHeightPt(ws, r, 9);
+      continue;
+    }
+
+    const isGrandTotal =
+      label.startsWith('TOTAL ') ||
+      label === 'Net Profit After Tax' ||
+      label === 'NET CASH GENERATED FROM OPERATING ACTIVITIES' ||
+      label === 'NET CASH FROM / (USED IN) INVESTING ACTIVITIES' ||
+      label === 'NET CASH FROM / (USED IN) FINANCING ACTIVITIES' ||
+      label === 'Closing Cash & Cash Equivalents (Calculated)' ||
+      label === 'Balance Check (Variance)' ||
+      label === 'Reconciliation Variance (Calculated - Stated)' ||
+      label === 'Total :';
+
+    const isSectionHeader =
+      label === 'ASSETS' ||
+      label === 'LIABILITIES & SHAREHOLDERS EQUITY' ||
+      label.startsWith('CASH FLOWS FROM ');
+
+    const isSubtotal =
+      !isGrandTotal &&
+      !isSectionHeader &&
+      (label === 'Gross Profit' ||
+        label === 'Operating Profit (EBIT)' ||
+        label === 'Profit Before Tax (EBT)' ||
+        label.startsWith('Total ') ||
+        label.startsWith('Closing Share') ||
+        label.startsWith('Closing Retained') ||
+        label.startsWith('Closing Reserves') ||
+        label.startsWith('Operating Profit Before') ||
+        label.startsWith('Cash Generated') ||
+        label.startsWith('NET INCREASE'));
+
+    const isStatusRow = label === 'Audit Reconciliation Status';
+
+    setRowHeightPt(ws, r, isGrandTotal || isSectionHeader ? 20 : 17.5);
+    const fillHex = isGrandTotal
+      ? 'ECFDF5'
+      : isSectionHeader
+      ? 'E2E8F0'
+      : isSubtotal
+      ? 'F1F5F9'
+      : zebraIdx % 2 === 1
+      ? 'F8FAFC'
+      : 'FFFFFF';
+    if (!isSectionHeader) zebraIdx++;
+
+    for (let c = 0; c < colCount; c++) {
+      const cellVal = getRowStringVal(ws, r, c).trim();
+      const alignH: 'left' | 'center' | 'right' =
+        c === 0
+          ? 'left'
+          : opts?.centerFirstCols && c < opts.centerFirstCols
+          ? 'center'
+          : isStatusRow
+          ? 'center'
+          : cellVal.endsWith('%') || cellVal.endsWith('x')
+          ? 'right'
+          : 'right';
+      const cellFill =
+        isStatusRow && c > 0
+          ? cellVal === 'RECONCILED'
+            ? 'ECFDF5'
+            : 'FEF2F2'
+          : fillHex;
+      const cellColor =
+        isStatusRow && c > 0
+          ? cellVal === 'RECONCILED'
+            ? '065F46'
+            : '991B1B'
+          : '0F172A';
+      applyCellStyle(ws, r, c, {
+        font: {
+          name: 'Helvetica',
+          sz: 8.5,
+          bold: isGrandTotal || isSubtotal || isSectionHeader || isStatusRow,
+          color: { rgb: cellColor },
+        },
+        fill: { patternType: 'solid', fgColor: { rgb: cellFill } },
+        alignment: { horizontal: alignH, vertical: 'center', wrapText: c === colCount - 1 && colCount >= 10 },
+        border: isGrandTotal
+          ? {
+              top: BORDER_THIN_DARK,
+              bottom: BORDER_DOUBLE_DARK,
+              left: BORDER_THIN_SLATE,
+              right: BORDER_THIN_SLATE,
+            }
+          : FULL_THIN_SLATE,
+      });
+    }
+  }
+}
+
+function buildSection76CoverWorksheet(company: CompanyProfile, horizonText: string): XLSX.WorkSheet {
+  const rows: ExcelCellValue[][] = [
+    [''],
+    [''],
+    [safeCompanyUpper(company)],
+    ['ANNUAL STATUTORY FINANCIAL STATEMENTS & AUDIT SCHEDULES'],
+    ['Five Standard Financial Statements + Complete Notes to the Financial Statements'],
+    [`Compliant with Section 76 & International Accounting Framework (${company.accountingFramework})`],
+    [''],
+    [`Reporting Entity Type: ${company.entityType.toUpperCase()} | Registration: ${company.registrationNumber || 'N/A'} | TIN: ${company.taxId || 'N/A'}`],
+    [`Corporate Address: ${safeAddress(company)}`],
+    [`Reporting Currency: ${company.reportingCurrency} (${company.reportingUnit}) | FY End: ${normalizeFinancialYearEnd(company.financialYearEnd)} | Horizon: ${horizonText}`],
+    [''],
+    [`Lead Financial Architect: ${company.preparedBy}`],
+    [`Independent Statutory Auditors: ${company.auditorName || 'Chartered Accountants'}`],
+    [''],
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  applyColumnWidths(ws, [28, 28, 28, 28, 28]);
+  setWorksheetPrintSetup(ws, 'landscape', 10, 1);
+  for (let r = 0; r < rows.length; r++) {
+    addWorksheetMerge(ws, r, 0, r, 4);
+    setRowHeightPt(ws, r, r === 2 ? 38 : r === 3 ? 28 : 20);
+    const fontSz = r === 2 ? 22 : r === 3 ? 14 : r <= 5 ? 11 : 10;
+    const textRgb = r === 2 ? 'FFFFFF' : r === 3 ? '93C5FD' : r === 11 ? '34D399' : r >= 7 ? 'CBD5E1' : 'E2E8F0';
+    for (let c = 0; c < 5; c++) {
+      applyCellStyle(ws, r, c, {
+        font: { name: 'Helvetica', sz: fontSz, bold: r <= 3 || r === 11, color: { rgb: textRgb } },
+        fill: { patternType: 'solid', fgColor: { rgb: '0F172A' } },
+        alignment: { horizontal: 'center', vertical: 'center' },
+        border: {
+          top: r === 0 ? { style: 'medium', color: { rgb: '3B82F6' } } : undefined,
+          bottom: r === rows.length - 1 ? { style: 'medium', color: { rgb: '3B82F6' } } : undefined,
+          left: c === 0 ? { style: 'medium', color: { rgb: '3B82F6' } } : undefined,
+          right: c === 4 ? { style: 'medium', color: { rgb: '3B82F6' } } : undefined,
+        },
+      });
+    }
+  }
+  return ws;
+}
+
+function styleSection76NotesSheet(ws: XLSX.WorkSheet, colCount = 4) {
+  setWorksheetPrintSetup(ws, 'landscape', 14, 1);
+  const totalRows = getSheetRowCount(ws);
+  if (totalRows === 0) return;
+
+  for (let r = 0; r <= 2; r++) {
+    addWorksheetMerge(ws, r, 0, r, colCount - 1);
+    setRowHeightPt(ws, r, r === 0 ? 24 : 18);
+    for (let c = 0; c < colCount; c++) {
+      applyCellStyle(ws, r, c, {
+        font: { name: 'Helvetica', sz: r === 0 ? 12.5 : 9.5, bold: r <= 1, color: { rgb: r <= 1 ? 'FFFFFF' : 'CBD5E1' } },
+        fill: { patternType: 'solid', fgColor: { rgb: '0F172A' } },
+        alignment: { horizontal: 'left', vertical: 'center' },
+      });
+    }
+  }
+
+  let inTable = false;
+  let tableZebra = 0;
+  for (let r = 3; r < totalRows; r++) {
+    const col0 = getRowStringVal(ws, r, 0).trim();
+    const col1 = getRowStringVal(ws, r, 1).trim();
+    if (!col0 && !col1) {
+      inTable = false;
+      tableZebra = 0;
+      setRowHeightPt(ws, r, 9);
+      continue;
+    }
+    if (col0.startsWith('Note ')) {
+      inTable = false;
+      addWorksheetMerge(ws, r, 0, r, colCount - 1);
+      setRowHeightPt(ws, r, 19);
+      for (let c = 0; c < colCount; c++) {
+        applyCellStyle(ws, r, c, {
+          font: { name: 'Helvetica', sz: 9.5, bold: true, color: { rgb: '1E293B' } },
+          fill: { patternType: 'solid', fgColor: { rgb: 'E2E8F0' } },
+          alignment: { horizontal: 'left', vertical: 'center' },
+        });
+      }
+      continue;
+    }
+    if (!inTable && !col1 && col0.length > 40) {
+      addWorksheetMerge(ws, r, 0, r, colCount - 1);
+      setRowHeightPt(ws, r, 26);
+      applyCellStyle(ws, r, 0, {
+        font: { name: 'Helvetica', sz: 8.5, color: { rgb: '475569' } },
+        alignment: { horizontal: 'left', vertical: 'center', wrapText: true },
+      });
+      continue;
+    }
+    if (!inTable && col1) {
+      inTable = true;
+      tableZebra = 0;
+      setRowHeightPt(ws, r, 20);
+      for (let c = 0; c < colCount; c++) {
+        applyCellStyle(ws, r, c, {
+          font: { name: 'Helvetica', sz: 8.5, bold: true, color: { rgb: 'FFFFFF' } },
+          fill: { patternType: 'solid', fgColor: { rgb: '1E293B' } },
+          alignment: { horizontal: c === 0 ? 'left' : 'right', vertical: 'center' },
+          border: FULL_THIN_GRID,
+        });
+      }
+      continue;
+    }
+    if (inTable) {
+      const nextCol0 = r + 1 < totalRows ? getRowStringVal(ws, r + 1, 0).trim() : '';
+      const isTotal = col0.toLowerCase().startsWith('total') || nextCol0 === '';
+      setRowHeightPt(ws, r, 17);
+      const fillHex = isTotal ? 'F1F5F9' : tableZebra % 2 === 1 ? 'F8FAFC' : 'FFFFFF';
+      tableZebra++;
+      for (let c = 0; c < colCount; c++) {
+        applyCellStyle(ws, r, c, {
+          font: { name: 'Helvetica', sz: 8.5, bold: isTotal, color: { rgb: '0F172A' } },
+          fill: { patternType: 'solid', fgColor: { rgb: fillHex } },
+          alignment: { horizontal: c === 0 ? 'left' : 'right', vertical: 'center' },
+          border: FULL_THIN_SLATE,
+        });
+      }
+    }
+  }
+}
+
+function stylePreviousFormatSheet(
+  ws: XLSX.WorkSheet,
+  colCount: number,
+  orientation: 'portrait' | 'landscape',
+  boldLabels: Set<string>
+) {
+  setWorksheetPrintSetup(ws, orientation, 14, 1);
+  const totalRows = getSheetRowCount(ws);
+  if (totalRows === 0) return;
+
+  for (let r = 0; r <= 3; r++) {
+    if (colCount > 1) addWorksheetMerge(ws, r, 0, r, colCount - 1);
+    setRowHeightPt(ws, r, r === 0 ? 22 : r === 1 ? 19 : 16);
+    for (let c = 0; c < colCount; c++) {
+      applyCellStyle(ws, r, c, {
+        font: {
+          name: 'Times New Roman',
+          sz: r === 0 ? 13 : r === 1 ? 12 : r === 2 ? 9.5 : 8.5,
+          bold: r <= 2,
+          color: { rgb: '0F172A' },
+        },
+        alignment: { horizontal: r === 3 ? 'right' : 'center', vertical: 'center' },
+      });
+    }
+  }
+  setRowHeightPt(ws, 4, 7);
+
+  // Header row 5 (white background, bold centered, grid borders matching Previous Financials PDF)
+  setRowHeightPt(ws, 5, 22);
+  for (let c = 0; c < colCount; c++) {
+    applyCellStyle(ws, 5, c, {
+      font: { name: 'Times New Roman', sz: 9.5, bold: true, color: { rgb: '0F172A' } },
+      fill: { patternType: 'solid', fgColor: { rgb: 'FFFFFF' } },
+      alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+      border: FULL_THIN_GRID,
+    });
+  }
+
+  const doubleBottomLabels = new Set([
+    'Taka',
+    'Total',
+    'Net Profit After Income Tax',
+    'f) Cash & Cash Equivalents at end of period (D+E)',
+    'TOTAL CLOSING EQUITY',
+  ]);
+
+  for (let r = 6; r < totalRows; r++) {
+    const label = getRowStringVal(ws, r, 0).trim();
+    const isBold =
+      boldLabels.has(label) ||
+      label === 'PROPERTIES & ASSETS' ||
+      label === 'CAPITAL & LIABILITIES' ||
+      label.startsWith('a)') ||
+      label.startsWith('b)') ||
+      label.startsWith('c)');
+    const isDoubleBottom = doubleBottomLabels.has(label);
+    setRowHeightPt(ws, r, 18);
+    for (let c = 0; c < colCount; c++) {
+      const col0Align: 'left' | 'right' =
+        c === 0 ? (label === 'Taka' || label === 'Total' ? 'right' : 'left') : 'right';
+      applyCellStyle(ws, r, c, {
+        font: { name: 'Times New Roman', sz: 9, bold: isBold, color: { rgb: '0F172A' } },
+        fill: { patternType: 'solid', fgColor: { rgb: 'FFFFFF' } },
+        alignment: { horizontal: col0Align, vertical: 'center' },
+        border: {
+          top: BORDER_THIN_GRID,
+          bottom: isDoubleBottom ? BORDER_DOUBLE_DARK : BORDER_THIN_GRID,
+          left: BORDER_THIN_GRID,
+          right: BORDER_THIN_GRID,
+        },
+      });
+    }
+  }
+}
+
+function stylePreviousFaNotesSheet(ws: XLSX.WorkSheet, orientation: 'portrait' | 'landscape') {
+  setWorksheetPrintSetup(ws, orientation, 14, 1);
+  const totalRows = getSheetRowCount(ws);
+  const colCount = 7;
+  for (let r = 0; r <= 2; r++) {
+    addWorksheetMerge(ws, r, 0, r, colCount - 1);
+    setRowHeightPt(ws, r, r === 0 ? 22 : 18);
+    for (let c = 0; c < colCount; c++) {
+      applyCellStyle(ws, r, c, {
+        font: { name: 'Times New Roman', sz: r === 0 ? 13 : 10, bold: true, color: { rgb: '0F172A' } },
+        alignment: { horizontal: r < 2 ? 'center' : 'left', vertical: 'center' },
+      });
+    }
+  }
+
+  let mode: 'fa' | 'notes_head' | 'note_tbl' = 'fa';
+  let noteCols = 3;
+  for (let r = 3; r < totalRows; r++) {
+    const col0 = getRowStringVal(ws, r, 0).trim();
+    const col1 = getRowStringVal(ws, r, 1).trim();
+    if (!col0 && !col1) {
+      if (mode === 'note_tbl') mode = 'notes_head';
+      setRowHeightPt(ws, r, 8);
+      continue;
+    }
+    if (col0 === 'NOTES TO THE FINANCIAL STATEMENTS:') {
+      mode = 'notes_head';
+      addWorksheetMerge(ws, r, 0, r, colCount - 1);
+      setRowHeightPt(ws, r, 20);
+      applyCellStyle(ws, r, 0, {
+        font: { name: 'Times New Roman', sz: 10.5, bold: true, color: { rgb: '0F172A' } },
+        alignment: { horizontal: 'left', vertical: 'center' },
+      });
+      continue;
+    }
+    if (mode === 'fa') {
+      const isHdr = col0 === 'Particulars';
+      const isTaka = col0 === 'Taka';
+      setRowHeightPt(ws, r, isHdr ? 24 : 18);
+      for (let c = 0; c < colCount; c++) {
+        applyCellStyle(ws, r, c, {
+          font: { name: 'Times New Roman', sz: 8.5, bold: isHdr || isTaka, color: { rgb: '0F172A' } },
+          fill: { patternType: 'solid', fgColor: { rgb: 'FFFFFF' } },
+          alignment: {
+            horizontal: isHdr ? 'center' : c === 0 ? 'left' : c === 4 ? 'center' : 'right',
+            vertical: 'center',
+            wrapText: isHdr,
+          },
+          border: {
+            top: BORDER_THIN_GRID,
+            bottom: isTaka ? BORDER_DOUBLE_DARK : BORDER_THIN_GRID,
+            left: BORDER_THIN_GRID,
+            right: BORDER_THIN_GRID,
+          },
+        });
+      }
+      continue;
+    }
+    if (col0.startsWith('Note ')) {
+      mode = 'notes_head';
+      addWorksheetMerge(ws, r, 0, r, colCount - 1);
+      setRowHeightPt(ws, r, 18);
+      applyCellStyle(ws, r, 0, {
+        font: { name: 'Times New Roman', sz: 9.5, bold: true, color: { rgb: '0F172A' } },
+        alignment: { horizontal: 'left', vertical: 'center' },
+      });
+      continue;
+    }
+    if (mode === 'notes_head' && !col1) {
+      addWorksheetMerge(ws, r, 0, r, colCount - 1);
+      setRowHeightPt(ws, r, 24);
+      applyCellStyle(ws, r, 0, {
+        font: { name: 'Times New Roman', sz: 8.5, color: { rgb: '0F172A' } },
+        alignment: { horizontal: 'left', vertical: 'center', wrapText: true },
+      });
+      continue;
+    }
+    if (mode === 'notes_head' && col1) {
+      mode = 'note_tbl';
+      noteCols = 1;
+      for (let c = 1; c < colCount; c++) {
+        if (getRowStringVal(ws, r, c) !== '') noteCols = c + 1;
+      }
+      setRowHeightPt(ws, r, 19);
+      for (let c = 0; c < noteCols; c++) {
+        applyCellStyle(ws, r, c, {
+          font: { name: 'Times New Roman', sz: 8.5, bold: true, color: { rgb: '0F172A' } },
+          fill: { patternType: 'solid', fgColor: { rgb: 'F8FAFC' } },
+          alignment: { horizontal: c === 0 ? 'left' : 'right', vertical: 'center' },
+          border: FULL_THIN_SLATE,
+        });
+      }
+      continue;
+    }
+    if (mode === 'note_tbl') {
+      const nextCol0 = r + 1 < totalRows ? getRowStringVal(ws, r + 1, 0).trim() : '';
+      const isTotal = col0.toLowerCase().startsWith('total') || nextCol0 === '';
+      setRowHeightPt(ws, r, 17);
+      for (let c = 0; c < noteCols; c++) {
+        applyCellStyle(ws, r, c, {
+          font: { name: 'Times New Roman', sz: 8.5, bold: isTotal, color: { rgb: '0F172A' } },
+          alignment: { horizontal: c === 0 ? 'left' : 'right', vertical: 'center' },
+          border: {
+            top: BORDER_THIN_SLATE,
+            bottom: isTotal ? BORDER_DOUBLE_DARK : BORDER_THIN_SLATE,
+            left: BORDER_THIN_SLATE,
+            right: BORDER_THIN_SLATE,
+          },
+        });
+      }
+    }
+  }
+}
+
+function styleProjectedStatementSheet(
+  ws: XLSX.WorkSheet,
+  kind: 'bs' | 'pl' | 'cf',
+  colCount: number,
+  boldLabels: Set<string>,
+  ruleLabels: Set<string>,
+  doubleBottomLabels: Set<string>
+) {
+  setWorksheetPrintSetup(ws, 'landscape', 10, 1);
+  const totalRows = getSheetRowCount(ws);
+  if (totalRows === 0) return;
+
+  const titleRowCount = kind === 'cf' ? 4 : 3;
+  for (let r = 0; r < titleRowCount; r++) {
+    if (colCount > 1) addWorksheetMerge(ws, r, 0, r, colCount - 1);
+    setRowHeightPt(ws, r, r === 0 ? 20 : 16);
+    const isAddr = kind === 'cf' && r === 1;
+    const isSub = r === titleRowCount - 1;
+    for (let c = 0; c < colCount; c++) {
+      applyCellStyle(ws, r, c, {
+        font: {
+          name: 'Helvetica',
+          sz: r === 0 ? 11.5 : isAddr ? 8 : isSub ? 8.5 : 10.5,
+          bold: r === 0 || (!isAddr && !isSub),
+          color: { rgb: '0F172A' },
+        },
+        alignment: { horizontal: 'center', vertical: 'center' },
+      });
+    }
+  }
+
+  if (kind === 'bs' || kind === 'pl') {
+    // 2-row merged header on Excel Rows 5..6 (0-based 4..5) matching PDF twoRowHead
+    addWorksheetMerge(ws, 4, 0, 5, 0);
+    addWorksheetMerge(ws, 4, 1, 5, 1);
+    setRowHeightPt(ws, 4, 17);
+    setRowHeightPt(ws, 5, 17);
+    for (let r = 4; r <= 5; r++) {
+      for (let c = 0; c < colCount; c++) {
+        applyCellStyle(ws, r, c, {
+          font: { name: 'Helvetica', sz: 8.5, bold: true, color: { rgb: '0F172A' } },
+          fill: { patternType: 'solid', fgColor: { rgb: 'FFFFFF' } },
+          alignment: { horizontal: 'center', vertical: 'center' },
+          border: {
+            top: BORDER_THIN_GRID,
+            bottom: BORDER_THIN_GRID,
+            left: BORDER_THIN_GRID,
+            right: BORDER_THIN_GRID,
+          },
+        });
+      }
+    }
+    setRowHeightPt(ws, 6, 7);
+  } else {
+    // Cash flow header on Row 6 (0-based 5) - unmerged so year columns stay distinct
+    setRowHeightPt(ws, 5, 20);
+    for (let c = 0; c < colCount; c++) {
+      applyCellStyle(ws, 5, c, {
+        font: { name: 'Helvetica', sz: 8.5, bold: true, color: { rgb: '0F172A' } },
+        fill: { patternType: 'solid', fgColor: { rgb: 'FFFFFF' } },
+        alignment: { horizontal: c === 0 ? 'left' : 'right', vertical: 'center' },
+        border: { top: BORDER_THIN_GRID, bottom: BORDER_THIN_GRID, left: BORDER_THIN_GRID, right: BORDER_THIN_GRID },
+      });
+    }
+  }
+
+  const startDataR = kind === 'cf' ? 6 : 7;
+  const numStartCol = kind === 'cf' ? 1 : 2;
+  for (let r = startDataR; r < totalRows; r++) {
+    const label = getRowStringVal(ws, r, 0).trim();
+    const col2Text = getRowStringVal(ws, r, 2).trim();
+    if (!label && !col2Text) {
+      setRowHeightPt(ws, r, 9);
+      continue;
+    }
+    if (label === 'Proprietor') {
+      setRowHeightPt(ws, r, 20);
+      applyCellStyle(ws, r, 0, {
+        font: { name: 'Helvetica', sz: 8.5, bold: true, color: { rgb: '0F172A' } },
+        alignment: { horizontal: 'left', vertical: 'bottom' },
+        border: { top: BORDER_THIN_DARK },
+      });
+      if (colCount > 3) addWorksheetMerge(ws, r, 2, r, colCount - 1);
+      applyCellStyle(ws, r, 2, {
+        font: { name: 'Helvetica', sz: 8.5, color: { rgb: '0F172A' } },
+        alignment: { horizontal: 'center', vertical: 'bottom' },
+      });
+      continue;
+    }
+
+    const isBold = boldLabels.has(label);
+    const hasRule = ruleLabels.has(label);
+    const hasDouble = doubleBottomLabels.has(label);
+    setRowHeightPt(ws, r, hasDouble ? 19 : 16.5);
+    for (let c = 0; c < colCount; c++) {
+      const col0Align: 'left' | 'center' | 'right' =
+        c === 0
+          ? label === 'Total Assets' || label === 'Total Equity & Liabilities'
+            ? 'right'
+            : 'left'
+          : kind !== 'cf' && c === 1
+          ? 'center'
+          : 'right';
+
+      applyCellStyle(ws, r, c, {
+        font: { name: 'Helvetica', sz: 8.5, bold: isBold, color: { rgb: '0F172A' } },
+        alignment: { horizontal: col0Align, vertical: 'center' },
+        border:
+          c >= numStartCol && (hasRule || hasDouble)
+            ? {
+                top: BORDER_THIN_DARK,
+                bottom: hasDouble ? BORDER_DOUBLE_DARK : BORDER_THIN_DARK,
+              }
+            : undefined,
+      });
+    }
+  }
+}
+
+function styleProjectedNotesSheet(ws: XLSX.WorkSheet, colCount: number, noteBoldSet: Set<string>) {
+  setWorksheetPrintSetup(ws, 'landscape', 12, 1);
+  const totalRows = getSheetRowCount(ws);
+  if (totalRows === 0) return;
+
+  for (let r = 0; r <= 3; r++) {
+    addWorksheetMerge(ws, r, 0, r, colCount - 1);
+    setRowHeightPt(ws, r, r === 0 ? 20 : 16);
+    for (let c = 0; c < colCount; c++) {
+      applyCellStyle(ws, r, c, {
+        font: {
+          name: 'Helvetica',
+          sz: r === 0 ? 11.5 : r === 1 ? 8 : r === 2 ? 10.5 : 8.5,
+          bold: r === 0 || r === 2,
+          color: { rgb: '0F172A' },
+        },
+        alignment: { horizontal: 'center', vertical: 'center' },
+      });
+    }
+  }
+
+  // Narrative Notes Header (row 5) & rows 6..14
+  addWorksheetMerge(ws, 5, 1, 5, colCount - 1);
+  setRowHeightPt(ws, 5, 19);
+  for (let c = 0; c < colCount; c++) {
+    applyCellStyle(ws, 5, c, {
+      font: { name: 'Helvetica', sz: 8.5, bold: true, color: { rgb: '0F172A' } },
+      alignment: { horizontal: c === 0 ? 'center' : 'left', vertical: 'center' },
+      border: { top: BORDER_THIN_GRID, bottom: BORDER_THIN_GRID },
+    });
+  }
+  for (let r = 6; r <= 14; r++) {
+    addWorksheetMerge(ws, r, 1, r, colCount - 1);
+    const no = getRowStringVal(ws, r, 0).trim();
+    const isHdr = no === '1' || no === '2';
+    setRowHeightPt(ws, r, isHdr ? 18 : 24);
+    applyCellStyle(ws, r, 0, {
+      font: { name: 'Helvetica', sz: 8.5, bold: true, color: { rgb: '0F172A' } },
+      alignment: { horizontal: 'center', vertical: 'center' },
+    });
+    applyCellStyle(ws, r, 1, {
+      font: { name: 'Helvetica', sz: 8.5, bold: isHdr || no === '', color: { rgb: '0F172A' } },
+      alignment: { horizontal: 'left', vertical: 'center', wrapText: true },
+    });
+  }
+
+  // Quantitative Notes 2-row merged header on rows 16..17
+  addWorksheetMerge(ws, 16, 0, 17, 0);
+  addWorksheetMerge(ws, 16, 1, 17, 1);
+  setRowHeightPt(ws, 16, 17);
+  setRowHeightPt(ws, 17, 17);
+  for (let r = 16; r <= 17; r++) {
+    for (let c = 0; c < colCount; c++) {
+      applyCellStyle(ws, r, c, {
+        font: { name: 'Helvetica', sz: 8.5, bold: true, color: { rgb: '0F172A' } },
+        fill: { patternType: 'solid', fgColor: { rgb: 'FFFFFF' } },
+        alignment: { horizontal: 'center', vertical: 'center' },
+        border: FULL_THIN_GRID,
+      });
+    }
+  }
+
+  for (let r = 18; r < totalRows; r++) {
+    const noteNo = getRowStringVal(ws, r, 0).trim();
+    const label = getRowStringVal(ws, r, 1).trim();
+    const isBold = noteNo !== '' || noteBoldSet.has(label) || label === 'Add: Direct Expenses';
+    const hasRule = noteBoldSet.has(label);
+    setRowHeightPt(ws, r, 16.5);
+    for (let c = 0; c < colCount; c++) {
+      applyCellStyle(ws, r, c, {
+        font: { name: 'Helvetica', sz: 8.5, bold: isBold, color: { rgb: '0F172A' } },
+        alignment: { horizontal: c === 0 ? 'center' : c === 1 ? 'left' : 'right', vertical: 'center' },
+        border: c >= 2 && hasRule ? { top: BORDER_THIN_DARK, bottom: BORDER_DOUBLE_DARK } : undefined,
+      });
+    }
+  }
+}
+
+function styleProjectedScheduleASheet(ws: XLSX.WorkSheet, headerTopRows: number[]) {
+  setWorksheetPrintSetup(ws, 'landscape', 10, 1);
+  const totalRows = getSheetRowCount(ws);
+  const colCount = 9;
+  for (let r = 0; r <= 3; r++) {
+    addWorksheetMerge(ws, r, 0, r, colCount - 1);
+    setRowHeightPt(ws, r, r === 0 ? 20 : 16);
+    for (let c = 0; c < colCount; c++) {
+      applyCellStyle(ws, r, c, {
+        font: {
+          name: 'Helvetica',
+          sz: r === 0 ? 11.5 : r === 1 ? 8 : r === 2 ? 10.5 : 8.5,
+          bold: r === 0 || r === 2,
+          color: { rgb: '0F172A' },
+        },
+        alignment: { horizontal: 'center', vertical: 'center' },
+      });
+    }
+  }
+  for (const rTop of headerTopRows) {
+    const rSub = rTop + 1;
+    // Merge 2-row spans: SL No. (0), Particulars (1), Cost across 2..5, Rate (6), Dep (7), WDV (8)
+    addWorksheetMerge(ws, rTop, 0, rSub, 0);
+    addWorksheetMerge(ws, rTop, 1, rSub, 1);
+    addWorksheetMerge(ws, rTop, 2, rTop, 5);
+    addWorksheetMerge(ws, rTop, 6, rSub, 6);
+    addWorksheetMerge(ws, rTop, 7, rSub, 7);
+    addWorksheetMerge(ws, rTop, 8, rSub, 8);
+    setRowHeightPt(ws, rTop, 18);
+    setRowHeightPt(ws, rSub, 22);
+    for (let r = rTop; r <= rSub; r++) {
+      for (let c = 0; c < colCount; c++) {
+        applyCellStyle(ws, r, c, {
+          font: { name: 'Helvetica', sz: 8, bold: true, color: { rgb: '0F172A' } },
+          fill: { patternType: 'solid', fgColor: { rgb: 'FFFFFF' } },
+          alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+          border: FULL_THIN_GRID,
+        });
+      }
+    }
+    const itemR = rSub + 1;
+    const totR = rSub + 2;
+    for (const r of [itemR, totR]) {
+      if (r >= totalRows) continue;
+      const isTot = r === totR;
+      setRowHeightPt(ws, r, 18);
+      for (let c = 0; c < colCount; c++) {
+        applyCellStyle(ws, r, c, {
+          font: { name: 'Helvetica', sz: 8, bold: isTot, color: { rgb: '0F172A' } },
+          alignment: {
+            horizontal: c === 0 || c === 6 ? 'center' : c === 1 ? 'left' : 'right',
+            vertical: 'center',
+          },
+          border: {
+            top: BORDER_THIN_GRID,
+            bottom: isTot ? BORDER_DOUBLE_DARK : BORDER_THIN_GRID,
+            left: BORDER_THIN_GRID,
+            right: BORDER_THIN_GRID,
+          },
+        });
+      }
+    }
+  }
+}
+
+function styleRepaymentScheduleSheet(ws: XLSX.WorkSheet) {
+  setWorksheetPrintSetup(ws, 'landscape', 14, 1);
+  const totalRows = getSheetRowCount(ws);
+  const colCount = 9;
+  if (totalRows === 0) return;
+
+  for (let r = 0; r <= 1; r++) {
+    addWorksheetMerge(ws, r, 0, r, colCount - 1);
+    setRowHeightPt(ws, r, r === 0 ? 24 : 18);
+    for (let c = 0; c < colCount; c++) {
+      applyCellStyle(ws, r, c, {
+        font: { name: 'Helvetica', sz: r === 0 ? 12.5 : 9.5, bold: true, color: { rgb: r === 0 ? 'FFFFFF' : 'CBD5E1' } },
+        fill: { patternType: 'solid', fgColor: { rgb: '0F172A' } },
+        alignment: { horizontal: 'left', vertical: 'center' },
+      });
+    }
+  }
+  // Metadata rows 2..5
+  for (let r = 2; r <= 5; r++) {
+    addWorksheetMerge(ws, r, 1, r, 4);
+    addWorksheetMerge(ws, r, 6, r, 8);
+    setRowHeightPt(ws, r, 18);
+    for (let c = 0; c < colCount; c++) {
+      const isLabel = c === 0 || c === 5;
+      applyCellStyle(ws, r, c, {
+        font: { name: 'Helvetica', sz: 8.5, bold: isLabel, color: { rgb: '0F172A' } },
+        fill: { patternType: 'solid', fgColor: { rgb: isLabel ? 'F8FAFC' : 'FFFFFF' } },
+        alignment: { horizontal: isLabel ? 'left' : 'right', vertical: 'center' },
+        border: FULL_THIN_GRID,
+      });
+    }
+  }
+  setRowHeightPt(ws, 6, 8);
+
+  // Table header row 7
+  setRowHeightPt(ws, 7, 22);
+  for (let c = 0; c < colCount; c++) {
+    applyCellStyle(ws, 7, c, {
+      font: { name: 'Helvetica', sz: 8.5, bold: true, color: { rgb: 'FFFFFF' } },
+      fill: { patternType: 'solid', fgColor: { rgb: '1E293B' } },
+      alignment: { horizontal: c === 0 ? 'left' : c === 1 ? 'center' : 'right', vertical: 'center', wrapText: true },
+      border: FULL_THIN_GRID,
+    });
+  }
+
+  let zebra = 0;
+  for (let r = 8; r < totalRows; r++) {
+    const label = getRowStringVal(ws, r, 0).trim();
+    if (!label) {
+      setRowHeightPt(ws, r, 9);
+      continue;
+    }
+    if (label.startsWith('Prepared By :')) {
+      addWorksheetMerge(ws, r, 0, r, colCount - 1);
+      setRowHeightPt(ws, r, 18);
+      applyCellStyle(ws, r, 0, {
+        font: { name: 'Helvetica', sz: 8, italic: true, color: { rgb: '475569' } },
+        alignment: { horizontal: 'left', vertical: 'center' },
+      });
+      continue;
+    }
+    const isTotal = label === 'Total :';
+    setRowHeightPt(ws, r, isTotal ? 20 : 17);
+    const fillHex = isTotal ? 'ECFDF5' : zebra % 2 === 1 ? 'F8FAFC' : 'FFFFFF';
+    zebra++;
+    for (let c = 0; c < colCount; c++) {
+      applyCellStyle(ws, r, c, {
+        font: { name: 'Helvetica', sz: 8.5, bold: isTotal, color: { rgb: '0F172A' } },
+        fill: { patternType: 'solid', fgColor: { rgb: fillHex } },
+        alignment: { horizontal: c === 0 ? 'left' : c === 1 ? 'center' : 'right', vertical: 'center' },
+        border: isTotal
+          ? { top: BORDER_THIN_DARK, bottom: BORDER_DOUBLE_DARK, left: BORDER_THIN_SLATE, right: BORDER_THIN_SLATE }
+          : FULL_THIN_SLATE,
+      });
+    }
+  }
 }
 
 function createTableDataForStatement(
@@ -487,6 +1415,7 @@ function buildIncomeStatementSheet(
   const sheetData = createTableDataForStatement(title, company, headers, rows);
   const ws = XLSX.utils.aoa_to_sheet(sheetData);
   applyColumnWidths(ws, [42, ...data.map(() => 18)]);
+  styleSection76Sheet(ws, headers.length);
   return ws;
 }
 
@@ -675,6 +1604,7 @@ function buildBalanceSheetWorksheet(
   const sheetData = createTableDataForStatement(title, company, headers, rows);
   const ws = XLSX.utils.aoa_to_sheet(sheetData);
   applyColumnWidths(ws, [42, ...data.map(() => 18)]);
+  styleSection76Sheet(ws, headers.length);
   return ws;
 }
 
@@ -922,6 +1852,7 @@ function buildCashFlowWorksheet(
   const sheetData = createTableDataForStatement(title, company, headers, rows);
   const ws = XLSX.utils.aoa_to_sheet(sheetData);
   applyColumnWidths(ws, [48, ...data.map(() => 18)]);
+  styleSection76Sheet(ws, headers.length);
   return ws;
 }
 
@@ -1055,6 +1986,7 @@ function buildEquityWorksheet(
   const sheetData = createTableDataForStatement(title, company, headers, rows);
   const ws = XLSX.utils.aoa_to_sheet(sheetData);
   applyColumnWidths(ws, [42, ...data.map(() => 18)]);
+  styleSection76Sheet(ws, headers.length);
   return ws;
 }
 
@@ -1119,6 +2051,7 @@ function buildFixedAssetsWorksheet(
     const sheetData = createTableDataForStatement('Schedule of Fixed Assets', company, headers, []);
     const ws = XLSX.utils.aoa_to_sheet(sheetData);
     applyColumnWidths(ws, [38, 10, 16, 14, 14, 16, 16, 14, 15, 16, 18]);
+    styleSection76Sheet(ws, headers.length, { centerFirstCols: 2 });
     return ws;
   }
   const categories = resolveFACategoriesForExport(latest, options);
@@ -1167,6 +2100,7 @@ function buildFixedAssetsWorksheet(
   const sheetData = createTableDataForStatement(`Schedule of Fixed Assets (${latest.year})`, company, headers, rows);
   const ws = XLSX.utils.aoa_to_sheet(sheetData);
   applyColumnWidths(ws, [38, 10, 16, 14, 14, 16, 16, 14, 15, 16, 18]);
+  styleSection76Sheet(ws, headers.length, { centerFirstCols: 2 });
   return ws;
 }
 
@@ -1181,7 +2115,7 @@ export function exportIncomeStatementExcel(
   const { filename, options } = resolveFilenameAndOptions('Income_Statement.xlsx', filenameOrOptions, explicitOptions);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, buildIncomeStatementSheet(company, data, 'Income Statement', options), 'Income Statement');
-  XLSX.writeFile(wb, filename);
+  writeWorkbookStyled(wb, filename);
 }
 
 export function exportBalanceSheetExcel(
@@ -1193,7 +2127,7 @@ export function exportBalanceSheetExcel(
   const { filename, options } = resolveFilenameAndOptions('Statement_of_Financial_Position.xlsx', filenameOrOptions, explicitOptions);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, buildBalanceSheetWorksheet(company, data, 'Statement of Financial Position', options), 'Balance Sheet');
-  XLSX.writeFile(wb, filename);
+  writeWorkbookStyled(wb, filename);
 }
 
 export function exportCashFlowExcel(
@@ -1205,7 +2139,7 @@ export function exportCashFlowExcel(
   const { filename, options } = resolveFilenameAndOptions('Statement_of_Cash_Flows.xlsx', filenameOrOptions, explicitOptions);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, buildCashFlowWorksheet(company, data, 'Statement of Cash Flows', options), 'Cash Flow Statement');
-  XLSX.writeFile(wb, filename);
+  writeWorkbookStyled(wb, filename);
 }
 
 export function exportEquityStatementExcel(
@@ -1217,7 +2151,7 @@ export function exportEquityStatementExcel(
   const { filename, options } = resolveFilenameAndOptions('Statement_of_Changes_in_Equity.xlsx', filenameOrOptions, explicitOptions);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, buildEquityWorksheet(company, data, 'Statement of Changes in Equity', options), 'Equity Statement');
-  XLSX.writeFile(wb, filename);
+  writeWorkbookStyled(wb, filename);
 }
 
 export function exportFixedAssetsExcel(
@@ -1229,7 +2163,7 @@ export function exportFixedAssetsExcel(
   const { filename, options } = resolveFilenameAndOptions('Schedule_of_Fixed_Assets.xlsx', filenameOrOptions, explicitOptions);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, buildFixedAssetsWorksheet(company, data, options), 'Fixed Assets Schedule');
-  XLSX.writeFile(wb, filename);
+  writeWorkbookStyled(wb, filename);
 }
 
 export function exportNotesExcel(
@@ -1263,8 +2197,9 @@ export function exportNotesExcel(
 
   const ws = XLSX.utils.aoa_to_sheet(rows);
   applyColumnWidths(ws, [45, 22, 22, 22]);
+  styleSection76NotesSheet(ws, 4);
   XLSX.utils.book_append_sheet(wb, ws, 'Statutory Notes');
-  XLSX.writeFile(wb, filename);
+  writeWorkbookStyled(wb, filename);
 }
 
 function buildDebtServiceCoverageWorksheet(
@@ -1306,6 +2241,7 @@ function buildDebtServiceCoverageWorksheet(
   const sheetData = createTableDataForStatement('Debt Servicing & Repayment Capacity (DSCR)', company, headers, rows);
   const ws = XLSX.utils.aoa_to_sheet(sheetData);
   applyColumnWidths(ws, [10, 12, 16, 16, 26, 26, 20, 14, 14, 18, 16, 48]);
+  styleSection76Sheet(ws, headers.length, { centerFirstCols: 2, centerAllHeaders: true });
   return ws;
 }
 
@@ -1436,6 +2372,7 @@ function buildRepaymentScheduleWorksheet(
 
   const ws = XLSX.utils.aoa_to_sheet(sheetRows);
   applyColumnWidths(ws, [20, 14, 18, 16, 18, 16, 16, 18, 18]);
+  styleRepaymentScheduleSheet(ws);
   return ws;
 }
 
@@ -1491,6 +2428,7 @@ function buildAnnualScheduleSummaryWorksheet(
   );
   const ws = XLSX.utils.aoa_to_sheet(sheetData);
   applyColumnWidths(ws, [16, 14, 18, 16, 18, 16, 16, 18, 18]);
+  styleSection76Sheet(ws, headers.length, { centerFirstCols: 2 });
   return ws;
 }
 
@@ -1507,7 +2445,7 @@ export function exportRepaymentScheduleExcel(
   if (activeDscr.length > 0) {
     XLSX.utils.book_append_sheet(wb, buildDebtServiceCoverageWorksheet(company, activeDscr), '3. DSCR Justification');
   }
-  XLSX.writeFile(wb, filename);
+  writeWorkbookStyled(wb, filename);
 }
 
 export async function exportRepaymentScheduleWord(
@@ -1516,6 +2454,7 @@ export async function exportRepaymentScheduleWord(
   dscrData?: DebtServiceCoverageYear[],
   filename = `${sanitizeFilePrefix(company.companyName)}_Repayment_Schedule.docx`
 ) {
+  const usableW = docxUsableWidthTwips('landscape', 14);
   const metaRows = buildRepaymentScheduleMetadataRows(schedule);
   const schedHeaders = [
     'Event Type.',
@@ -1557,9 +2496,13 @@ export async function exportRepaymentScheduleWord(
   const doc = new Document({
     sections: [
       {
+        properties: docxPageProps('landscape', 14),
+        footers: {
+          default: docxFooter('Repayment Schedule & DSCR Justification'),
+        },
         children: [
-          new Paragraph({ text: safeCompanyName(company), heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER }),
-          new Paragraph({ text: 'Repayment Schedule', heading: HeadingLevel.HEADING_1, alignment: AlignmentType.CENTER }),
+          docxSectionHeaderBanner(company, 'REPAYMENT SCHEDULE (EXACT AUTOMATED INSTALLMENT LEDGER)', usableW),
+          new Paragraph({ spacing: { before: 80, after: 80 }, children: [] }),
           createDocxTable(
             ['Facility Parameter', 'Value', 'Schedule Dates', 'Date / Setting'],
             metaRows.map(mr => [
@@ -1568,18 +2511,69 @@ export async function exportRepaymentScheduleWord(
               String(mr[5]),
               String(mr[6]),
             ]),
-            4
+            {
+              theme: 'previous_grid',
+              font: 'Helvetica',
+              fontSizePt: 7.5,
+              colWidthsTwips: [
+                convertMillimetersToTwip(46),
+                convertMillimetersToTwip(45),
+                convertMillimetersToTwip(56),
+                convertMillimetersToTwip(45),
+              ],
+              customAligns: [AlignmentType.LEFT, AlignmentType.RIGHT, AlignmentType.LEFT, AlignmentType.RIGHT],
+              boldColIndices: [0, 2],
+              hideHeader: true,
+            }
           ),
-          new Paragraph({ text: '' }),
-          createDocxTable(schedHeaders, schedRows, 2),
-          new Paragraph({ text: '' }),
-          new Paragraph({
-            text:
-              schedule.metadata.preparedByNote ||
-              'Prepared By : ABABIL, Developed By : Millennium Information Solution Limited',
+          new Paragraph({ spacing: { before: 80, after: 60 }, children: [] }),
+          createDocxTable(schedHeaders, schedRows, {
+            theme: 'section76',
+            font: 'Helvetica',
+            fontSizePt: 7.2,
+            headFontSizePt: 7.2,
+            totalWidthTwips: usableW,
+            colWidthsTwips: [
+              convertMillimetersToTwip(32),
+              convertMillimetersToTwip(22),
+              convertMillimetersToTwip(31),
+              convertMillimetersToTwip(30),
+              convertMillimetersToTwip(31),
+              convertMillimetersToTwip(29),
+              convertMillimetersToTwip(29),
+              convertMillimetersToTwip(33),
+              convertMillimetersToTwip(32),
+            ],
+            customAligns: [
+              AlignmentType.LEFT,
+              AlignmentType.CENTER,
+              AlignmentType.RIGHT,
+              AlignmentType.RIGHT,
+              AlignmentType.RIGHT,
+              AlignmentType.RIGHT,
+              AlignmentType.RIGHT,
+              AlignmentType.RIGHT,
+              AlignmentType.RIGHT,
+            ],
+            doubleBottomLabels: new Set(['Total :']),
           }),
-          new Paragraph({ text: '' }),
-          new Paragraph({ text: 'Annualized Repayment Schedule Aggregation', heading: HeadingLevel.HEADING_2 }),
+          new Paragraph({
+            spacing: { before: 80, after: 100 },
+            children: [
+              new TextRun({
+                text:
+                  schedule.metadata.preparedByNote ||
+                  'Prepared By : ABABIL, Developed By : Millennium Information Solution Limited',
+                font: 'Helvetica',
+                size: 15,
+                italics: true,
+                color: '475569',
+              }),
+            ],
+          }),
+          new Paragraph({ children: [new PageBreak()] }),
+          docxSectionHeaderBanner(company, 'ANNUALIZED REPAYMENT SCHEDULE AGGREGATION', usableW),
+          new Paragraph({ spacing: { before: 80, after: 80 }, children: [] }),
           createDocxTable(
             ['Financial Year', 'Installments', 'Inst. Principal', 'Inst. Profit', 'Total Debt Service', 'Closing Balance'],
             [
@@ -1600,17 +2594,33 @@ export async function exportRepaymentScheduleWord(
                 schedule.closingBalance ?? 0,
               ],
             ],
-            1
+            {
+              theme: 'section76',
+              font: 'Helvetica',
+              fontSizePt: 8,
+              totalWidthTwips: usableW,
+              customAligns: [
+                AlignmentType.LEFT,
+                AlignmentType.CENTER,
+                AlignmentType.RIGHT,
+                AlignmentType.RIGHT,
+                AlignmentType.RIGHT,
+                AlignmentType.RIGHT,
+              ],
+              doubleBottomLabels: new Set(['Total :']),
+            }
           ),
           ...(activeDscr.length > 0
             ? [
-                new Paragraph({ text: '' }),
-                new Paragraph({
-                  text: 'Debt Servicing & Rescheduling Justification (Historical vs Projected DSCR)',
-                  heading: HeadingLevel.HEADING_2,
-                }),
+                new Paragraph({ children: [new PageBreak()] }),
+                docxSectionHeaderBanner(
+                  company,
+                  'DEBT SERVICING & RESCHEDULING JUSTIFICATION (HISTORICAL VS PROJECTED DSCR)',
+                  usableW
+                ),
+                new Paragraph({ spacing: { before: 80, after: 80 }, children: [] }),
                 createDocxTable(
-                  ['Year', 'EBITDA', 'Pre-Fin OCF', 'Principal', 'Finance Cost', 'Debt Service', 'EBITDA DSCR', 'Cash DSCR', 'Status', 'Assessment'],
+                  ['Year', 'EBITDA', 'Pre-Fin OCF', 'Inst. Principal', 'Finance Cost', 'Debt Service', 'EBITDA DSCR', 'Cash DSCR', 'Closing Cash', 'Status', 'Assessment'],
                   activeDscr.map(d => [
                     `${d.year}${d.isProjected ? ' (P)' : ' (H)'}`,
                     d.ebitda,
@@ -1620,10 +2630,31 @@ export async function exportRepaymentScheduleWord(
                     d.totalDebtService,
                     `${d.ebitdaDscr.toFixed(2)}x`,
                     `${d.cashDscr.toFixed(2)}x`,
+                    d.closingCash,
                     d.capacityStatus,
                     d.reschedulingContext || '',
                   ]),
-                  1
+                  {
+                    theme: 'section76',
+                    font: 'Helvetica',
+                    fontSizePt: 7.2,
+                    headFontSizePt: 7.2,
+                    totalWidthTwips: usableW,
+                    leftColsCount: 1,
+                    customAligns: [
+                      AlignmentType.LEFT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.CENTER,
+                      AlignmentType.LEFT,
+                    ],
+                  }
                 ),
               ]
             : []),
@@ -1632,8 +2663,7 @@ export async function exportRepaymentScheduleWord(
     ],
   });
 
-  const blob = await Packer.toBlob(doc);
-  downloadBlob(blob, filename);
+  await emitDocxDocument(doc, filename);
 }
 
 export function exportRepaymentSchedulePdf(
@@ -1783,6 +2813,8 @@ export function exportCompletePackageExcel(
 ) {
   const wb = XLSX.utils.book_new();
 
+  const horizonText = incomeData.length > 0 ? `${incomeData[0].year} - ${incomeData[incomeData.length - 1].year}` : '';
+  XLSX.utils.book_append_sheet(wb, buildSection76CoverWorksheet(company, horizonText), '0. Cover & Index');
   XLSX.utils.book_append_sheet(wb, buildIncomeStatementSheet(company, incomeData, 'Income Statement', options), '1. Income Statement');
   XLSX.utils.book_append_sheet(wb, buildBalanceSheetWorksheet(company, balanceData, 'Statement of Financial Position', options), '2. Balance Sheet');
   XLSX.utils.book_append_sheet(wb, buildCashFlowWorksheet(company, cashFlowData, 'Statement of Cash Flows', options), '3. Cash Flows');
@@ -1810,6 +2842,7 @@ export function exportCompletePackageExcel(
   });
   const wsNotes = XLSX.utils.aoa_to_sheet(notesRows);
   applyColumnWidths(wsNotes, [45, 22, 22, 22]);
+  styleSection76NotesSheet(wsNotes, 4);
   XLSX.utils.book_append_sheet(wb, wsNotes, '6. Notes to Financials');
 
   const activeDscr = (debtServiceCoverage || []).filter(d => d.totalDebtService > 0);
@@ -1822,80 +2855,551 @@ export function exportCompletePackageExcel(
     XLSX.utils.book_append_sheet(wb, buildRepaymentScheduleWorksheet(company, parsedSchedule), schedTab);
   }
 
-  XLSX.writeFile(wb, filename);
+  writeWorkbookStyled(wb, filename);
 }
 
 // ---------------- WORD EXPORTS (docx) ---------------- //
 
-function createDocxTable(headers: string[], rows: (string | number)[][], leftColsCount = 1): Table {
+interface DocxMultiHeaderCell {
+  content: string;
+  rowSpan?: number;
+  colSpan?: number;
+  align?: typeof AlignmentType[keyof typeof AlignmentType];
+}
+
+interface DocxTableOptions {
+  leftColsCount?: number;
+  theme?: 'section76' | 'previous_grid' | 'projected_plain' | 'projected_grid';
+  font?: 'Helvetica' | 'Times New Roman';
+  fontSizePt?: number;
+  headFontSizePt?: number;
+  colWidthsTwips?: number[];
+  totalWidthTwips?: number;
+  boldRowLabels?: Set<string>;
+  doubleBottomLabels?: Set<string>;
+  ruleLabels?: Set<string>;
+  rightAlignCol0Labels?: Set<string>;
+  customAligns?: (typeof AlignmentType[keyof typeof AlignmentType])[];
+  multiHeaderRows?: DocxMultiHeaderCell[][];
+  labelColIndex?: number;
+  boldColIndices?: number[];
+  hideHeader?: boolean;
+}
+
+const DOCX_NO_BORDER = { style: BorderStyle.NONE, size: 0, color: 'auto' };
+const DOCX_NONE_BORDERS = {
+  top: DOCX_NO_BORDER,
+  bottom: DOCX_NO_BORDER,
+  left: DOCX_NO_BORDER,
+  right: DOCX_NO_BORDER,
+  insideHorizontal: DOCX_NO_BORDER,
+  insideVertical: DOCX_NO_BORDER,
+};
+
+function docxPageProps(orientation: 'landscape' | 'portrait', marginMm = 14) {
+  const m = convertMillimetersToTwip(marginMm);
+  return {
+    page: {
+      size: {
+        width: convertMillimetersToTwip(210),
+        height: convertMillimetersToTwip(297),
+        orientation: orientation === 'landscape' ? PageOrientation.LANDSCAPE : PageOrientation.PORTRAIT,
+      },
+      margin: {
+        top: m,
+        bottom: m,
+        left: m,
+        right: m,
+        header: convertMillimetersToTwip(6),
+        footer: convertMillimetersToTwip(7),
+      },
+    },
+  };
+}
+
+function docxUsableWidthTwips(orientation: 'landscape' | 'portrait', marginMm = 14): number {
+  return convertMillimetersToTwip((orientation === 'landscape' ? 297 : 210) - 2 * marginMm);
+}
+
+function docxFooter(rightLabel: string): Footer {
+  return new Footer({
+    children: [
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        children: [
+          new TextRun({
+            children: ['Financials with Tuhin · Page ', PageNumber.CURRENT, ' of ', PageNumber.TOTAL_PAGES, `   |   ${rightLabel}`],
+            font: 'Helvetica',
+            size: 15,
+            color: '94A3B8',
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+function docxSectionHeaderBanner(company: CompanyProfile, title: string, totalWidthTwips: number): Table {
+  const colW = [Math.round(totalWidthTwips * 0.65), totalWidthTwips - Math.round(totalWidthTwips * 0.65)];
   return new Table({
-    width: { size: 100, type: WidthType.PERCENTAGE },
+    width: { size: totalWidthTwips, type: WidthType.DXA },
+    layout: TableLayoutType.FIXED,
+    columnWidths: colW,
+    borders: DOCX_NONE_BORDERS,
+    rows: [
+      new TableRow({
+        children: [
+          new TableCell({
+            width: { size: colW[0], type: WidthType.DXA },
+            columnSpan: 2,
+            shading: { type: ShadingType.CLEAR, color: 'auto', fill: '0F172A' },
+            margins: { top: 90, bottom: 25, left: 140, right: 140 },
+            borders: { top: DOCX_NO_BORDER, bottom: DOCX_NO_BORDER, left: DOCX_NO_BORDER, right: DOCX_NO_BORDER },
+            children: [
+              new Paragraph({
+                children: [new TextRun({ text: safeCompanyUpper(company), font: 'Helvetica', size: 22, bold: true, color: 'FFFFFF' })],
+              }),
+            ],
+          }),
+        ],
+      }),
+      new TableRow({
+        children: [
+          new TableCell({
+            width: { size: colW[0], type: WidthType.DXA },
+            shading: { type: ShadingType.CLEAR, color: 'auto', fill: '0F172A' },
+            margins: { top: 20, bottom: 90, left: 140, right: 80 },
+            borders: { top: DOCX_NO_BORDER, bottom: DOCX_NO_BORDER, left: DOCX_NO_BORDER, right: DOCX_NO_BORDER },
+            children: [
+              new Paragraph({
+                children: [
+                  new TextRun({
+                    text: `${title} · ${company.reportingCurrency} (${company.reportingUnit}) · ${company.accountingFramework} · FY End: ${normalizeFinancialYearEnd(company.financialYearEnd)}`,
+                    font: 'Helvetica',
+                    size: 16,
+                    color: 'CBD5E1',
+                  }),
+                ],
+              }),
+            ],
+          }),
+          new TableCell({
+            width: { size: colW[1], type: WidthType.DXA },
+            shading: { type: ShadingType.CLEAR, color: 'auto', fill: '0F172A' },
+            margins: { top: 20, bottom: 90, left: 80, right: 140 },
+            borders: { top: DOCX_NO_BORDER, bottom: DOCX_NO_BORDER, left: DOCX_NO_BORDER, right: DOCX_NO_BORDER },
+            children: [
+              new Paragraph({
+                alignment: AlignmentType.RIGHT,
+                children: [
+                  new TextRun({
+                    text: 'Financials with Tuhin | Mohammad Towhidul Akbar Tuhin',
+                    font: 'Helvetica',
+                    size: 16,
+                    color: 'CBD5E1',
+                  }),
+                ],
+              }),
+            ],
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+function docxCoverPage(company: CompanyProfile, horizonText: string, totalWidthTwips: number): Table {
+  const blueBorder = { style: BorderStyle.SINGLE, size: 16, color: '3B82F6' };
+  return new Table({
+    width: { size: totalWidthTwips, type: WidthType.DXA },
+    layout: TableLayoutType.FIXED,
+    columnWidths: [totalWidthTwips],
     borders: {
-      top: { style: BorderStyle.SINGLE, size: 6, color: '334155' },
-      bottom: { style: BorderStyle.SINGLE, size: 6, color: '334155' },
-      insideHorizontal: { style: BorderStyle.SINGLE, size: 1, color: 'E2E8F0' },
-      insideVertical: { style: BorderStyle.SINGLE, size: 1, color: 'E2E8F0' },
-      left: { style: BorderStyle.SINGLE, size: 4, color: 'CBD5E1' },
-      right: { style: BorderStyle.SINGLE, size: 4, color: 'CBD5E1' },
+      top: blueBorder,
+      bottom: blueBorder,
+      left: blueBorder,
+      right: blueBorder,
+      insideHorizontal: DOCX_NO_BORDER,
+      insideVertical: DOCX_NO_BORDER,
     },
     rows: [
       new TableRow({
-        tableHeader: true,
-        children: headers.map((h, i) => new TableCell({
-          children: [new Paragraph({
-            children: [new TextRun({ text: h, bold: true, size: 18, color: '111827' })],
-            alignment: i < leftColsCount ? AlignmentType.LEFT : AlignmentType.RIGHT,
-          })],
-          shading: { fill: 'F1F5F9' },
-        })),
+        height: { value: convertMillimetersToTwip(186), rule: HeightRule.ATLEAST },
+        children: [
+          new TableCell({
+            width: { size: totalWidthTwips, type: WidthType.DXA },
+            verticalAlign: VerticalAlign.CENTER,
+            shading: { type: ShadingType.CLEAR, color: 'auto', fill: '0F172A' },
+            margins: { top: 360, bottom: 360, left: 320, right: 320 },
+            children: [
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 180 },
+                children: [new TextRun({ text: safeCompanyUpper(company), font: 'Helvetica', size: 52, bold: true, color: 'FFFFFF' })],
+              }),
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 160 },
+                children: [new TextRun({ text: 'ANNUAL STATUTORY FINANCIAL STATEMENTS & AUDIT SCHEDULES', font: 'Helvetica', size: 32, bold: true, color: '93C5FD' })],
+              }),
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 80 },
+                children: [new TextRun({ text: 'Five Standard Financial Statements + Complete Notes to the Financial Statements', font: 'Helvetica', size: 22, color: 'CBD5E1' })],
+              }),
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 280 },
+                children: [new TextRun({ text: `Compliant with Section 76 & International Accounting Framework (${company.accountingFramework})`, font: 'Helvetica', size: 22, color: 'CBD5E1' })],
+              }),
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 100 },
+                children: [new TextRun({ text: `Reporting Entity Type: ${company.entityType.toUpperCase()}`, font: 'Helvetica', size: 20, color: '94A3B8' })],
+              }),
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 100 },
+                children: [new TextRun({ text: `Corporate Address: ${safeAddress(company)}`, font: 'Helvetica', size: 20, color: '94A3B8' })],
+              }),
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 260 },
+                children: [new TextRun({ text: `Reporting Currency: ${company.reportingCurrency} (${company.reportingUnit}) | FY End: ${normalizeFinancialYearEnd(company.financialYearEnd)} | Horizon: ${horizonText}`, font: 'Helvetica', size: 20, color: '94A3B8' })],
+              }),
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 100 },
+                children: [new TextRun({ text: `Lead Financial Architect: ${company.preparedBy}`, font: 'Helvetica', size: 20, bold: true, color: '34D399' })],
+              }),
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                children: [new TextRun({ text: `Independent Statutory Auditors: ${company.auditorName}`, font: 'Helvetica', size: 20, color: '94A3B8' })],
+              }),
+            ],
+          }),
+        ],
       }),
-      ...rows.map(row => {
-        const label = String(row[0] ?? '');
-        const isBoldRow =
-          label.startsWith('Total') ||
+    ],
+  });
+}
+
+function docxProprietorSignatureBlock(usableWidthTwips: number): Table {
+  const leftW = Math.round(usableWidthTwips * 0.35);
+  const rightW = usableWidthTwips - leftW;
+  return new Table({
+    width: { size: usableWidthTwips, type: WidthType.DXA },
+    layout: TableLayoutType.FIXED,
+    columnWidths: [leftW, rightW],
+    borders: DOCX_NONE_BORDERS,
+    rows: [
+      new TableRow({
+        children: [
+          new TableCell({
+            width: { size: leftW, type: WidthType.DXA },
+            borders: { top: DOCX_NO_BORDER, bottom: DOCX_NO_BORDER, left: DOCX_NO_BORDER, right: DOCX_NO_BORDER },
+            children: [
+              new Paragraph({ children: [new TextRun({ text: '...........................', font: 'Helvetica', size: 17, bold: true, color: '0F172A' })] }),
+              new Paragraph({ children: [new TextRun({ text: 'Proprietor', font: 'Helvetica', size: 17, bold: true, color: '0F172A' })] }),
+            ],
+          }),
+          new TableCell({
+            width: { size: rightW, type: WidthType.DXA },
+            verticalAlign: VerticalAlign.BOTTOM,
+            borders: { top: DOCX_NO_BORDER, bottom: DOCX_NO_BORDER, left: DOCX_NO_BORDER, right: DOCX_NO_BORDER },
+            children: [
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                children: [new TextRun({ text: 'Signed in terms of our separate report of even date.', font: 'Helvetica', size: 17, color: '0F172A' })],
+              }),
+            ],
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+function computeDocxColWidths(colCount: number, leftCols: number, totalWidthTwips: number): number[] {
+  if (colCount <= 0) return [];
+  if (colCount === 1) return [totalWidthTwips];
+  if (leftCols === 2 && colCount >= 3) {
+    const labelW = Math.round(totalWidthTwips * 0.28);
+    const noteW = Math.round(totalWidthTwips * 0.08);
+    const remW = Math.floor((totalWidthTwips - labelW - noteW) / (colCount - 2));
+    const arr = [labelW, noteW, ...Array.from({ length: colCount - 2 }, () => remW)];
+    arr[colCount - 1] += totalWidthTwips - arr.reduce((s, w) => s + w, 0);
+    return arr;
+  }
+  const firstRatio = colCount >= 10 ? 0.22 : colCount >= 6 ? 0.30 : 0.48;
+  const firstW = Math.round(totalWidthTwips * firstRatio);
+  const otherW = Math.floor((totalWidthTwips - firstW) / (colCount - 1));
+  const arr = [firstW, ...Array.from({ length: colCount - 1 }, () => otherW)];
+  arr[colCount - 1] += totalWidthTwips - arr.reduce((s, w) => s + w, 0);
+  return arr;
+}
+
+function createDocxTable(
+  headers: string[],
+  rows: (string | number)[][],
+  leftColsCountOrOpts: number | DocxTableOptions = 1
+): Table {
+  const opts: DocxTableOptions =
+    typeof leftColsCountOrOpts === 'number' ? { leftColsCount: leftColsCountOrOpts } : leftColsCountOrOpts;
+
+  const theme = opts.theme ?? 'section76';
+  const font = opts.font ?? (theme === 'previous_grid' ? 'Times New Roman' : 'Helvetica');
+  const bodySize = Math.round((opts.fontSizePt ?? (theme === 'previous_grid' ? 8.5 : 8)) * 2);
+  const headSize = Math.round((opts.headFontSizePt ?? opts.fontSizePt ?? (theme === 'previous_grid' ? 8.8 : 8)) * 2);
+  const leftCols = opts.leftColsCount ?? 1;
+  const labelColIdx = opts.labelColIndex ?? 0;
+  const totalWidthTwips = opts.totalWidthTwips ?? docxUsableWidthTwips('landscape', 14);
+  const colWidths =
+    opts.colWidthsTwips && opts.colWidthsTwips.length === headers.length
+      ? opts.colWidthsTwips
+      : computeDocxColWidths(headers.length, leftCols, totalWidthTwips);
+
+  const isCompact = (opts.fontSizePt ?? 8) <= 6.2;
+  const pad = isCompact
+    ? { top: 28, bottom: 28, left: 40, right: 40 }
+    : { top: 48, bottom: 48, left: 72, right: 72 };
+
+  const gridBorder = { style: BorderStyle.SINGLE, size: 4, color: '334155' };
+  const slateBorder = { style: BorderStyle.SINGLE, size: 2, color: 'CBD5E1' };
+  const darkSingleBorder = { style: BorderStyle.SINGLE, size: 6, color: '0F172A' };
+  const darkDoubleBorder = { style: BorderStyle.DOUBLE, size: 6, color: '0F172A' };
+
+  const tableBorders =
+    theme === 'projected_plain'
+      ? DOCX_NONE_BORDERS
+      : theme === 'previous_grid' || theme === 'projected_grid'
+      ? {
+          top: gridBorder,
+          bottom: gridBorder,
+          left: gridBorder,
+          right: gridBorder,
+          insideHorizontal: gridBorder,
+          insideVertical: gridBorder,
+        }
+      : {
+          top: darkSingleBorder,
+          bottom: darkSingleBorder,
+          left: slateBorder,
+          right: slateBorder,
+          insideHorizontal: slateBorder,
+          insideVertical: slateBorder,
+        };
+
+  const headFill = theme === 'section76' ? '1E293B' : 'FFFFFF';
+  const headColor = theme === 'section76' ? 'FFFFFF' : '0F172A';
+  const headBorderObj =
+    theme === 'section76'
+      ? { top: gridBorder, bottom: gridBorder, left: gridBorder, right: gridBorder }
+      : { top: darkSingleBorder, bottom: darkSingleBorder, left: darkSingleBorder, right: darkSingleBorder };
+
+  const headerTableRows: TableRow[] = opts.hideHeader
+    ? []
+    : opts.multiHeaderRows
+    ? opts.multiHeaderRows.map(hdrRow => {
+        let colCursor = 0;
+        return new TableRow({
+          tableHeader: true,
+          children: hdrRow.map(cellSpec => {
+            const span = cellSpec.colSpan ?? 1;
+            let cellW = 0;
+            for (let k = 0; k < span; k++) {
+              cellW += colWidths[colCursor + k] ?? colWidths[colWidths.length - 1] ?? 1200;
+            }
+            colCursor += span;
+            const lines = String(cellSpec.content).split('\n');
+            return new TableCell({
+              width: { size: cellW, type: WidthType.DXA },
+              columnSpan: cellSpec.colSpan,
+              rowSpan: cellSpec.rowSpan,
+              verticalAlign: VerticalAlign.CENTER,
+              shading: { type: ShadingType.CLEAR, color: 'auto', fill: headFill },
+              margins: pad,
+              borders: headBorderObj,
+              children: lines.map(
+                ln =>
+                  new Paragraph({
+                    alignment: cellSpec.align ?? AlignmentType.CENTER,
+                    children: [new TextRun({ text: ln, font, size: headSize, bold: true, color: headColor })],
+                  })
+              ),
+            });
+          }),
+        });
+      })
+    : [
+        new TableRow({
+          tableHeader: true,
+          children: headers.map((h, i) => {
+            const cellAlign =
+              theme === 'previous_grid' || theme === 'projected_grid'
+                ? AlignmentType.CENTER
+                : opts.customAligns?.[i] ?? (i < leftCols ? AlignmentType.LEFT : AlignmentType.RIGHT);
+            const lines = String(h).split('\n');
+            return new TableCell({
+              width: { size: colWidths[i] ?? 1400, type: WidthType.DXA },
+              verticalAlign: VerticalAlign.CENTER,
+              shading: { type: ShadingType.CLEAR, color: 'auto', fill: headFill },
+              margins: pad,
+              borders: headBorderObj,
+              children: lines.map(
+                ln =>
+                  new Paragraph({
+                    alignment: cellAlign,
+                    children: [new TextRun({ text: ln, font, size: headSize, bold: true, color: headColor })],
+                  })
+              ),
+            });
+          }),
+        }),
+      ];
+
+  let zebra = 0;
+  const bodyTableRows: TableRow[] = rows.map(row => {
+    const label = String(row[labelColIdx] ?? '').trim();
+    const firstColLabel = String(row[0] ?? '').trim();
+
+    const isGrandTotal =
+      label.startsWith('TOTAL ') ||
+      label === 'TOTAL' ||
+      label === 'Net Profit After Tax' ||
+      label === 'NET CASH GENERATED FROM OPERATING ACTIVITIES' ||
+      label === 'NET CASH FROM / (USED IN) INVESTING ACTIVITIES' ||
+      label === 'NET CASH FROM / (USED IN) FINANCING ACTIVITIES' ||
+      label === 'Closing Cash & Cash Equivalents (Calculated)' ||
+      label === 'Balance Check (Variance)' ||
+      label === 'Reconciliation Variance (Calculated - Stated)' ||
+      label === 'Total :';
+
+    const isSectionHeader =
+      label === 'ASSETS' ||
+      label === 'LIABILITIES & SHAREHOLDERS EQUITY' ||
+      label.startsWith('CASH FLOWS FROM ');
+
+    const isDoubleBottom = opts.doubleBottomLabels?.has(label) || (theme === 'section76' && isGrandTotal);
+    const hasRule = opts.ruleLabels?.has(label) || isDoubleBottom;
+
+    const isBoldRow =
+      opts.boldRowLabels?.has(label) ||
+      isGrandTotal ||
+      isSectionHeader ||
+      (theme === 'section76' &&
+        (label.startsWith('Total') ||
           label.startsWith('TOTAL') ||
-          label === 'Taka' ||
-          label === 'Subtotal' ||
           label === 'Gross Profit' ||
           label === 'Operating Profit (EBIT)' ||
           label === 'Profit Before Tax (EBT)' ||
-          label === 'Net Profit After Tax' ||
-          label === 'NET PROFIT AFTER TAX' ||
-          label === 'Net Operating Profit' ||
-          label === 'Net Profit After Income Tax' ||
           label === 'Operating Profit Before Working Capital Changes' ||
           label === 'Cash Generated from Operations' ||
           label.includes('Net Cash') ||
           label.includes('NET CASH') ||
           label.includes('NET INCREASE') ||
           label.includes('Net Change in Cash') ||
-          label.includes('Capital after drawings') ||
-          label.includes('Total Operating Profit') ||
-          label.includes('Net Profit/(Loss)') ||
           label.includes('Closing Cash') ||
           label.startsWith('Closing Share') ||
           label.startsWith('Closing Retained') ||
-          label.startsWith('Closing Reserves') ||
-          label.startsWith('Closing Capital');
+          label.startsWith('Closing Reserves'))) ||
+      (opts.labelColIndex === 1 && firstColLabel !== '');
 
-        return new TableRow({
-          children: row.map((cell, idx) => new TableCell({
-            children: [new Paragraph({
-              children: [new TextRun({
-                text: typeof cell === 'number'
-                  ? fmtExportNum(cell)
-                  : String(cell),
-                size: 17,
-                bold: isBoldRow,
-                color: '1F2937',
-              })],
-              alignment: idx < leftColsCount ? AlignmentType.LEFT : AlignmentType.RIGHT,
-            })],
-            shading: isBoldRow ? { fill: 'F8FAFC' } : undefined,
-          })),
+    const rowFill =
+      theme === 'section76'
+        ? isGrandTotal
+          ? 'ECFDF5'
+          : isSectionHeader
+          ? 'E2E8F0'
+          : isBoldRow
+          ? 'F1F5F9'
+          : zebra % 2 === 1
+          ? 'F8FAFC'
+          : undefined
+        : undefined;
+    if (!isSectionHeader) zebra++;
+
+    return new TableRow({
+      children: Array.from({ length: colWidths.length }, (_, idx) => {
+        const cellVal = row[idx];
+        const cellText =
+          typeof cellVal === 'number'
+            ? fmtExportNum(cellVal)
+            : cellVal === undefined || cellVal === null
+            ? ''
+            : String(cellVal);
+
+        let cellAlign = opts.customAligns?.[idx] ?? (idx < leftCols ? AlignmentType.LEFT : AlignmentType.RIGHT);
+        if (idx === 0 && opts.rightAlignCol0Labels?.has(firstColLabel)) {
+          cellAlign = AlignmentType.RIGHT;
+        } else if (theme === 'projected_plain' && opts.labelColIndex === 1 && idx === 0) {
+          cellAlign = AlignmentType.CENTER;
+        }
+
+        const isStatusReconciled = label === 'Audit Reconciliation Status' && idx > 0 && cellText === 'RECONCILED';
+        const isStatusVar = label === 'Audit Reconciliation Status' && idx > 0 && cellText === 'VARIANCE_IDENTIFIED';
+        const cellFill = isStatusReconciled ? 'ECFDF5' : isStatusVar ? 'FEF2F2' : rowFill;
+        const textColor = isStatusReconciled ? '065F46' : isStatusVar ? '991B1B' : '0F172A';
+        const cellBold = isBoldRow || Boolean(opts.boldColIndices?.includes(idx));
+
+        const numStart = opts.labelColIndex === 1 ? 2 : leftCols;
+        const cellBorders =
+          theme === 'projected_plain'
+            ? idx >= numStart && hasRule
+              ? {
+                  top: darkSingleBorder,
+                  bottom: isDoubleBottom ? darkDoubleBorder : darkSingleBorder,
+                  left: DOCX_NO_BORDER,
+                  right: DOCX_NO_BORDER,
+                }
+              : { top: DOCX_NO_BORDER, bottom: DOCX_NO_BORDER, left: DOCX_NO_BORDER, right: DOCX_NO_BORDER }
+            : theme === 'previous_grid' || theme === 'projected_grid'
+            ? {
+                top: gridBorder,
+                bottom: isDoubleBottom ? darkDoubleBorder : gridBorder,
+                left: gridBorder,
+                right: gridBorder,
+              }
+            : isDoubleBottom
+            ? {
+                top: darkSingleBorder,
+                bottom: darkDoubleBorder,
+                left: slateBorder,
+                right: slateBorder,
+              }
+            : undefined;
+
+        return new TableCell({
+          width: { size: colWidths[idx] ?? 1400, type: WidthType.DXA },
+          verticalAlign: VerticalAlign.CENTER,
+          shading: cellFill ? { type: ShadingType.CLEAR, color: 'auto', fill: cellFill } : undefined,
+          margins: pad,
+          borders: cellBorders,
+          children: [
+            new Paragraph({
+              alignment: cellAlign,
+              children: [
+                new TextRun({
+                  text: cellText,
+                  font,
+                  size: bodySize,
+                  bold: cellBold,
+                  color: textColor,
+                }),
+              ],
+            }),
+          ],
         });
       }),
-    ],
+    });
+  });
+
+  return new Table({
+    width: { size: totalWidthTwips, type: WidthType.DXA },
+    layout: TableLayoutType.FIXED,
+    columnWidths: colWidths,
+    borders: tableBorders,
+    rows: [...headerTableRows, ...bodyTableRows],
   });
 }
 
@@ -1906,50 +3410,29 @@ export async function exportDocumentWord(
   rows: (string | number)[][],
   filename = 'Financial_Report.docx'
 ) {
+  const usableW = docxUsableWidthTwips('landscape', 14);
   const doc = new Document({
     sections: [
       {
-        properties: {},
+        properties: docxPageProps('landscape', 14),
+        footers: {
+          default: docxFooter(`Certified System Export · Date: ${new Date().toISOString().split('T')[0]}`),
+        },
         children: [
-          new Paragraph({
-            text: safeCompanyName(company),
-            heading: HeadingLevel.TITLE,
-            alignment: AlignmentType.CENTER,
-          }),
-          new Paragraph({
-            children: [
-              new TextRun({ text: title, bold: true, size: 24, color: '1E3A8A' }),
-            ],
-            alignment: AlignmentType.CENTER,
-          }),
-          new Paragraph({
-            children: [
-              new TextRun({ text: `Reporting Currency: ${company.reportingCurrency} (${company.reportingUnit}) | Framework: ${company.accountingFramework}`, italics: true, size: 18 }),
-            ],
-            alignment: AlignmentType.CENTER,
-          }),
-          new Paragraph({
-            children: [
-              new TextRun({ text: `Prepared by: ${company.preparedBy} · Financials with Tuhin Engine`, size: 16, color: '4B5563' }),
-            ],
-            alignment: AlignmentType.CENTER,
-          }),
-          new Paragraph({ text: '' }),
-          createDocxTable(headers, rows),
-          new Paragraph({ text: '' }),
-          new Paragraph({
-            children: [
-              new TextRun({ text: 'CONFIDENTIAL & PROPRIETARY — STATUTORY FINANCIAL REPORT', size: 14, color: '9CA3AF' }),
-            ],
-            alignment: AlignmentType.RIGHT,
+          docxSectionHeaderBanner(company, title.toUpperCase(), usableW),
+          new Paragraph({ spacing: { before: 100, after: 80 }, children: [] }),
+          createDocxTable(headers, rows, {
+            theme: 'section76',
+            font: 'Helvetica',
+            fontSizePt: 8,
+            totalWidthTwips: usableW,
           }),
         ],
       },
     ],
   });
 
-  const blob = await Packer.toBlob(doc);
-  downloadBlob(blob, filename);
+  await emitDocxDocument(doc, filename);
 }
 
 // Shared synchronized Section 76 table-row builders for Word & PDF complete packages
@@ -2179,55 +3662,101 @@ export async function exportCompletePackageWord(
     faRows.push(['TOTAL', '-', latestFA.totalCostOpening, latestFA.totalAdditions, latestFA.totalDisposals, latestFA.totalCostClosing, latestFA.totalDepOpening, latestFA.totalDepCharge, latestFA.totalDepDisposals, latestFA.totalDepClosing, latestFA.totalNetBookValue]);
   }
 
+  const usableW = docxUsableWidthTwips('landscape', 14);
+  const coverW = docxUsableWidthTwips('landscape', 10);
+  const horizonText = `${incomeData[0]?.year ?? ''} - ${incomeData[incomeData.length - 1]?.year ?? ''}`;
   const doc = new Document({
     sections: [
       {
+        properties: docxPageProps('landscape', 10),
+        children: [docxCoverPage(company, horizonText, coverW)],
+      },
+      {
+        properties: docxPageProps('landscape', 14),
+        footers: {
+          default: docxFooter('Certified Export · All statements reconciled under Section 76'),
+        },
         children: [
-          new Paragraph({ text: safeCompanyName(company), heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER }),
-          new Paragraph({ text: 'COMPLETE FINANCIAL STATEMENTS PACKAGE', heading: HeadingLevel.HEADING_1, alignment: AlignmentType.CENTER }),
-          new Paragraph({ text: `Framework: ${company.accountingFramework} | Entity: ${company.entityType.toUpperCase()} | Financial Year-End: ${normalizeFinancialYearEnd(company.financialYearEnd)}`, alignment: AlignmentType.CENTER }),
-          new Paragraph({ text: `Lead Systems Architect: ${company.preparedBy}`, alignment: AlignmentType.CENTER }),
-          new Paragraph({ text: '' }),
+          docxSectionHeaderBanner(company, '1. STATEMENT OF COMPREHENSIVE INCOME (INCOME STATEMENT)', usableW),
+          new Paragraph({ spacing: { before: 80, after: 80 }, children: [] }),
+          createDocxTable(isHeaders, isRows, { theme: 'section76', font: 'Helvetica', fontSizePt: 8, totalWidthTwips: usableW }),
+          new Paragraph({ children: [new PageBreak()] }),
 
-          new Paragraph({ text: '1. Income Statement', heading: HeadingLevel.HEADING_2 }),
-          createDocxTable(isHeaders, isRows),
-          new Paragraph({ text: '' }),
+          docxSectionHeaderBanner(company, '2. STATEMENT OF FINANCIAL POSITION (BALANCE SHEET)', usableW),
+          new Paragraph({ spacing: { before: 80, after: 80 }, children: [] }),
+          createDocxTable(bsHeaders, bsRows, { theme: 'section76', font: 'Helvetica', fontSizePt: 7.5, totalWidthTwips: usableW }),
+          new Paragraph({ children: [new PageBreak()] }),
 
-          new Paragraph({ text: '2. Statement of Financial Position', heading: HeadingLevel.HEADING_2 }),
-          createDocxTable(bsHeaders, bsRows),
-          new Paragraph({ text: '' }),
+          docxSectionHeaderBanner(company, '3. STATEMENT OF CASH FLOWS (INDIRECT METHOD - SECTION 76)', usableW),
+          new Paragraph({ spacing: { before: 80, after: 80 }, children: [] }),
+          createDocxTable(cfHeaders, cfRows, { theme: 'section76', font: 'Helvetica', fontSizePt: 7.2, totalWidthTwips: usableW }),
+          new Paragraph({ children: [new PageBreak()] }),
 
-          new Paragraph({ text: '3. Statement of Cash Flows (Section 76 Compliance)', heading: HeadingLevel.HEADING_2 }),
-          createDocxTable(cfHeaders, cfRows),
-          new Paragraph({ text: '' }),
+          docxSectionHeaderBanner(company, '4. STATEMENT OF CHANGES IN EQUITY', usableW),
+          new Paragraph({ spacing: { before: 80, after: 80 }, children: [] }),
+          createDocxTable(eqHeaders, eqRows, { theme: 'section76', font: 'Helvetica', fontSizePt: 8, totalWidthTwips: usableW }),
+          new Paragraph({ children: [new PageBreak()] }),
 
-          new Paragraph({ text: '4. Statement of Changes in Equity', heading: HeadingLevel.HEADING_2 }),
-          createDocxTable(eqHeaders, eqRows),
-          new Paragraph({ text: '' }),
+          docxSectionHeaderBanner(company, `5. SCHEDULE OF FIXED ASSETS (${latestFA?.year ?? ''})`, usableW),
+          new Paragraph({ spacing: { before: 80, after: 80 }, children: [] }),
+          createDocxTable(faHeaders, faRows, {
+            theme: 'section76',
+            font: 'Helvetica',
+            fontSizePt: 7.5,
+            leftColsCount: 2,
+            totalWidthTwips: usableW,
+            customAligns: [
+              AlignmentType.LEFT,
+              AlignmentType.CENTER,
+              AlignmentType.RIGHT,
+              AlignmentType.RIGHT,
+              AlignmentType.RIGHT,
+              AlignmentType.RIGHT,
+              AlignmentType.RIGHT,
+              AlignmentType.RIGHT,
+              AlignmentType.RIGHT,
+              AlignmentType.RIGHT,
+              AlignmentType.RIGHT,
+            ],
+          }),
+          new Paragraph({ children: [new PageBreak()] }),
 
-          new Paragraph({ text: `5. Schedule of Fixed Assets (${latestFA?.year ?? ''})`, heading: HeadingLevel.HEADING_2 }),
-          createDocxTable(faHeaders, faRows),
-          new Paragraph({ text: '' }),
-
-          new Paragraph({ text: '6. Summary of Significant Accounting Policies & Notes', heading: HeadingLevel.HEADING_2 }),
+          docxSectionHeaderBanner(company, '6. NOTES TO THE FINANCIAL STATEMENTS (STATUTORY DISCLOSURES)', usableW),
+          new Paragraph({ spacing: { before: 80, after: 60 }, children: [] }),
           ...notes.flatMap(n => {
             const filteredTbl = filterNoteTableForExport(n.tableData);
             return [
-              new Paragraph({ text: `Note ${n.noteNumber}: ${n.title}`, heading: HeadingLevel.HEADING_3 }),
-              new Paragraph({ text: n.textDescription }),
-              ...(filteredTbl ? [createDocxTable(filteredTbl.headers, [
-                ...filteredTbl.rows.map(r => [r.label, ...r.values]),
-                ...(filteredTbl.totalRow ? [[filteredTbl.totalRow.label, ...filteredTbl.totalRow.values]] : []),
-              ])] : []),
-              new Paragraph({ text: '' }),
+              new Paragraph({
+                spacing: { before: 80, after: 30 },
+                children: [new TextRun({ text: `Note ${n.noteNumber}: ${n.title} [${n.category}]`, font: 'Helvetica', size: 18, bold: true, color: '1E293B' })],
+              }),
+              new Paragraph({
+                spacing: { after: 50 },
+                children: [new TextRun({ text: n.textDescription, font: 'Helvetica', size: 16, color: '475569' })],
+              }),
+              ...(filteredTbl
+                ? [
+                    createDocxTable(
+                      filteredTbl.headers,
+                      [
+                        ...filteredTbl.rows.map(r => [r.label, ...r.values]),
+                        ...(filteredTbl.totalRow ? [[filteredTbl.totalRow.label, ...filteredTbl.totalRow.values]] : []),
+                      ],
+                      { theme: 'section76', font: 'Helvetica', fontSizePt: 7.5, totalWidthTwips: usableW }
+                    ),
+                  ]
+                : []),
+              new Paragraph({ spacing: { after: 60 }, children: [] }),
             ];
           }),
 
           ...((debtServiceCoverage || []).some(d => d.totalDebtService > 0)
             ? [
-                new Paragraph({ text: '7. Debt Servicing & Repayment Capacity Analysis (DSCR)', heading: HeadingLevel.HEADING_2 }),
+                new Paragraph({ children: [new PageBreak()] }),
+                docxSectionHeaderBanner(company, '7. DEBT SERVICING & REPAYMENT CAPACITY ANALYSIS (DSCR)', usableW),
+                new Paragraph({ spacing: { before: 80, after: 80 }, children: [] }),
                 createDocxTable(
-                  ['Year', 'EBITDA', 'Pre-Fin OCF', 'Inst. Principal', 'Finance Cost', 'Total Debt Service', 'EBITDA DSCR', 'Cash DSCR', 'Closing Cash', 'Status', 'Rescheduling Assessment'],
+                  ['Year', 'EBITDA', 'Pre-Fin OCF', 'Inst. Principal', 'Finance Cost', 'Total Debt Service', 'EBITDA DSCR', 'Cash DSCR', 'Closing Cash', 'Status', 'Assessment'],
                   (debtServiceCoverage || [])
                     .filter(d => d.totalDebtService > 0)
                     .map(d => [
@@ -2242,18 +3771,39 @@ export async function exportCompletePackageWord(
                       d.closingCash,
                       d.capacityStatus,
                       d.reschedulingContext || '',
-                    ])
+                    ]),
+                  {
+                    theme: 'section76',
+                    font: 'Helvetica',
+                    fontSizePt: 7.2,
+                    totalWidthTwips: usableW,
+                    customAligns: [
+                      AlignmentType.LEFT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.CENTER,
+                      AlignmentType.LEFT,
+                    ],
+                  }
                 ),
               ]
             : []),
 
           ...(parsedSchedule && parsedSchedule.rows.length > 0
             ? [
-                new Paragraph({ text: '' }),
-                new Paragraph({
-                  text: `${(debtServiceCoverage || []).some(d => d.totalDebtService > 0) ? '8' : '7'}. Repayment Schedule (Exact Installment Ledger)`,
-                  heading: HeadingLevel.HEADING_2,
-                }),
+                new Paragraph({ children: [new PageBreak()] }),
+                docxSectionHeaderBanner(
+                  company,
+                  `${(debtServiceCoverage || []).some(d => d.totalDebtService > 0) ? '8' : '7'}. REPAYMENT SCHEDULE (EXACT AUTOMATED INSTALLMENT LEDGER)`,
+                  usableW
+                ),
+                new Paragraph({ spacing: { before: 80, after: 80 }, children: [] }),
                 createDocxTable(
                   ['Facility Parameter', 'Value', 'Schedule Dates', 'Date / Setting'],
                   buildRepaymentScheduleMetadataRows(parsedSchedule).map(mr => [
@@ -2262,9 +3812,22 @@ export async function exportCompletePackageWord(
                     String(mr[5]),
                     String(mr[6]),
                   ]),
-                  4
+                  {
+                    theme: 'previous_grid',
+                    font: 'Helvetica',
+                    fontSizePt: 7.4,
+                    colWidthsTwips: [
+                      convertMillimetersToTwip(46),
+                      convertMillimetersToTwip(45),
+                      convertMillimetersToTwip(56),
+                      convertMillimetersToTwip(45),
+                    ],
+                    customAligns: [AlignmentType.LEFT, AlignmentType.RIGHT, AlignmentType.LEFT, AlignmentType.RIGHT],
+                    boldColIndices: [0, 2],
+                    hideHeader: true,
+                  }
                 ),
-                new Paragraph({ text: '' }),
+                new Paragraph({ spacing: { before: 80, after: 60 }, children: [] }),
                 createDocxTable(
                   ['Event Type.', 'EMI Date', 'Inst. Principal', 'Inst. Profit', 'Gestation Payment', 'Over due Gest.', 'Overdue Profit', 'Balance', 'Total'],
                   [
@@ -2291,12 +3854,38 @@ export async function exportCompletePackageWord(
                       parsedSchedule.grandTotalDebtService,
                     ],
                   ],
-                  2
+                  {
+                    theme: 'section76',
+                    font: 'Helvetica',
+                    fontSizePt: 7.0,
+                    totalWidthTwips: usableW,
+                    customAligns: [
+                      AlignmentType.LEFT,
+                      AlignmentType.CENTER,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                    ],
+                    doubleBottomLabels: new Set(['Total :']),
+                  }
                 ),
                 new Paragraph({
-                  text:
-                    parsedSchedule.metadata.preparedByNote ||
-                    'Prepared By : ABABIL, Developed By : Millennium Information Solution Limited',
+                  spacing: { before: 60 },
+                  children: [
+                    new TextRun({
+                      text:
+                        parsedSchedule.metadata.preparedByNote ||
+                        'Prepared By : ABABIL, Developed By : Millennium Information Solution Limited',
+                      font: 'Helvetica',
+                      size: 15,
+                      italics: true,
+                      color: '475569',
+                    }),
+                  ],
                 }),
               ]
             : []),
@@ -2305,8 +3894,7 @@ export async function exportCompletePackageWord(
     ],
   });
 
-  const blob = await Packer.toBlob(doc);
-  downloadBlob(blob, filename);
+  await emitDocxDocument(doc, filename);
 }
 
 export async function exportNotesWord(
@@ -2314,31 +3902,41 @@ export async function exportNotesWord(
   notes: FinancialNoteItem[],
   filename = 'Notes_to_the_Financial_Statements.docx'
 ) {
+  const usableW = docxUsableWidthTwips('landscape', 14);
   const doc = new Document({
     sections: [
       {
+        properties: docxPageProps('landscape', 14),
+        footers: {
+          default: docxFooter(`Certified System Export · Date: ${new Date().toISOString().split('T')[0]}`),
+        },
         children: [
-          new Paragraph({ text: safeCompanyName(company), heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER }),
-          new Paragraph({ text: 'NOTES TO THE FINANCIAL STATEMENTS (Notes 1 to 12)', heading: HeadingLevel.HEADING_1, alignment: AlignmentType.CENTER }),
-          new Paragraph({
-            text: `Reporting Currency: ${company.reportingCurrency} (${company.reportingUnit}) | Framework: ${company.accountingFramework} | FY End: ${normalizeFinancialYearEnd(company.financialYearEnd)}`,
-            alignment: AlignmentType.CENTER,
-          }),
-          new Paragraph({ text: '' }),
+          docxSectionHeaderBanner(company, 'NOTES TO THE FINANCIAL STATEMENTS (STATUTORY DISCLOSURES 1 TO 12)', usableW),
+          new Paragraph({ spacing: { before: 80, after: 80 }, children: [] }),
           ...notes.flatMap(n => {
             const filteredTbl = filterNoteTableForExport(n.tableData);
             return [
-              new Paragraph({ text: `Note ${n.noteNumber}: ${n.title} [${n.category}]`, heading: HeadingLevel.HEADING_3 }),
-              new Paragraph({ text: n.textDescription }),
+              new Paragraph({
+                spacing: { before: 80, after: 30 },
+                children: [new TextRun({ text: `Note ${n.noteNumber}: ${n.title} [${n.category}]`, font: 'Helvetica', size: 19, bold: true, color: '1E293B' })],
+              }),
+              new Paragraph({
+                spacing: { after: 50 },
+                children: [new TextRun({ text: n.textDescription, font: 'Helvetica', size: 16, color: '475569' })],
+              }),
               ...(filteredTbl
                 ? [
-                    createDocxTable(filteredTbl.headers, [
-                      ...filteredTbl.rows.map(r => [r.label, ...r.values]),
-                      ...(filteredTbl.totalRow ? [[filteredTbl.totalRow.label, ...filteredTbl.totalRow.values]] : []),
-                    ]),
+                    createDocxTable(
+                      filteredTbl.headers,
+                      [
+                        ...filteredTbl.rows.map(r => [r.label, ...r.values]),
+                        ...(filteredTbl.totalRow ? [[filteredTbl.totalRow.label, ...filteredTbl.totalRow.values]] : []),
+                      ],
+                      { theme: 'section76', font: 'Helvetica', fontSizePt: 7.5, totalWidthTwips: usableW }
+                    ),
                   ]
                 : []),
-              new Paragraph({ text: '' }),
+              new Paragraph({ spacing: { after: 60 }, children: [] }),
             ];
           }),
         ],
@@ -2346,8 +3944,7 @@ export async function exportNotesWord(
     ],
   });
 
-  const blob = await Packer.toBlob(doc);
-  downloadBlob(blob, filename);
+  await emitDocxDocument(doc, filename);
 }
 
 // ---------------- PDF EXPORTS (jspdf + jspdf-autotable) ---------------- //
@@ -3158,8 +4755,20 @@ export function exportPreviousFinancialsExcel(
     'Total',
     ...prevData.map((d, i) => fCell(excelSumRows(colLetter(i + 1), totalCapLiabInputs), d.totalCapitalAndLiabilities)),
   ]);
+  const prevOrientation = prevData.length > 4 ? 'landscape' : 'portrait';
+  const prevBoldLabels = new Set([
+    'Taka', 'Subtotal', 'Capital after drawings', 'Total', 'Current Assets', 'Current Liabilities',
+    'Gross Profit', 'Less- Administrative & Selling Expenses', 'Net Operating Profit', 'Net Profit After Income Tax',
+    'Net Cash from operating activities', 'Net Cash used in investing Activities', 'Net Cash used in Financing Activities',
+    'f) Cash & Cash Equivalents at end of period (D+E)',
+    lbl(options, 'eq', 'closingShareCapital', 'Closing Share Capital'),
+    lbl(options, 'eq', 'closingRetainedEarnings', 'Closing Retained Earnings'),
+    lbl(options, 'eq', 'totalClosingEquity', 'TOTAL CLOSING EQUITY'),
+  ]);
+
   const wsBS = XLSX.utils.aoa_to_sheet(bsRows);
   applyColumnWidths(wsBS, widths);
+  stylePreviousFormatSheet(wsBS, colHeaders.length, prevOrientation, prevBoldLabels);
   XLSX.utils.book_append_sheet(wb, wsBS, '1. Financial Position');
 
   // 2. STATEMENT OF COMPREHENSIVE INCOME (dynamic Excel row tracking)
@@ -3285,6 +4894,7 @@ export function exportPreviousFinancialsExcel(
   ]);
   const wsIS = XLSX.utils.aoa_to_sheet(isRows);
   applyColumnWidths(wsIS, widths);
+  stylePreviousFormatSheet(wsIS, colHeaders.length, prevOrientation, prevBoldLabels);
   XLSX.utils.book_append_sheet(wb, wsIS, '2. Comprehensive Income');
 
   // 3. STATEMENT OF CASH FLOWS (dynamic Excel row tracking)
@@ -3372,6 +4982,7 @@ export function exportPreviousFinancialsExcel(
   ]);
   const wsCF = XLSX.utils.aoa_to_sheet(cfRows);
   applyColumnWidths(wsCF, [56, ...prevData.map(() => 18)]);
+  stylePreviousFormatSheet(wsCF, colHeaders.length, prevOrientation, prevBoldLabels);
   XLSX.utils.book_append_sheet(wb, wsCF, '3. Cash Flows');
 
   // 4. STATEMENT OF CHANGES IN EQUITY (dynamic Excel row tracking)
@@ -3430,6 +5041,7 @@ export function exportPreviousFinancialsExcel(
   ]);
   const wsEQ = XLSX.utils.aoa_to_sheet(eqRows);
   applyColumnWidths(wsEQ, widths);
+  stylePreviousFormatSheet(wsEQ, colHeaders.length, prevOrientation, prevBoldLabels);
   XLSX.utils.book_append_sheet(wb, wsEQ, '4. Changes in Equity');
 
   // 5. 1.00 FIXED ASSETS SCHEDULE & NOTES
@@ -3490,9 +5102,10 @@ export function exportPreviousFinancialsExcel(
 
   const wsFA = XLSX.utils.aoa_to_sheet(faRows);
   applyColumnWidths(wsFA, [34, 20, 22, 20, 12, 26, 20]);
+  stylePreviousFaNotesSheet(wsFA, prevOrientation);
   XLSX.utils.book_append_sheet(wb, wsFA, '5. Fixed Assets & Notes');
 
-  XLSX.writeFile(wb, resolvedFilename);
+  writeWorkbookStyled(wb, resolvedFilename);
 }
 
 export async function exportPreviousFinancialsWord(
@@ -3511,71 +5124,181 @@ export async function exportPreviousFinancialsWord(
   const maxYear = prevData[0].year;
   const unitLabel = getCurrencyUnitCaption(company);
   const colHeaders = ['Particulars', ...prevData.map(d => d.dateLabel)];
-
   const { bsRows, isRows, cfRows, eqRows } = buildPreviousTextTables(prevData, options);
   const faAsc = [...prevData].sort((a, b) => a.year - b.year);
+
+  const orientation: 'portrait' | 'landscape' = prevData.length > 4 ? 'landscape' : 'portrait';
+  const usableW = docxUsableWidthTwips(orientation, 14);
+  const col0W = convertMillimetersToTwip(orientation === 'landscape' ? 115 : 92);
+  const yearRemW = Math.floor((usableW - col0W) / prevData.length);
+  const prevColWidths = [col0W, ...prevData.map((_, i) => (i === prevData.length - 1 ? usableW - col0W - yearRemW * (prevData.length - 1) : yearRemW))];
+
+  const prevBoldLabels = new Set([
+    'PROPERTIES & ASSETS', 'CAPITAL & LIABILITIES',
+    'Taka', 'Subtotal', 'Capital after drawings', 'Total', 'Current Assets', 'Current Liabilities',
+    'Gross Profit', 'Less- Administrative & Selling Expenses', 'Net Operating Profit', 'Net Profit After Income Tax',
+    'Net Cash from operating activities', 'Net Cash used in investing Activities', 'Net Cash used in Financing Activities',
+    'a) CASH FLOWS FROM OPERATING ACTIVITIES:', 'b) CASH FLOWS FROM INVESTING ACTIVITIES:', 'c) CASH FLOWS FROM FINANCING ACTIVITIES:',
+    'f) Cash & Cash Equivalents at end of period (D+E)',
+    lbl(options, 'eq', 'closingShareCapital', 'Closing Share Capital'),
+    lbl(options, 'eq', 'closingRetainedEarnings', 'Closing Retained Earnings'),
+    lbl(options, 'eq', 'totalClosingEquity', 'TOTAL CLOSING EQUITY'),
+  ]);
+  const prevDoubleBottom = new Set([
+    'Taka',
+    'Total',
+    'Net Profit After Income Tax',
+    'f) Cash & Cash Equivalents at end of period (D+E)',
+    lbl(options, 'eq', 'totalClosingEquity', 'TOTAL CLOSING EQUITY'),
+  ]);
+  const rightAlignZero = new Set(['Taka', 'Total']);
+
+  const classicHeader = (stmtTitle: string, subtitle: string, showUnitCaption = true): Paragraph[] => [
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 40 },
+      children: [new TextRun({ text: safeCompanyUpper(company), font: 'Times New Roman', size: 26, bold: true, color: '0F172A' })],
+    }),
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 30 },
+      children: [new TextRun({ text: stmtTitle, font: 'Times New Roman', size: 24, bold: true, color: '0F172A' })],
+    }),
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 20 },
+      children: [new TextRun({ text: subtitle, font: 'Times New Roman', size: 19, bold: true, color: '0F172A' })],
+    }),
+    ...(showUnitCaption
+      ? [
+          new Paragraph({
+            alignment: AlignmentType.RIGHT,
+            spacing: { after: 40 },
+            children: [new TextRun({ text: unitLabel, font: 'Times New Roman', size: 17, color: '0F172A' })],
+          }),
+        ]
+      : []),
+  ];
+
+  const prevTableOpts: DocxTableOptions = {
+    theme: 'previous_grid',
+    font: 'Times New Roman',
+    fontSizePt: 8.8,
+    headFontSizePt: 9,
+    colWidthsTwips: prevColWidths,
+    totalWidthTwips: usableW,
+    boldRowLabels: prevBoldLabels,
+    doubleBottomLabels: prevDoubleBottom,
+    rightAlignCol0Labels: rightAlignZero,
+  };
 
   const doc = new Document({
     sections: [
       {
+        properties: docxPageProps(orientation, 14),
         children: [
-          new Paragraph({ text: safeCompanyUpper(company), heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: 'STATEMENT OF FINANCIAL POSITION', bold: true, size: 24 })], alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: formatFyAsAtUpper(maxYear, company.financialYearEnd), bold: true, size: 18 })], alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: unitLabel, size: 16 })], alignment: AlignmentType.RIGHT }),
-          createDocxTable(colHeaders, bsRows),
+          ...classicHeader('STATEMENT OF FINANCIAL POSITION', formatFyAsAtUpper(maxYear, company.financialYearEnd), true),
+          createDocxTable(colHeaders, bsRows, prevTableOpts),
 
           new Paragraph({ children: [new PageBreak()] }),
-          new Paragraph({ text: safeCompanyUpper(company), heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: 'Statement of Comprehensive Income', bold: true, size: 24 })], alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: formatFyYearEndedTitle(maxYear, company.financialYearEnd), bold: true, size: 18 })], alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: unitLabel, size: 16 })], alignment: AlignmentType.RIGHT }),
-          createDocxTable(colHeaders, isRows),
+          ...classicHeader('Statement of Comprehensive Income', formatFyYearEndedTitle(maxYear, company.financialYearEnd), true),
+          createDocxTable(colHeaders, isRows, prevTableOpts),
 
           new Paragraph({ children: [new PageBreak()] }),
-          new Paragraph({ text: safeCompanyUpper(company), heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: 'STATEMENT OF CASH FLOWS', bold: true, size: 24 })], alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: formatFyYearEndedNoComma(maxYear, company.financialYearEnd), bold: true, size: 18 })], alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: unitLabel, size: 16 })], alignment: AlignmentType.RIGHT }),
-          createDocxTable(colHeaders, cfRows),
+          ...classicHeader('STATEMENT OF CASH FLOWS', formatFyYearEndedNoComma(maxYear, company.financialYearEnd), true),
+          createDocxTable(colHeaders, cfRows, prevTableOpts),
 
           new Paragraph({ children: [new PageBreak()] }),
-          new Paragraph({ text: safeCompanyUpper(company), heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: 'STATEMENT OF CHANGES IN EQUITY', bold: true, size: 24 })], alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: formatFyYearEndedNoComma(maxYear, company.financialYearEnd), bold: true, size: 18 })], alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: unitLabel, size: 16 })], alignment: AlignmentType.RIGHT }),
-          createDocxTable(colHeaders, eqRows),
+          ...classicHeader('STATEMENT OF CHANGES IN EQUITY', formatFyYearEndedNoComma(maxYear, company.financialYearEnd), true),
+          createDocxTable(colHeaders, eqRows, prevTableOpts),
 
           new Paragraph({ children: [new PageBreak()] }),
-          new Paragraph({ text: safeCompanyUpper(company), heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: formatFyYearEndedNoComma(maxYear, company.financialYearEnd), bold: true, size: 18 })], alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: '1.00 FIXED ASSETS SCHEDULE', bold: true, size: 20 })] }),
+          new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { after: 40 },
+            children: [new TextRun({ text: safeCompanyUpper(company), font: 'Times New Roman', size: 26, bold: true, color: '0F172A' })],
+          }),
+          new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { after: 60 },
+            children: [new TextRun({ text: formatFyYearEndedNoComma(maxYear, company.financialYearEnd), font: 'Times New Roman', size: 19, bold: true, color: '0F172A' })],
+          }),
+          new Paragraph({
+            spacing: { after: 60 },
+            children: [new TextRun({ text: '1.00 FIXED ASSETS SCHEDULE', font: 'Times New Roman', size: 20, bold: true, color: '0F172A' })],
+          }),
           ...faAsc.flatMap(d => [
             createDocxTable(
-              ['Particulars', `Opening at ${formatFyStartDateCode(d.year, company.financialYearEnd)}`, 'Addition during the year', `Total at ${formatFyEndDateCode(d.year, company.financialYearEnd)}`, 'Rate %', 'Depreciation charged for the year', `W.D.V. at ${formatFyEndDateCode(d.year, company.financialYearEnd)}`],
+              [
+                'Particulars',
+                `Opening at ${formatFyStartDateCode(d.year, company.financialYearEnd)}`,
+                'Addition during the year',
+                `Total at ${formatFyEndDateCode(d.year, company.financialYearEnd)}`,
+                'Rate %',
+                'Depreciation charged for the year',
+                `W.D.V. at ${formatFyEndDateCode(d.year, company.financialYearEnd)}`,
+              ],
               [
                 ['Fixed Assets', d.faOpening, d.faAddition - d.faDisposal, d.faTotal, d.faRatePct, d.faDepreciationCharged, d.faWDV],
                 ['Taka', d.faOpening, d.faAddition - d.faDisposal, d.faTotal, '', d.faDepreciationCharged, d.faWDV],
-              ]
+              ],
+              {
+                theme: 'previous_grid',
+                font: 'Times New Roman',
+                fontSizePt: 8.2,
+                headFontSizePt: 8.2,
+                totalWidthTwips: usableW,
+                boldRowLabels: new Set(['Taka']),
+                doubleBottomLabels: new Set(['Taka']),
+                customAligns: [
+                  AlignmentType.LEFT,
+                  AlignmentType.RIGHT,
+                  AlignmentType.RIGHT,
+                  AlignmentType.RIGHT,
+                  AlignmentType.CENTER,
+                  AlignmentType.RIGHT,
+                  AlignmentType.RIGHT,
+                ],
+              }
             ),
-            new Paragraph({ text: '' }),
+            new Paragraph({ spacing: { after: 80 }, children: [] }),
           ]),
 
-          new Paragraph({ children: [new TextRun({ text: 'NOTES TO THE FINANCIAL STATEMENTS:', bold: true, size: 20 })] }),
+          new Paragraph({
+            spacing: { before: 80, after: 60 },
+            children: [new TextRun({ text: 'NOTES TO THE FINANCIAL STATEMENTS:', font: 'Times New Roman', size: 20, bold: true, color: '0F172A' })],
+          }),
           ...notes.flatMap(n => {
             const filteredTbl = filterNoteTableForExport(n.tableData);
             return [
-              new Paragraph({ children: [new TextRun({ text: `Note ${n.noteNumber}: ${n.title}`, bold: true, size: 18 })] }),
-              new Paragraph({ children: [new TextRun({ text: n.textDescription, size: 17 })] }),
+              new Paragraph({
+                spacing: { before: 60, after: 20 },
+                children: [new TextRun({ text: `Note ${n.noteNumber}: ${n.title}`, font: 'Times New Roman', size: 18, bold: true, color: '0F172A' })],
+              }),
+              new Paragraph({
+                spacing: { after: 40 },
+                children: [new TextRun({ text: n.textDescription, font: 'Times New Roman', size: 17, color: '0F172A' })],
+              }),
               ...(filteredTbl
                 ? [
-                    createDocxTable(filteredTbl.headers, [
-                      ...filteredTbl.rows.map(r => [r.label, ...r.values]),
-                      ...(filteredTbl.totalRow ? [[filteredTbl.totalRow.label, ...filteredTbl.totalRow.values]] : []),
-                    ]),
+                    createDocxTable(
+                      filteredTbl.headers,
+                      [
+                        ...filteredTbl.rows.map(r => [r.label, ...r.values]),
+                        ...(filteredTbl.totalRow ? [[filteredTbl.totalRow.label, ...filteredTbl.totalRow.values]] : []),
+                      ],
+                      {
+                        theme: 'previous_grid',
+                        font: 'Times New Roman',
+                        fontSizePt: 8,
+                        totalWidthTwips: usableW,
+                        boldRowLabels: filteredTbl.totalRow ? new Set([filteredTbl.totalRow.label]) : undefined,
+                        doubleBottomLabels: filteredTbl.totalRow ? new Set([filteredTbl.totalRow.label]) : undefined,
+                      }
+                    ),
                   ]
                 : []),
-              new Paragraph({ text: '' }),
+              new Paragraph({ spacing: { after: 60 }, children: [] }),
             ];
           }),
         ],
@@ -3583,8 +5306,7 @@ export async function exportPreviousFinancialsWord(
     ],
   });
 
-  const blob = await Packer.toBlob(doc);
-  downloadBlob(blob, resolvedFilename);
+  await emitDocxDocument(doc, resolvedFilename);
 }
 
 export function exportPreviousFinancialsPdf(
@@ -4304,8 +6026,27 @@ export function exportProjectedFinancialsExcel(
   ]);
   bsRows.push([]);
   bsRows.push(['Proprietor', '', 'Signed in terms of our separate report of even date.']);
+  const closingCapLbl = lbl(options, 'eq', 'closingShareCapital', 'Closing Capital / Equity');
+  const cogsBaseLbl = lbl(options, 'income', 'costOfSales', 'Cost of Goods Sold');
+  const projBsBold = new Set([
+    'Assets', 'Non Current Assets', 'Total Non-Current Assets', 'Current Assets', 'Total Current Assets',
+    'Total Assets', 'Equity & Liabilities', 'Subtotal', closingCapLbl, 'Non-Current Liabilities',
+    'Current Liabilities', 'Total Current Liabilities', 'Total Equity & Liabilities',
+  ]);
+  const projBsRule = new Set([
+    'Total Non-Current Assets', 'Total Current Assets', 'Total Assets',
+    'Subtotal', closingCapLbl, 'Total Current Liabilities', 'Total Equity & Liabilities',
+  ]);
   const wsBS = XLSX.utils.aoa_to_sheet(bsRows);
   applyColumnWidths(wsBS, widths);
+  styleProjectedStatementSheet(
+    wsBS,
+    'bs',
+    2 + projData.length,
+    projBsBold,
+    projBsRule,
+    new Set(['Total Assets', 'Total Equity & Liabilities'])
+  );
   XLSX.utils.book_append_sheet(wb, wsBS, '1. Financial Position');
 
   // 2. Statement of Profit or Loss & Other Comprehensive Income (dynamic Excel row tracking)
@@ -4450,8 +6191,21 @@ export function exportProjectedFinancialsExcel(
   ]);
   plRows.push([]);
   plRows.push(['Proprietor', '', 'Signed in terms of our separate report of even date.']);
+  const projPlRule = new Set([
+    'Gross Profit', 'Total Gross Profit & Other Income', 'Total Operating Profit/(Loss)',
+    'Net Profit/(Loss) Before Income Tax', 'Net Profit/(Loss) After Income Tax',
+  ]);
+  const projPlBold = new Set([salesLbl, 'Less: Operating Expenses:', ...projPlRule]);
   const wsPL = XLSX.utils.aoa_to_sheet(plRows);
   applyColumnWidths(wsPL, widths);
+  styleProjectedStatementSheet(
+    wsPL,
+    'pl',
+    2 + projData.length,
+    projPlBold,
+    projPlRule,
+    new Set(['Net Profit/(Loss) After Income Tax'])
+  );
   XLSX.utils.book_append_sheet(wb, wsPL, '2. Profit or Loss');
 
   // 3. Statement Of Cash Flows (dynamic Excel row tracking)
@@ -4580,8 +6334,28 @@ export function exportProjectedFinancialsExcel(
     'Closing Cash & Bank Balance',
     ...projData.map((d, i) => fCell(excelSumRows(colLetter(i + 1), [cfNetIncRow, cfOpenCashRow]), d.cfClosingCash)),
   ]);
+  const projCfBold = new Set([
+    'Net Cash Used by Operating Activities',
+    'Net Cash Used by Investing Activities',
+    'Net Cash Provided by Financial Activities',
+    'Net Cash Increase',
+    'Opening Cash & Bank Balance',
+    'Closing Cash & Bank Balance',
+    '2. CASH FLOW FROM INVESTING ACTIVITIES:',
+    '3. CASH FLOW FROM FINANCIAL ACTIVITIES:',
+    'Inflows:',
+    'Outflows:',
+  ]);
   const wsCF = XLSX.utils.aoa_to_sheet(cfRows);
   applyColumnWidths(wsCF, [50, ...projData.map(() => 18)]);
+  styleProjectedStatementSheet(
+    wsCF,
+    'cf',
+    1 + projData.length,
+    projCfBold,
+    new Set(['Net Cash Used by Operating Activities']),
+    new Set(['Closing Cash & Bank Balance'])
+  );
   XLSX.utils.book_append_sheet(wb, wsCF, '3. Cash Flows');
 
   // 4. Notes to the Financial Statements (Notes 1, 2.1-2.6, 3.00-13.00)
@@ -4607,8 +6381,15 @@ export function exportProjectedFinancialsExcel(
     ['', '', ...projData.map(d => d.year)],
     ...quantNotesRows.map(row => row.map((cell, idx) => (idx >= 2 && typeof cell === 'number' ? nCell(cell) : cell))),
   ];
+  const projNoteBold = new Set([
+    'Subtotal', `Closing ${trRecLbl}`, `Closing ${advLbl}`,
+    'Cash In Hand & Bank', ltLoanLbl, `Closing ${trPayLbl}`, `Closing ${taxPayLbl}`,
+    'Bank Loan', 'Material Consumed', 'Total Direct Expenses', cogsBaseLbl,
+    opexLbl, invLbl, 'Bank Charges & Interest',
+  ]);
   const wsNotes = XLSX.utils.aoa_to_sheet(notesRows);
   applyColumnWidths(wsNotes, [12, 42, ...projData.map(() => 18)]);
+  styleProjectedNotesSheet(wsNotes, 2 + projData.length, projNoteBold);
   XLSX.utils.book_append_sheet(wb, wsNotes, '4. Notes to Financials');
 
   // 5. Schedule of Property Plant & Equipments (Schedule-A)
@@ -4620,20 +6401,33 @@ export function exportProjectedFinancialsExcel(
     [formatFyProjectedAsAt(maxYear, company.financialYearEnd)],
     [],
   ];
+  const schedTopHeaderRows: number[] = [];
   projAsc.forEach(d => {
-    const hdrIdx = schedRows.length + 1;
+    const topIdx = schedRows.length;
+    schedTopHeaderRows.push(topIdx);
     schedRows.push([
       'SL No.',
       'Particulars',
-      'Cost: Opening Balance',
-      'Addition During the Year',
-      'Disposals During the Year',
-      `Balance as on ${formatFyEndDateCode(d.year, company.financialYearEnd)}`,
+      'Cost',
+      '',
+      '',
+      '',
       'Rate of Dep. (%)',
       'Depreciation Charged During the Year',
       `W.D.V as on ${formatFyEndDateCode(d.year, company.financialYearEnd)}`,
     ]);
-    const itemRow = hdrIdx + 1;
+    schedRows.push([
+      '',
+      '',
+      'Opening Balance',
+      'Addition During the Year',
+      'Disposals During the Year',
+      `Balance as on ${formatFyEndDateCode(d.year, company.financialYearEnd)}`,
+      '',
+      '',
+      '',
+    ]);
+    const itemRow = topIdx + 3;
     schedRows.push([
       1,
       'Property Plant & Equipment',
@@ -4660,6 +6454,7 @@ export function exportProjectedFinancialsExcel(
   });
   const wsSched = XLSX.utils.aoa_to_sheet(schedRows);
   applyColumnWidths(wsSched, [8, 28, 18, 20, 20, 20, 14, 26, 20]);
+  styleProjectedScheduleASheet(wsSched, schedTopHeaderRows);
   XLSX.utils.book_append_sheet(wb, wsSched, '5. Schedule-A PPE');
 
   const activeDscr = (debtServiceCoverage || []).filter(d => d.totalDebtService > 0);
@@ -4671,7 +6466,7 @@ export function exportProjectedFinancialsExcel(
     XLSX.utils.book_append_sheet(wb, buildDebtServiceCoverageWorksheet(company, activeDscr), dscrTab);
   }
 
-  XLSX.writeFile(wb, resolvedFilename);
+  writeWorkbookStyled(wb, resolvedFilename);
 }
 
 export async function exportProjectedFinancialsWord(
@@ -4690,67 +6485,256 @@ export async function exportProjectedFinancialsWord(
   );
   const maxYear = projData[0].year;
   const amtLabel = getProjectedAmountCaption(company);
-  const bsHeaders = ['Particulars', 'Notes', ...projData.map(d => `${amtLabel}\n${d.year}`)];
-  const cfHeaders = ['1. CASH FLOW FROM OPERATING ACTIVITIES:', ...projData.map(d => String(d.year))];
+  const shortAmtLabel = projData.length >= 10
+    ? (company.reportingCurrency === '৳' ? 'In Taka' : `In ${company.reportingCurrency}`)
+    : amtLabel;
   const projAsc = [...projData].sort((a, b) => a.year - b.year);
 
-  const { bsRows, plRows, cfRows, quantNotesRows } = buildProjectedTextTables(projData, options);
+  const usableMm = 277; // A4 Landscape 297mm - 2*10mm margins
+  const usableW = convertMillimetersToTwip(usableMm);
+  const nCols = projData.length;
+  const partMm = nCols > 15 ? 46 : nCols >= 12 ? 50 : nCols >= 8 ? 56 : 66;
+  const notesMm = nCols > 15 ? 13 : nCols >= 12 ? 15 : 18;
+  const yearMm = Math.max(11, (usableMm - partMm - notesMm) / nCols);
+  const bodyFontSize = nCols > 15 ? 5.1 : nCols >= 12 ? 5.6 : nCols >= 8 ? 6.6 : 7.6;
+  const headFontSize = nCols > 15 ? 5.0 : nCols >= 12 ? 5.5 : nCols >= 8 ? 6.5 : 7.5;
+  const cfPartMm = nCols > 15 ? 60 : nCols >= 12 ? 66 : 82;
+  const cfYearMm = Math.max(11, (usableMm - cfPartMm) / nCols);
+
+  const bsColWidths = [
+    convertMillimetersToTwip(partMm),
+    convertMillimetersToTwip(notesMm),
+    ...projData.map(() => convertMillimetersToTwip(yearMm)),
+  ];
+  const noteColWidths = [
+    convertMillimetersToTwip(notesMm),
+    convertMillimetersToTwip(partMm),
+    ...projData.map(() => convertMillimetersToTwip(yearMm)),
+  ];
+  const cfColWidths = [
+    convertMillimetersToTwip(cfPartMm),
+    ...projData.map(() => convertMillimetersToTwip(cfYearMm)),
+  ];
+
+  const {
+    bsRows,
+    plRows,
+    cfRows,
+    quantNotesRows,
+    salesLbl,
+    trRecLbl,
+    opexLbl,
+    closingCapLbl,
+    cogsBaseLbl,
+    invLbl,
+    advLbl,
+    ltLoanLbl,
+    trPayLbl,
+    taxPayLbl,
+  } = buildProjectedTextTables(projData, options);
+
+  const projHeader = (title: string, subtitle: string, includeAddress = false): Paragraph[] => [
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 30 },
+      children: [new TextRun({ text: safeCompanyName(company), font: 'Helvetica', size: 23, bold: true, color: '0F172A' })],
+    }),
+    ...(includeAddress
+      ? [
+          new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { after: 25 },
+            children: [new TextRun({ text: safeAddress(company), font: 'Helvetica', size: 16, color: '0F172A' })],
+          }),
+        ]
+      : []),
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 25 },
+      children: [new TextRun({ text: title, font: 'Helvetica', size: 21, bold: true, color: '0F172A' })],
+    }),
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 60 },
+      children: [new TextRun({ text: subtitle, font: 'Helvetica', size: 17, color: '0F172A' })],
+    }),
+  ];
+
+  const bsHeaders = ['Particulars', 'Notes', ...projData.map(d => `${shortAmtLabel}\n${d.year}`)];
+  const bsMultiHeader: DocxMultiHeaderCell[][] = [
+    [
+      { content: 'Particulars', rowSpan: 2, align: AlignmentType.CENTER },
+      { content: 'Notes', rowSpan: 2, align: AlignmentType.CENTER },
+      ...projData.map(() => ({ content: shortAmtLabel, align: AlignmentType.CENTER })),
+    ],
+    projData.map(d => ({ content: String(d.year), align: AlignmentType.CENTER })),
+  ];
+  const bsBoldRows = new Set([
+    'Assets', 'Non Current Assets', 'Total Non-Current Assets', 'Current Assets', 'Total Current Assets',
+    'Total Assets', 'Equity & Liabilities', 'Subtotal', closingCapLbl, 'Non-Current Liabilities',
+    'Current Liabilities', 'Total Current Liabilities', 'Total Equity & Liabilities',
+  ]);
+  const bsRuleRows = new Set([
+    'Total Non-Current Assets', 'Total Current Assets', 'Total Assets',
+    'Subtotal', closingCapLbl, 'Total Current Liabilities', 'Total Equity & Liabilities',
+  ]);
+
+  const plRuleRows = new Set([
+    'Gross Profit', 'Total Gross Profit & Other Income', 'Total Operating Profit/(Loss)',
+    'Net Profit/(Loss) Before Income Tax', 'Net Profit/(Loss) After Income Tax',
+  ]);
+  const plBoldRows = new Set([salesLbl, 'Less: Operating Expenses:', ...plRuleRows]);
+
+  const cfHeaders = ['1. CASH FLOW FROM OPERATING ACTIVITIES:', ...projData.map(d => String(d.year))];
+  const cfBoldRows = new Set([
+    'Net Cash Used by Operating Activities',
+    'Net Cash Used by Investing Activities',
+    'Net Cash Provided by Financial Activities',
+    'Net Cash Increase',
+    'Opening Cash & Bank Balance',
+    'Closing Cash & Bank Balance',
+    '2. CASH FLOW FROM INVESTING ACTIVITIES:',
+    '3. CASH FLOW FROM FINANCIAL ACTIVITIES:',
+    'Inflows:',
+    'Outflows:',
+  ]);
+
+  const noteBoldSet = new Set([
+    'Subtotal', `Closing ${trRecLbl}`, `Closing ${advLbl}`,
+    'Cash In Hand & Bank', ltLoanLbl, `Closing ${trPayLbl}`, `Closing ${taxPayLbl}`,
+    'Bank Loan', 'Material Consumed', 'Total Direct Expenses', cogsBaseLbl,
+    opexLbl, invLbl, 'Bank Charges & Interest', 'Add: Direct Expenses',
+  ]);
+  const noteMultiHeader: DocxMultiHeaderCell[][] = [
+    [
+      { content: 'Note No.', rowSpan: 2, align: AlignmentType.CENTER },
+      { content: 'Particulars', rowSpan: 2, align: AlignmentType.CENTER },
+      ...projData.map(() => ({ content: shortAmtLabel, align: AlignmentType.CENTER })),
+    ],
+    projData.map(d => ({ content: String(d.year), align: AlignmentType.CENTER })),
+  ];
+
+  const schedColsW = [
+    convertMillimetersToTwip(12),
+    convertMillimetersToTwip(48),
+    convertMillimetersToTwip(32),
+    convertMillimetersToTwip(32),
+    convertMillimetersToTwip(32),
+    convertMillimetersToTwip(32),
+    convertMillimetersToTwip(20),
+    convertMillimetersToTwip(35),
+    convertMillimetersToTwip(34),
+  ];
 
   const doc = new Document({
     sections: [
       {
+        properties: docxPageProps('landscape', 10),
         children: [
-          new Paragraph({ text: safeCompanyName(company), heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: 'Statement of Financial Position', bold: true, size: 22 })], alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: formatFyProjectedAsAt(maxYear, company.financialYearEnd), size: 18 })], alignment: AlignmentType.CENTER }),
-          new Paragraph({ text: '' }),
-          createDocxTable(bsHeaders, bsRows, 2),
-          new Paragraph({ text: '' }),
-          new Paragraph({ children: [new TextRun({ text: '.............................\nProprietor', bold: true, size: 16 })] }),
-          new Paragraph({ children: [new TextRun({ text: 'Signed in terms of our separate report of even date.', size: 16 })], alignment: AlignmentType.CENTER }),
+          ...projHeader('Statement of Financial Position', formatFyProjectedAsAt(maxYear, company.financialYearEnd)),
+          createDocxTable(bsHeaders, bsRows, {
+            theme: 'projected_plain',
+            font: 'Helvetica',
+            fontSizePt: bodyFontSize,
+            headFontSizePt: headFontSize,
+            colWidthsTwips: bsColWidths,
+            totalWidthTwips: usableW,
+            leftColsCount: 2,
+            multiHeaderRows: bsMultiHeader,
+            boldRowLabels: bsBoldRows,
+            ruleLabels: bsRuleRows,
+            doubleBottomLabels: new Set(['Total Assets', 'Total Equity & Liabilities']),
+            rightAlignCol0Labels: new Set(['Total Assets', 'Total Equity & Liabilities']),
+            customAligns: [AlignmentType.LEFT, AlignmentType.CENTER, ...projData.map(() => AlignmentType.RIGHT)],
+          }),
+          new Paragraph({ spacing: { before: 120 }, children: [] }),
+          docxProprietorSignatureBlock(usableW),
 
           new Paragraph({ children: [new PageBreak()] }),
-          new Paragraph({ text: safeCompanyName(company), heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: 'Statement of Profit or Loss & Other Comprehensive Income', bold: true, size: 22 })], alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: formatFyProjectedYearEnded(maxYear, company.financialYearEnd), size: 18 })], alignment: AlignmentType.CENTER }),
-          new Paragraph({ text: '' }),
-          createDocxTable(bsHeaders, plRows, 2),
-          new Paragraph({ text: '' }),
-          new Paragraph({ children: [new TextRun({ text: '.............................\nProprietor', bold: true, size: 16 })] }),
-          new Paragraph({ children: [new TextRun({ text: 'Signed in terms of our separate report of even date.', size: 16 })], alignment: AlignmentType.CENTER }),
+          ...projHeader('Statement of Profit or Loss & Other Comprehensive Income', formatFyProjectedYearEnded(maxYear, company.financialYearEnd)),
+          createDocxTable(bsHeaders, plRows, {
+            theme: 'projected_plain',
+            font: 'Helvetica',
+            fontSizePt: Math.max(bodyFontSize, 5.8),
+            headFontSizePt: headFontSize,
+            colWidthsTwips: bsColWidths,
+            totalWidthTwips: usableW,
+            leftColsCount: 2,
+            multiHeaderRows: bsMultiHeader,
+            boldRowLabels: plBoldRows,
+            ruleLabels: plRuleRows,
+            doubleBottomLabels: new Set(['Net Profit/(Loss) After Income Tax']),
+            customAligns: [AlignmentType.LEFT, AlignmentType.CENTER, ...projData.map(() => AlignmentType.RIGHT)],
+          }),
+          new Paragraph({ spacing: { before: 120 }, children: [] }),
+          docxProprietorSignatureBlock(usableW),
 
           new Paragraph({ children: [new PageBreak()] }),
-          new Paragraph({ text: safeCompanyName(company), heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: safeAddress(company), size: 16 })], alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: 'Statement Of Cash Flows', bold: true, size: 22 })], alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: formatFyProjectedYearEnded(maxYear, company.financialYearEnd), size: 18 })], alignment: AlignmentType.CENTER }),
-          new Paragraph({ text: '' }),
-          createDocxTable(cfHeaders, cfRows, 1),
+          ...projHeader('Statement Of Cash Flows', formatFyProjectedYearEnded(maxYear, company.financialYearEnd), true),
+          createDocxTable(cfHeaders, cfRows, {
+            theme: 'projected_plain',
+            font: 'Helvetica',
+            fontSizePt: bodyFontSize,
+            headFontSizePt: headFontSize,
+            colWidthsTwips: cfColWidths,
+            totalWidthTwips: usableW,
+            leftColsCount: 1,
+            boldRowLabels: cfBoldRows,
+            ruleLabels: new Set(['Net Cash Used by Operating Activities', 'Closing Cash & Bank Balance']),
+            doubleBottomLabels: new Set(['Closing Cash & Bank Balance']),
+          }),
 
           new Paragraph({ children: [new PageBreak()] }),
-          new Paragraph({ text: safeCompanyName(company), heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: safeAddress(company), size: 16 })], alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: 'Notes to the Financial Statements', bold: true, size: 22 })], alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: formatFyProjectedYearEnded(maxYear, company.financialYearEnd), size: 18 })], alignment: AlignmentType.CENTER }),
-          new Paragraph({ text: '' }),
-          new Paragraph({ children: [new TextRun({ text: '1  Reporting Entity:', bold: true, size: 18 })] }),
-          new Paragraph({ children: [new TextRun({ text: `${safeCompanyName(company)} is a ${company.entityType.replace(/_/g, ' ')} entity and its office is situated at ${safeAddress(company)}.`, size: 16 })] }),
-          new Paragraph({ children: [new TextRun({ text: '2  SIGNIFICANT ACCOUNTING POLICIES:', bold: true, size: 18 })] }),
-          new Paragraph({ children: [new TextRun({ text: `2.1 Basis of Accounting: Prepared on a going concern basis using accrual method of accounting in accordance with ${company.accountingFramework} and applicable statutory provisions.`, size: 16 })] }),
-          new Paragraph({ children: [new TextRun({ text: '2.2 Accounting Policies: Selected and applied consistently for significant transactions and events to all periods presented in these financial statements.', size: 16 })] }),
-          new Paragraph({ children: [new TextRun({ text: '2.3 Property, Plant and Equipment: Stated at cost less accumulated depreciation over estimated useful lives consistently.', size: 16 })] }),
-          new Paragraph({ children: [new TextRun({ text: `2.4 Reporting Period: Financial statements cover the annual reporting period ending ${normalizeFinancialYearEnd(company.financialYearEnd)}.`, size: 16 })] }),
-          new Paragraph({ children: [new TextRun({ text: `2.5 Reporting currency and level of precision: Figures represent ${company.reportingCurrency} (${company.reportingUnit}) rounded cleanly.`, size: 16 })] }),
-          new Paragraph({ children: [new TextRun({ text: '2.6 Comparative Information: Disclosed for all selected years and narratives relevant for understanding the financial statements.', size: 16 })] }),
-          new Paragraph({ text: '' }),
-          createDocxTable(['Note No.', 'Particulars', ...projData.map(d => `${amtLabel}\n${d.year}`)], quantNotesRows, 2),
+          ...projHeader('Notes to the Financial Statements', formatFyProjectedYearEnded(maxYear, company.financialYearEnd), true),
+          createDocxTable(
+            ['Note No.', 'Particulars'],
+            [
+              ['1', 'Reporting Entity:'],
+              ['', `${safeCompanyName(company)} is a ${company.entityType.replace(/_/g, ' ')} entity and its office is situated at ${safeAddress(company)}.`],
+              ['2', 'SIGNIFICANT ACCOUNTING POLICIES:'],
+              ['2.1', `Basis of Accounting: The Financial Statements have been prepared on a going concern basis using accrual method of accounting and in accordance with ${company.accountingFramework} and applicable statutory requirements.`],
+              ['2.2', 'Accounting Policies: The Accounting policies were selected and applied consistently for significant transactions and events to all periods presented in these financial statements.'],
+              ['2.3', 'Property, Plant and Equipment: Items of PPE are stated at cost less accumulated depreciation. Depreciation is computed over the estimated useful lives consistently.'],
+              ['2.4', `Reporting Period: Financial Statements of the entity cover the annual reporting period ending ${normalizeFinancialYearEnd(company.financialYearEnd)} consistently.`],
+              ['2.5', `Reporting currency and level of precision: The figures in the Financial Statements represent ${company.reportingCurrency} (${company.reportingUnit}) currency rounded off cleanly.`],
+              ['2.6', 'Comparative Information: Comparative Information has been disclosed in respect of all selected years for numerical information, narratives, and descriptive schedules.'],
+            ],
+            {
+              theme: 'projected_plain',
+              font: 'Helvetica',
+              fontSizePt: 8.5,
+              colWidthsTwips: [convertMillimetersToTwip(22), usableW - convertMillimetersToTwip(22)],
+              totalWidthTwips: usableW,
+              leftColsCount: 2,
+              boldColIndices: [0],
+              boldRowLabels: new Set(['1', '2']),
+              customAligns: [AlignmentType.CENTER, AlignmentType.LEFT],
+            }
+          ),
 
           new Paragraph({ children: [new PageBreak()] }),
-          new Paragraph({ text: safeCompanyName(company), heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: safeAddress(company), size: 16 })], alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: 'Schedule of Property Plant & Equipments', bold: true, size: 22 })], alignment: AlignmentType.CENTER }),
-          new Paragraph({ children: [new TextRun({ text: formatFyProjectedAsAt(maxYear, company.financialYearEnd), size: 18 })], alignment: AlignmentType.CENTER }),
-          new Paragraph({ text: '' }),
+          ...projHeader('Notes to the Financial Statements', formatFyProjectedYearEnded(maxYear, company.financialYearEnd), true),
+          createDocxTable(
+            ['Note No.', 'Particulars', ...projData.map(d => `${shortAmtLabel}\n${d.year}`)],
+            quantNotesRows,
+            {
+              theme: 'projected_plain',
+              font: 'Helvetica',
+              fontSizePt: bodyFontSize,
+              headFontSizePt: headFontSize,
+              colWidthsTwips: noteColWidths,
+              totalWidthTwips: usableW,
+              leftColsCount: 2,
+              labelColIndex: 1,
+              multiHeaderRows: noteMultiHeader,
+              boldRowLabels: noteBoldSet,
+              ruleLabels: noteBoldSet,
+              customAligns: [AlignmentType.CENTER, AlignmentType.LEFT, ...projData.map(() => AlignmentType.RIGHT)],
+            }
+          ),
+
+          new Paragraph({ children: [new PageBreak()] }),
+          ...projHeader('Schedule of Property Plant & Equipments', formatFyProjectedAsAt(maxYear, company.financialYearEnd), true),
           ...projAsc.flatMap(d => [
             createDocxTable(
               ['SL No.', 'Particulars', 'Opening Balance', 'Addition During the Year', 'Disposals During the Year', `Balance as on ${formatFyEndDateCode(d.year, company.financialYearEnd)}`, 'Rate (%)', 'Depreciation Charged During the Year', `W.D.V as on ${formatFyEndDateCode(d.year, company.financialYearEnd)}`],
@@ -4758,17 +6742,53 @@ export async function exportProjectedFinancialsWord(
                 [1, 'Property Plant & Equipment', d.schedOpeningBalance, d.schedAddition, d.schedDisposals, d.schedBalanceClosing, `${d.schedRatePct}%`, d.schedDepreciation, d.schedWDV],
                 ['', 'Total', d.schedOpeningBalance, d.schedAddition, d.schedDisposals, d.schedBalanceClosing, '', d.schedDepreciation, d.schedWDV],
               ],
-              2
+              {
+                theme: 'projected_grid',
+                font: 'Helvetica',
+                fontSizePt: 7.5,
+                headFontSizePt: 7.5,
+                colWidthsTwips: schedColsW,
+                totalWidthTwips: usableW,
+                leftColsCount: 2,
+                labelColIndex: 1,
+                boldRowLabels: new Set(['Total']),
+                doubleBottomLabels: new Set(['Total']),
+                customAligns: [
+                  AlignmentType.CENTER,
+                  AlignmentType.LEFT,
+                  AlignmentType.RIGHT,
+                  AlignmentType.RIGHT,
+                  AlignmentType.RIGHT,
+                  AlignmentType.RIGHT,
+                  AlignmentType.CENTER,
+                  AlignmentType.RIGHT,
+                  AlignmentType.RIGHT,
+                ],
+                multiHeaderRows: [
+                  [
+                    { content: 'SL No.', rowSpan: 2, align: AlignmentType.CENTER },
+                    { content: 'Particulars', rowSpan: 2, align: AlignmentType.CENTER },
+                    { content: 'Cost', colSpan: 4, align: AlignmentType.CENTER },
+                    { content: 'Rate of Dep. (%)', rowSpan: 2, align: AlignmentType.CENTER },
+                    { content: 'Depreciation Charged During the Year', rowSpan: 2, align: AlignmentType.CENTER },
+                    { content: `W.D.V as on ${formatFyEndDateCode(d.year, company.financialYearEnd)}`, rowSpan: 2, align: AlignmentType.CENTER },
+                  ],
+                  [
+                    { content: 'Opening Balance', align: AlignmentType.CENTER },
+                    { content: 'Addition During the Year', align: AlignmentType.CENTER },
+                    { content: 'Disposals During the Year', align: AlignmentType.CENTER },
+                    { content: `Balance as on ${formatFyEndDateCode(d.year, company.financialYearEnd)}`, align: AlignmentType.CENTER },
+                  ],
+                ],
+              }
             ),
-            new Paragraph({ text: '' }),
+            new Paragraph({ spacing: { after: 70 }, children: [] }),
           ]),
 
           ...(parsedSchedule && parsedSchedule.rows.length > 0
             ? [
                 new Paragraph({ children: [new PageBreak()] }),
-                new Paragraph({ text: safeCompanyName(company), heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER }),
-                new Paragraph({ children: [new TextRun({ text: 'Repayment Schedule', bold: true, size: 22 })], alignment: AlignmentType.CENTER }),
-                new Paragraph({ text: '' }),
+                ...projHeader('Repayment Schedule', safeCompanyName(company)),
                 createDocxTable(
                   ['Facility Parameter', 'Value', 'Schedule Dates', 'Date / Setting'],
                   buildRepaymentScheduleMetadataRows(parsedSchedule).map(mr => [
@@ -4777,9 +6797,22 @@ export async function exportProjectedFinancialsWord(
                     String(mr[5]),
                     String(mr[6]),
                   ]),
-                  4
+                  {
+                    theme: 'previous_grid',
+                    font: 'Helvetica',
+                    fontSizePt: 7.4,
+                    colWidthsTwips: [
+                      convertMillimetersToTwip(46),
+                      convertMillimetersToTwip(45),
+                      convertMillimetersToTwip(56),
+                      convertMillimetersToTwip(45),
+                    ],
+                    customAligns: [AlignmentType.LEFT, AlignmentType.RIGHT, AlignmentType.LEFT, AlignmentType.RIGHT],
+                    boldColIndices: [0, 2],
+                    hideHeader: true,
+                  }
                 ),
-                new Paragraph({ text: '' }),
+                new Paragraph({ spacing: { after: 60 }, children: [] }),
                 createDocxTable(
                   ['Event Type.', 'EMI Date', 'Inst. Principal', 'Inst. Profit', 'Gestation Payment', 'Over due Gest.', 'Overdue Profit', 'Balance', 'Total'],
                   [
@@ -4806,12 +6839,39 @@ export async function exportProjectedFinancialsWord(
                       parsedSchedule.grandTotalDebtService,
                     ],
                   ],
-                  2
+                  {
+                    theme: 'section76',
+                    font: 'Helvetica',
+                    fontSizePt: 6.8,
+                    headFontSizePt: 6.8,
+                    totalWidthTwips: usableW,
+                    customAligns: [
+                      AlignmentType.LEFT,
+                      AlignmentType.CENTER,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                    ],
+                    doubleBottomLabels: new Set(['Total :']),
+                  }
                 ),
                 new Paragraph({
-                  text:
-                    parsedSchedule.metadata.preparedByNote ||
-                    'Prepared By : ABABIL, Developed By : Millennium Information Solution Limited',
+                  spacing: { before: 60 },
+                  children: [
+                    new TextRun({
+                      text:
+                        parsedSchedule.metadata.preparedByNote ||
+                        'Prepared By : ABABIL, Developed By : Millennium Information Solution Limited',
+                      font: 'Helvetica',
+                      size: 15,
+                      italics: true,
+                      color: '475569',
+                    }),
+                  ],
                 }),
               ]
             : []),
@@ -4819,12 +6879,9 @@ export async function exportProjectedFinancialsWord(
           ...((debtServiceCoverage || []).some(d => d.totalDebtService > 0)
             ? [
                 new Paragraph({ children: [new PageBreak()] }),
-                new Paragraph({
-                  text: 'Debt Servicing & Rescheduling Justification (Historical vs Projected DSCR)',
-                  heading: HeadingLevel.HEADING_2,
-                }),
+                ...projHeader('Debt Servicing & Rescheduling Justification (DSCR)', formatFyProjectedAsAt(maxYear, company.financialYearEnd)),
                 createDocxTable(
-                  ['Year', 'EBITDA', 'Pre-Fin OCF', 'Inst. Principal', 'Finance Cost', 'Debt Service', 'EBITDA DSCR', 'Cash DSCR', 'Status', 'Assessment'],
+                  ['Year', 'EBITDA', 'Pre-Fin OCF', 'Inst. Principal', 'Finance Cost', 'Debt Service', 'EBITDA DSCR', 'Cash DSCR', 'Closing Cash', 'Status', 'Assessment'],
                   (debtServiceCoverage || [])
                     .filter(d => d.totalDebtService > 0)
                     .map(d => [
@@ -4836,10 +6893,30 @@ export async function exportProjectedFinancialsWord(
                       d.totalDebtService,
                       `${d.ebitdaDscr.toFixed(2)}x`,
                       `${d.cashDscr.toFixed(2)}x`,
+                      d.closingCash,
                       d.capacityStatus,
                       d.reschedulingContext || '',
                     ]),
-                  1
+                  {
+                    theme: 'section76',
+                    font: 'Helvetica',
+                    fontSizePt: 7.2,
+                    headFontSizePt: 7.2,
+                    totalWidthTwips: usableW,
+                    customAligns: [
+                      AlignmentType.LEFT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.RIGHT,
+                      AlignmentType.CENTER,
+                      AlignmentType.LEFT,
+                    ],
+                  }
                 ),
               ]
             : []),
@@ -4848,8 +6925,7 @@ export async function exportProjectedFinancialsWord(
     ],
   });
 
-  const blob = await Packer.toBlob(doc);
-  downloadBlob(blob, resolvedFilename);
+  await emitDocxDocument(doc, resolvedFilename);
 }
 
 export function exportProjectedFinancialsPdf(

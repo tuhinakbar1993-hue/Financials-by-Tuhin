@@ -94,6 +94,7 @@ export interface YearDataInput {
   shortTermBorrowings: number;
   longTermBorrowings: number;
   hasCustomLongTermBorrowings?: boolean;
+  hasCustomShortTermBorrowings?: boolean;
   shareCapital: number;
   retainedEarningsOpening?: number;
   reservesOpening?: number;
@@ -318,6 +319,7 @@ export interface ProjectionAssumptions {
   payableDays: number; // DPO e.g. 42
   dividendPayoutRatio: number; // % e.g. 30
   projectedFinancingCashFlowGrowth: number; // % e.g. -4% (deleveraging)
+  loanInterestRatePct?: number; // % p.a. default 15.50
 }
 
 export type StatementCellOverrides = Record<string, Record<number, number>>;
@@ -633,4 +635,76 @@ export interface RepaymentScheduleSnapshot {
   companyProfile: CompanyProfile;
   cellOverrides: StatementCellOverrides;
 }
+
+// ---------------- CHARTERED ACCOUNTANCY AUDIT & INSTANT RECTIFICATION TYPES ---------------- //
+export type AuditFindingSeverity = 'critical' | 'warning' | 'advisory' | 'info';
+
+export type AuditFindingCategory =
+  | 'Double-Entry & Mathematical Integrity'
+  | 'Cash Flow & Liquidity Reconciliation'
+  | 'Fixed Assets & Equity Continuity'
+  | 'Loan Rescheduling & Debt Servicing'
+  | 'Financial Proportions & Realism'
+  | 'Statutory & Case Disclosures';
+
+export type AuditRectificationActionId =
+  | 'CLEAR_BS_OVERRIDES'
+  | 'SYNC_CF_CASH_TIE'
+  | 'SYNC_EQUITY_CONTINUITY'
+  | 'SYNC_FA_ROLLFORWARD'
+  | 'CLEAR_INCOME_OVERRIDES'
+  | 'ALIGN_FINANCE_COST_TO_LOAN_RATE'
+  | 'RESTORE_SCHEDULE_LOCK'
+  | 'ZERO_FIRST_PROJ_LOAN_PROCEEDS'
+  | 'RECALIBRATE_UNIFORM_RATIOS'
+  | 'PRUNE_EXCESSIVE_DIVIDEND_DRAIN'
+  | 'NORMALIZE_ZERO_COGS_OR_WC';
+
+export interface CharteredAuditFinding {
+  id: string;
+  year?: number;
+  severity: AuditFindingSeverity;
+  category: AuditFindingCategory;
+  standardRef: string; // e.g. "IAS 1 / IAS 7", "BRPD Loan Rescheduling Norm"
+  title: string;
+  description: string;
+  impactSummary: string;
+  currentValue?: string;
+  expectedValue?: string;
+  isAutoRectifiable: boolean;
+  requiresManualVerification: boolean;
+  manualGuidance?: string;
+  rectificationAction?: AuditRectificationActionId;
+  rectificationPreview?: string;
+}
+
+export interface CharteredAuditPassedCheck {
+  id: string;
+  category: AuditFindingCategory;
+  standardRef: string;
+  label: string;
+  detail: string;
+}
+
+export interface CharteredAuditReport {
+  auditedAt: string;
+  auditedYearsCount: number;
+  overallOpinion: 'UNQUALIFIED_CLEAN' | 'QUALIFIED_ACTION_REQUIRED' | 'ADVERSE_MATHEMATICAL_ERROR';
+  autoRectifiableCount: number;
+  manualVerificationCount: number;
+  criticalCount: number;
+  warningCount: number;
+  findings: CharteredAuditFinding[];
+  passedChecks: CharteredAuditPassedCheck[];
+}
+
+export interface InstantRectificationSnapshot {
+  capturedAt: string;
+  appliedFindingIds: string[];
+  historicalYearsStore: Record<number, YearDataInput>;
+  customProjectedOverrides: Record<number, YearDataInput>;
+  assumptions: ProjectionAssumptions;
+  cellOverrides: StatementCellOverrides;
+}
+
 

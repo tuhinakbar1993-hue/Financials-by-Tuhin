@@ -1029,8 +1029,350 @@ for (const { filename, wb } of capturedWorkbooks) {
   assert(hasScheduleSheet, `Export ${filename} must include Repayment Schedule worksheet`);
 }
 
+// ============================================================================
+// 9. CHARTERED ACCOUNTANCY LOAN RESCHEDULING, AUDIT ENGINE & PDF-PARITY EXPORTS
+// ============================================================================
+
+// (A) Editable Loan Interest Rate (15.50% default + cascading recalculation)
+assert.equal(
+  engine.DEFAULT_PROJECTION_ASSUMPTIONS.loanInterestRatePct,
+  15.5,
+  'Default loanInterestRatePct must be 15.50%'
+);
+
+const rateSampleIdx = baseline.allInputs.findIndex(y => y.year === 2024);
+const rateLowYear = engine.recalculateYearOnLoanOrRateChange(
+  baseline.allInputs[rateSampleIdx],
+  baseline.allInputs[rateSampleIdx - 1],
+  { ...engine.DEFAULT_PROJECTION_ASSUMPTIONS, loanInterestRatePct: 12.5 },
+  { loanRateOverridePct: 12.5, recalculateFinanceCostFromDebt: true }
+);
+const rateHighYear = engine.recalculateYearOnLoanOrRateChange(
+  baseline.allInputs[rateSampleIdx],
+  baseline.allInputs[rateSampleIdx - 1],
+  { ...engine.DEFAULT_PROJECTION_ASSUMPTIONS, loanInterestRatePct: 18.0 },
+  { loanRateOverridePct: 18.0, recalculateFinanceCostFromDebt: true }
+);
+assert(
+  rateHighYear.financeCost > rateLowYear.financeCost,
+  `Higher loan interest rate (18%) must increase Finance Cost (${rateHighYear.financeCost}) vs 12.5% (${rateLowYear.financeCost})`
+);
+assert.equal(
+  rateHighYear.operatingExpenses,
+  rateLowYear.operatingExpenses,
+  'Operating Expenses must remain preserved when loan interest rate changes'
+);
+
+const rateHighInputs = baseline.allInputs.map((y, idx) =>
+  idx === rateSampleIdx ? rateHighYear : y
+);
+const rateFa = engine.calculateScheduleOfFixedAssets(rateHighInputs);
+const rateInc = engine.calculateIncomeStatement(rateHighInputs, rateFa);
+const rateCf = engine.calculateCashFlowStatement(rateHighInputs, rateInc, rateFa);
+const rateEq = engine.calculateEquityStatement(rateHighInputs, rateInc);
+const rateBs = engine.calculateBalanceSheet(rateHighInputs, rateEq, rateFa, rateCf, undefined, rateInc);
+rateBs.forEach(b =>
+  assert(Math.abs(b.balanceCheck) < 0.05, `Loan-rate-recalculated BS unbalanced in ${b.year}: ${b.balanceCheck}`)
+);
+rateCf.forEach(c =>
+  assert.equal(c.reconciliationStatus, 'RECONCILED', `Loan-rate-recalculated CF unreconciled in ${c.year}`)
+);
+
+// (B) Editable Historical & Projected Short-Term + Long-Term Borrowings Propagation
+const debtModifiedInputs = baseline.allInputs.map((y, idx) => {
+  if (y.year === 2024) {
+    return engine.deriveDependentFinancials(
+      y,
+      idx > 0 ? baseline.allInputs[idx - 1] : null,
+      engine.DEFAULT_PROJECTION_ASSUMPTIONS,
+      {
+        ...y,
+        shortTermBorrowings: 456789,
+        hasCustomShortTermBorrowings: true,
+        longTermBorrowings: 2345678,
+        hasCustomLongTermBorrowings: true,
+      }
+    );
+  }
+  if (y.year === 2027) {
+    return engine.deriveDependentFinancials(
+      y,
+      baseline.allInputs[idx - 1],
+      engine.DEFAULT_PROJECTION_ASSUMPTIONS,
+      {
+        ...y,
+        shortTermBorrowings: 321000,
+        hasCustomShortTermBorrowings: true,
+        longTermBorrowings: 1650000,
+        hasCustomLongTermBorrowings: true,
+      }
+    );
+  }
+  return y;
+});
+const dmFa = engine.calculateScheduleOfFixedAssets(debtModifiedInputs);
+const dmInc = engine.calculateIncomeStatement(debtModifiedInputs, dmFa);
+const dmCf = engine.calculateCashFlowStatement(debtModifiedInputs, dmInc, dmFa);
+const dmEq = engine.calculateEquityStatement(debtModifiedInputs, dmInc);
+const dmBs = engine.calculateBalanceSheet(debtModifiedInputs, dmEq, dmFa, dmCf, undefined, dmInc);
+const dmProj = engine.buildProjectedFormatData(debtModifiedInputs, dmInc, dmBs, dmCf, dmEq, dmFa);
+const dmQuantNotes = engine.buildProjectedQuantNoteRows(dmProj);
+
+assert.equal(dmBs.find(b => b.year === 2024)!.shortTermBorrowings, 456789, '2024 Short-Term Borrowings must match custom edit');
+assert.equal(dmBs.find(b => b.year === 2024)!.longTermBorrowings, 2345678, '2024 Long-Term Borrowings must match custom edit');
+assert.equal(dmProj.find(p => p.year === 2027)!.shortTermLoan, 321000, 'Projected 2027 shortTermLoan must match custom edit');
+assert.equal(dmProj.find(p => p.year === 2027)!.longTermLoan, 1650000, 'Projected 2027 longTermLoan must match custom edit');
+const idx2027Proj = dmProj.findIndex(p => p.year === 2027);
+assert.equal(dmQuantNotes.find(r => r.noteNo === '7.00')!.values[idx2027Proj], 1650000, 'Quant Note 7.00 must reflect edited LT loan');
+assert.equal(
+  dmQuantNotes.find(r => r.configId === 'bs_shortTermBorrowings' && !r.isSectionHeader)!.values[idx2027Proj],
+  321000,
+  'Quant Note 10.00 Bank Loan row must reflect edited ST loan'
+);
+dmBs.forEach(b => assert(Math.abs(b.balanceCheck) < 0.05, `ST+LT-edited BS unbalanced in ${b.year}: ${b.balanceCheck}`));
+dmCf.forEach(c => assert.equal(c.reconciliationStatus, 'RECONCILED', `ST+LT-edited CF unreconciled in ${c.year}`));
+
+// (C) Exclusive statementConfig Calculation (deselecting cf_finance_paid & inc_interestIncome keeps BS balanced; deselecting bs_otherCurrentAssets zeros it cleanly)
+const exclusiveIncCfConfig: StatementConfigItem[] = engine.DEFAULT_STATEMENT_CONFIG_ITEMS.map(item =>
+  item.id === 'cf_finance_paid' || item.id === 'inc_interestIncome'
+    ? { ...item, isVisible: false }
+    : item
+);
+const exclIncCfRes = runPipeline(exclusiveIncCfConfig);
+exclIncCfRes.inc.forEach(i => {
+  assert.equal(i.interestIncome, 0, `Deselected inc_interestIncome must be 0 in ${i.year}`);
+});
+exclIncCfRes.bs.forEach(b => {
+  assert(Math.abs(b.balanceCheck) < 0.05, `Exclusive Inc/CF-config BS unbalanced in ${b.year}: ${b.balanceCheck}`);
+});
+exclIncCfRes.cf.forEach(c => {
+  assert.equal(c.financeCostPaid, 0, `Deselected cf_finance_paid must be 0 in ${c.year}`);
+  if (c.year === 2023) {
+    assert.equal(c.reconciliationStatus, 'VARIANCE_IDENTIFIED', 'Year 1 CF must transparently flag variance when CF line hidden');
+  } else {
+    assert.equal(c.reconciliationStatus, 'RECONCILED', `Exclusive Inc/CF-config CF unreconciled in ${c.year}`);
+  }
+});
+
+const exclusiveBsConfig: StatementConfigItem[] = engine.DEFAULT_STATEMENT_CONFIG_ITEMS.map(item =>
+  item.id === 'bs_otherCurrentAssets' ? { ...item, isVisible: false } : item
+);
+const exclBsRes = runPipeline(exclusiveBsConfig);
+exclBsRes.bs.forEach((b, idx) => {
+  const baseOtherCA = baseline.bs[idx].otherCurrentAssets;
+  assert.equal(b.otherCurrentAssets, 0, `Deselected bs_otherCurrentAssets must be 0 in ${b.year}`);
+  assert(
+    Math.abs(b.balanceCheck + baseOtherCA) < 0.05,
+    `Deselecting bs_otherCurrentAssets in ${b.year} must reflect exact hidden difference (-${baseOtherCA}), got ${b.balanceCheck}`
+  );
+});
+exclBsRes.cf.forEach(c => {
+  if (c.year === 2023) {
+    assert.equal(c.reconciliationStatus, 'VARIANCE_IDENTIFIED', 'Year 1 CF must transparently flag variance when BS working capital line hidden');
+  } else {
+    assert.equal(c.reconciliationStatus, 'RECONCILED', `Exclusive BS-config CF unreconciled in ${c.year}`);
+  }
+});
+
+// (D) Chartered Accountancy Audit & Instant Rectification Engine
+const auditMod = await import('./src/services/charteredAuditEngine');
+const cleanAbabilAudit = auditMod.runComprehensiveCharteredAudit({
+  inputs: ababilOrdered,
+  incomeStatements: abInc,
+  balanceSheets: abBs,
+  cashFlowStatements: abCf,
+  equityStatements: abEq,
+  fixedAssetsSchedule: abFa,
+  debtServiceCoverage: abDscr,
+  assumptions: ababilResult.assumptions,
+  companyProfile: engine.INITIAL_COMPANY_PROFILE,
+  cellOverrides: {},
+  statementConfig: engine.DEFAULT_STATEMENT_CONFIG_ITEMS,
+  parsedSchedule: ababilSched,
+  isScheduleImplemented: true,
+});
+assert.equal(
+  cleanAbabilAudit.criticalCount,
+  0,
+  `Integrated ABABIL baseline must have 0 critical audit errors (found ${cleanAbabilAudit.criticalCount}: ${cleanAbabilAudit.findings.filter(f => f.severity === 'critical').map(f => f.title).join('; ')})`
+);
+
+// Inject synthetic errors: BS override variance + CF cash mismatch + Year 1 new loan proceeds
+const brokenInputs = ababilOrdered.map((y, idx) => {
+  if (idx === 3 && y.isProjected) {
+    return {
+      ...y,
+      financingProceedsBorrowings: 500000,
+      cashFlowFromFinancing: (y.cashFlowFromFinancing || 0) + 500000,
+    };
+  }
+  return y;
+});
+const brokenOverrides: StatementCellOverrides = {
+  bs_tradeReceivables: { 2024: abBs.find(b => b.year === 2024)!.tradeReceivables + 95000 },
+  bs_cashAndEquivalents: { 2025: abBs.find(b => b.year === 2025)!.cashAndEquivalents + 42000 },
+};
+const brokenOpts = { statementConfig: engine.DEFAULT_STATEMENT_CONFIG_ITEMS, cellOverrides: brokenOverrides };
+const brFa = engine.calculateScheduleOfFixedAssets(brokenInputs, brokenOpts);
+const brInc = engine.calculateIncomeStatement(brokenInputs, brFa, brokenOpts);
+const brCf = engine.calculateCashFlowStatement(brokenInputs, brInc, brFa, brokenOpts);
+const brEq = engine.calculateEquityStatement(brokenInputs, brInc, brokenOpts);
+const brBs = engine.calculateBalanceSheet(brokenInputs, brEq, brFa, brCf, brokenOpts, brInc);
+const brDscr = engine.calculateDebtServiceCoverage(brokenInputs, brInc, brBs, brCf, ababilSched, brokenOpts);
+
+const preRectAudit = auditMod.runComprehensiveCharteredAudit({
+  inputs: brokenInputs,
+  incomeStatements: brInc,
+  balanceSheets: brBs,
+  cashFlowStatements: brCf,
+  equityStatements: brEq,
+  fixedAssetsSchedule: brFa,
+  debtServiceCoverage: brDscr,
+  assumptions: ababilResult.assumptions,
+  companyProfile: engine.INITIAL_COMPANY_PROFILE,
+  cellOverrides: brokenOverrides,
+  statementConfig: engine.DEFAULT_STATEMENT_CONFIG_ITEMS,
+  parsedSchedule: ababilSched,
+  isScheduleImplemented: true,
+});
+assert(preRectAudit.criticalCount > 0, 'Audit must detect injected BS/CF critical discrepancies');
+assert(preRectAudit.autoRectifiableCount > 0, 'Audit must classify injected discrepancies as auto-rectifiable');
+
+const rectified = auditMod.applyInstantAuditRectifications({
+  allYearsInputs: brokenInputs,
+  historicalYearsStore: Object.fromEntries(brokenInputs.filter(y => !y.isProjected).map(y => [y.year, y])),
+  customProjectedOverrides: Object.fromEntries(brokenInputs.filter(y => y.isProjected).map(y => [y.year, y])),
+  assumptions: ababilResult.assumptions,
+  cellOverrides: brokenOverrides,
+  statementConfig: engine.DEFAULT_STATEMENT_CONFIG_ITEMS,
+  companyProfile: engine.INITIAL_COMPANY_PROFILE,
+  parsedSchedule: ababilSched,
+  isScheduleImplemented: true,
+});
+assert(rectified.appliedFindingIds.length > 0, 'Instant Rectification must apply fixes');
+assert.equal(
+  rectified.postAuditReport.criticalCount,
+  0,
+  `Post-rectification criticalCount must drop to 0 (got ${rectified.postAuditReport.criticalCount}: ${rectified.postAuditReport.findings.filter(f => f.severity === 'critical').map(f => `${f.id}:${f.title}`).join('; ')})`
+);
+assert.equal(
+  rectified.postAuditReport.autoRectifiableCount,
+  0,
+  `Post-rectification autoRectifiableCount must drop to 0 (got ${rectified.postAuditReport.autoRectifiableCount}: ${rectified.postAuditReport.findings.filter(f => f.isAutoRectifiable).map(f => `${f.id}:${f.title}`).join('; ')})`
+);
+
+// (E) PDF-Parity Excel Styling, Print Setup, Real Styled .xlsx Binary Write & Word .docx Exports
+const xlsxStyleMod = require('xlsx-js-style') as {
+  write: (wb: XlsxType.WorkBook, opts: { type: 'buffer'; bookType: 'xlsx' }) => Buffer;
+};
+
+capturedWorkbooks.length = 0;
+exportsMod.exportCompletePackageExcel(
+  engine.INITIAL_COMPANY_PROFILE,
+  abInc,
+  abBs,
+  abCf,
+  abEq,
+  abFa,
+  abNotes,
+  'parity_complete.xlsx',
+  abDscr,
+  undefined,
+  ababilSched
+);
+exportsMod.exportPreviousFinancialsExcel(
+  engine.INITIAL_COMPANY_PROFILE,
+  baseline.prev.slice(0, 2),
+  baseline.notes
+);
+exportsMod.exportProjectedFinancialsExcel(
+  engine.INITIAL_COMPANY_PROFILE,
+  abProj,
+  undefined,
+  undefined,
+  ababilSched,
+  abDscr
+);
+exportsMod.exportRepaymentScheduleExcel(engine.INITIAL_COMPANY_PROFILE, ababilSched, abDscr);
+
+assert.equal(capturedWorkbooks.length, 4, 'Expected 4 parity Excel workbooks captured');
+for (const { filename, wb } of capturedWorkbooks) {
+  validateFormulaCells(wb);
+  const binBuf = xlsxStyleMod.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  assert(Buffer.isBuffer(binBuf) && binBuf.length > 5000, `Styled .xlsx binary export failed/too small for ${filename}`);
+
+  // Every worksheet must carry A4 pageSetup & margins matching PDF layout
+  for (const sName of wb.SheetNames) {
+    const ws = wb.Sheets[sName] as any;
+    assert.equal(ws['!pageSetup']?.paperSize, 9, `${filename}!${sName} must target A4 paperSize (9)`);
+    assert(ws['!margins'] && typeof ws['!margins'].top === 'number', `${filename}!${sName} must declare !margins`);
+  }
+}
+
+// Verify Section 76 Cover sheet, Helvetica font & navy banner fill
+const compWb = capturedWorkbooks[0].wb;
+assert(compWb.SheetNames[0].includes('Cover'), `Section 76 workbook must start with Cover sheet, got ${compWb.SheetNames[0]}`);
+const incWs = compWb.Sheets['1. Income Statement'] as any;
+assert(
+  String(incWs['A1']?.s?.fill?.fgColor?.rgb || '').toUpperCase().endsWith('0F172A'),
+  `Section 76 banner row must have PDF navy fill #0F172A, got ${incWs['A1']?.s?.fill?.fgColor?.rgb}`
+);
+assert.equal(incWs['A1']?.s?.font?.name, 'Helvetica', 'Section 76 must use Helvetica font matching PDF');
+
+// Verify Previous Format uses Times New Roman matching PDF
+const prevWb = capturedWorkbooks[1].wb;
+const prevBsWs = prevWb.Sheets['1. Financial Position'] as any;
+assert.equal(prevBsWs['A1']?.s?.font?.name, 'Times New Roman', 'Previous Format must use Times New Roman matching PDF');
+
+// Verify Projected Format Landscape A4 + Schedule-A multi-row Cost merge
+const projWb = capturedWorkbooks[2].wb;
+const projBsWs = projWb.Sheets['1. Financial Position'] as any;
+assert.equal(projBsWs['!pageSetup']?.orientation, 'landscape', 'Projected Format BS must use Landscape orientation matching PDF');
+assert.equal(projBsWs['A1']?.s?.font?.name, 'Helvetica', 'Projected Format must use Helvetica matching PDF');
+const projSchedAWs = projWb.Sheets['5. Schedule-A PPE'] as any;
+assert(
+  (projSchedAWs['!merges'] || []).some((m: XlsxType.Range) => m.s.c === 2 && m.e.c === 5),
+  'Projected Schedule A must include merged Cost group header spanning C..F'
+);
+
+// Verify all 4 Word (.docx) PDF-parity exports generate real binary .docx documents cleanly
+exportsMod.clearCapturedDocxExportsForTest();
+await exportsMod.exportCompletePackageWord(
+  engine.INITIAL_COMPANY_PROFILE,
+  abInc,
+  abBs,
+  abCf,
+  abEq,
+  abFa,
+  abNotes,
+  'parity_complete.docx',
+  abDscr,
+  undefined,
+  ababilSched
+);
+await exportsMod.exportPreviousFinancialsWord(
+  engine.INITIAL_COMPANY_PROFILE,
+  baseline.prev.slice(0, 2),
+  baseline.notes
+);
+await exportsMod.exportProjectedFinancialsWord(
+  engine.INITIAL_COMPANY_PROFILE,
+  abProj,
+  undefined,
+  undefined,
+  ababilSched,
+  abDscr
+);
+await exportsMod.exportRepaymentScheduleWord(engine.INITIAL_COMPANY_PROFILE, ababilSched, abDscr);
+
+const capturedDocx = exportsMod.getCapturedDocxExportsForTest();
+assert.equal(capturedDocx.length, 4, `Expected 4 captured Word .docx exports, got ${capturedDocx.length}`);
+for (const docItem of capturedDocx) {
+  assert(docItem.size > 5000, `Word .docx export ${docItem.filename} produced suspiciously small buffer (${docItem.size} bytes)`);
+}
+
 xlsxCjs.writeFile = origWriteFile;
-console.log('ALL VERIFICATION CHECKS PASSED! Workbooks validated:', capturedWorkbooks.map(c => c.filename));
+console.log('ALL VERIFICATION CHECKS PASSED! Workbooks:', capturedWorkbooks.map(c => c.filename), 'Docx:', capturedDocx.map(d => `${d.filename}(${d.size}B)`));
 
 
 

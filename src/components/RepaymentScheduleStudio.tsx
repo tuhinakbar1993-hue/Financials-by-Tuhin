@@ -55,6 +55,8 @@ interface RepaymentScheduleStudioProps {
     alignHistoricalScale: boolean;
   }) => void;
   onRevertScheduleSnapshot: () => void;
+  defaultInterestRatePct?: number;
+  existingTotalDebtForRescheduling?: number;
 }
 
 function fmtAmt(val: number): string {
@@ -82,6 +84,8 @@ export const RepaymentScheduleStudio: React.FC<RepaymentScheduleStudioProps> = (
   debtServiceCoverage,
   onImplementRepaymentSchedule,
   onRevertScheduleSnapshot,
+  defaultInterestRatePct = 15.5,
+  existingTotalDebtForRescheduling = 0,
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [isParsing, setIsParsing] = useState(false);
@@ -95,7 +99,7 @@ export const RepaymentScheduleStudio: React.FC<RepaymentScheduleStudioProps> = (
   const [alignHistoricalScale, setAlignHistoricalScale] = useState(true);
 
   const [genPrincipal, setGenPrincipal] = useState('2430778.97');
-  const [genRatePct, setGenRatePct] = useState('15.5');
+  const [genRatePct, setGenRatePct] = useState(defaultInterestRatePct.toFixed(2));
   const [genInstallments, setGenInstallments] = useState('60');
   const [genInterval, setGenInterval] = useState<'Monthly' | 'Quarterly' | 'Half-Yearly' | 'Yearly'>('Monthly');
   const [genDisbDate, setGenDisbDate] = useState('01/01/2027');
@@ -452,9 +456,23 @@ export const RepaymentScheduleStudio: React.FC<RepaymentScheduleStudioProps> = (
             <span className="font-bold text-emerald-950">
               Generate Automated Amortization Schedule (Exact 9-Column Uploaded Format)
             </span>
-            <span className="text-[11px] text-emerald-800">
-              Computes exact installments, running Balance, and zero closing balance
-            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              {existingTotalDebtForRescheduling > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setGenPrincipal(String(existingTotalDebtForRescheduling));
+                    setGenRatePct(defaultInterestRatePct.toFixed(2));
+                  }}
+                  className="px-2.5 py-1 rounded-md bg-white hover:bg-amber-50 border border-amber-300 text-amber-900 font-semibold text-[11px] transition-colors"
+                >
+                  Load Existing Loans ({companyProfile.reportingCurrency} {fmtAmt(existingTotalDebtForRescheduling)}) @ {defaultInterestRatePct.toFixed(2)}%
+                </button>
+              )}
+              <span className="text-[11px] text-emerald-800">
+                Computes exact installments, running Balance, and zero closing balance
+              </span>
+            </div>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2.5">
             <label className="flex flex-col gap-1">

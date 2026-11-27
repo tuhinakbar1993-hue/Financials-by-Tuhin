@@ -77,6 +77,7 @@ interface FinancialDataEntryProps {
   onUnlockScheduleYear?: (year: number) => void;
   initialShowScheduleStudio?: boolean;
   onChangeFinancialYearEnd?: (fyEnd: FinancialYearEndOption) => void;
+  onApplyLoanRateToNonLockedYears?: (ratePct: number) => void;
   caseResetKey?: number;
 }
 
@@ -86,6 +87,7 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
   companyProfile,
   assumptions,
   onUpdateAssumptions,
+  onApplyLoanRateToNonLockedYears,
   inputMode,
   onToggleInputMode,
   onGenerateAutomaticProjections,
@@ -533,6 +535,12 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
           isScheduleImplemented={isScheduleImplemented}
           lastImplementationResult={lastImplementationResult}
           debtServiceCoverage={debtServiceCoverage}
+          defaultInterestRatePct={assumptions.loanInterestRatePct ?? 15.5}
+          existingTotalDebtForRescheduling={(() => {
+            const histOnly = yearsData.filter(y => !y.isProjected);
+            const latestHist = histOnly[histOnly.length - 1];
+            return latestHist ? Math.round((latestHist.longTermBorrowings + latestHist.shortTermBorrowings) * 100) / 100 : 0;
+          })()}
           onImplementRepaymentSchedule={(opts) => {
             onImplementRepaymentSchedule(opts);
             setActiveNotification(
@@ -837,6 +845,78 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
       {/* Main View: Multi-Year Grid vs Single-Year Inspector */}
       {viewMode === 'grid' ? (
         <div className="space-y-6">
+          {/* Loan Rescheduling Interest Rate & Existing Debt Strip */}
+          <div className="bg-amber-50/75 backdrop-blur-md border border-amber-200/90 rounded-2xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4 shadow-xs text-xs">
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-bold text-slate-900">
+                  Loan Rescheduling Proposal Controls
+                </span>
+                <span className="text-[10px] font-semibold bg-amber-100 text-amber-900 border border-amber-300 px-2 py-0.5 rounded-md">
+                  Existing Loans &amp; Rate
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-600">
+                Enter previous years&apos; existing Long-Term &amp; Short-Term Borrowings below and calibrate the Loan Interest Rate (% p.a., default 15.50%). All dependent Finance Cost, Tax, Net Profit, DSCR, and projections update automatically.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3 shrink-0">
+              {(() => {
+                const histOnly = yearsData.filter(y => !y.isProjected);
+                const latestHist = histOnly[histOnly.length - 1];
+                const existingDebt = latestHist ? latestHist.longTermBorrowings + latestHist.shortTermBorrowings : 0;
+                return (
+                  <div className="bg-white/90 border border-amber-200 rounded-xl px-3 py-1.5">
+                    <span className="text-[10px] text-slate-500 block">
+                      Latest Pre-Rescheduling Debt ({latestHist?.year ?? 'Hist'})
+                    </span>
+                    <span className="font-mono font-bold text-slate-900 tabular-nums">
+                      {companyProfile.reportingCurrency} {existingDebt.toLocaleString()}
+                    </span>
+                  </div>
+                );
+              })()}
+
+              <div className="flex items-center gap-1.5 bg-white border border-amber-300 rounded-xl px-2.5 py-1.5">
+                <label className="text-[11px] font-semibold text-slate-700 whitespace-nowrap">
+                  Loan Interest Rate (%):
+                </label>
+                <input
+                  type="number"
+                  step="0.05"
+                  min={0}
+                  max={45}
+                  value={assumptions.loanInterestRatePct ?? 15.5}
+                  onChange={(e) =>
+                    onUpdateAssumptions({
+                      ...assumptions,
+                      loanInterestRatePct: Math.max(0, Number(e.target.value) || 0),
+                    })
+                  }
+                  aria-label="Loan Interest Rate (% p.a.)"
+                  className="w-20 bg-amber-50/70 border border-amber-300 rounded-lg px-2 py-1 text-right font-mono font-bold text-amber-950 tabular-nums focus:outline-none focus:ring-1 focus:ring-amber-500"
+                />
+              </div>
+
+              {onApplyLoanRateToNonLockedYears && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const rate = assumptions.loanInterestRatePct ?? 15.5;
+                    onApplyLoanRateToNonLockedYears(rate);
+                    setActiveNotification(
+                      `Re-priced all non-schedule-locked loans & projections at ${rate.toFixed(2)}% p.a. and updated Net Profit, Tax, Cash Flow, and DSCR.`
+                    );
+                  }}
+                  className="px-3 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold shadow-xs transition-colors whitespace-nowrap"
+                >
+                  Apply {(assumptions.loanInterestRatePct ?? 15.5).toFixed(2)}% to Debt
+                </button>
+              )}
+            </div>
+          </div>
+
           {/* Section 1: The Six Primary Financial Input Drivers Table */}
           <div className="bg-white/92 backdrop-blur-md border border-slate-200/90 rounded-2xl overflow-hidden shadow-sm">
             <div className="p-4 bg-slate-100/80 border-b border-slate-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
@@ -1098,6 +1178,92 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
                               </span>
                             </div>
                           </div>
+                        </td>
+                      );
+                    })}
+                  </tr>
+
+                  {/* Dedicated Separate Year-Wise Editable Input: Short-Term Borrowings */}
+                  <tr className="bg-amber-50/30 hover:bg-amber-50/65 transition-colors border-t border-amber-200/70">
+                    <td className="py-3.5 px-4 font-sans sticky left-0 bg-amber-50/95 z-10 border-r border-amber-200/90 align-top">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-bold text-slate-900 text-xs">
+                              Short-Term Borrowings
+                            </span>
+                            <span className="text-[9px] font-semibold bg-amber-100 text-amber-800 border border-amber-300 px-1.5 py-0.5 rounded">
+                              Reschedulable STL / CC
+                            </span>
+                          </div>
+                          <span className="text-[11px] text-slate-600 block mt-0.5 leading-snug">
+                            Working capital / overdraft facility balance included in existing reschedulable debt &amp; interest estimation.
+                          </span>
+                        </div>
+                      </div>
+                    </td>
+
+                    {yearsData.map(y => {
+                      const rawSt = y.shortTermBorrowings ?? 0;
+                      const isCustomSt = Boolean(y.hasCustomShortTermBorrowings);
+                      return (
+                        <td
+                          key={`stb-${y.year}`}
+                          className={`py-2.5 px-3 text-right align-top border-l border-amber-200/60 ${
+                            isCustomSt ? 'bg-amber-100/45' : ''
+                          }`}
+                        >
+                          <div className="space-y-1">
+                            <div className="relative">
+                              <input
+                                type="number"
+                                step="any"
+                                min={0}
+                                value={rawSt}
+                                onChange={(e) => {
+                                  const nextVal = Math.max(0, Number(e.target.value) || 0);
+                                  onUpdatePrimaryDriver(y.year, 'shortTermBorrowings', nextVal);
+                                }}
+                                aria-label={`Short-Term Borrowings ${y.year}`}
+                                className={`w-full text-right rounded-lg px-2.5 py-1.5 font-mono text-xs tabular-nums transition-all ${
+                                  isCustomSt
+                                    ? 'bg-white border-2 border-amber-500 text-amber-950 font-bold shadow-xs focus:outline-none focus:ring-1 focus:ring-amber-500'
+                                    : 'bg-white border border-slate-300 hover:border-amber-400 focus:border-amber-600 focus:ring-1 focus:ring-amber-500 text-slate-900 font-semibold'
+                                }`}
+                              />
+                              <span
+                                className={`absolute -top-1.5 right-1.5 text-[8px] px-1 rounded pointer-events-none font-semibold border ${
+                                  isCustomSt
+                                    ? 'bg-amber-100 text-amber-900 border-amber-300'
+                                    : 'bg-slate-100 text-slate-700 border-slate-300'
+                                }`}
+                              >
+                                {isCustomSt ? 'Custom' : 'Editable'}
+                              </span>
+                            </div>
+                          </div>
+                        </td>
+                      );
+                    })}
+                  </tr>
+
+                  {/* Summary Row: Total Existing Loans Intended for Rescheduling (LT + ST) */}
+                  <tr className="bg-slate-100/90 border-t border-slate-200 text-[11px]">
+                    <td className="py-2.5 px-4 font-sans sticky left-0 bg-slate-100 z-10 border-r border-slate-200">
+                      <span className="font-bold text-slate-900 block">
+                        Total Loan Portfolio (LT + ST)
+                      </span>
+                      <span className="text-[10px] text-slate-500">
+                        Combined debt servicing base @ {(assumptions.loanInterestRatePct ?? 15.5).toFixed(2)}% p.a.
+                      </span>
+                    </td>
+                    {yearsData.map(y => {
+                      const totDebt = Math.round((y.longTermBorrowings + y.shortTermBorrowings) * 100) / 100;
+                      const effPct = totDebt > 0 ? ((y.financeCost / totDebt) * 100).toFixed(1) : '0.0';
+                      return (
+                        <td key={`totd-${y.year}`} className="py-2.5 px-3 text-right font-mono tabular-nums border-l border-slate-200">
+                          <span className="font-bold text-slate-900 block">{totDebt.toLocaleString()}</span>
+                          <span className="text-[9.5px] text-slate-500">Eff. {effPct}%</span>
                         </td>
                       );
                     })}
@@ -1755,41 +1921,96 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
             })}
           </div>
 
-          {/* Dedicated Separate Year-Wise Card: Long-Term Borrowings */}
-          <div className="bg-amber-50/70 backdrop-blur-md border border-amber-300/90 rounded-2xl p-5 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div className="space-y-1 max-w-2xl">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-bold text-slate-900">Long-Term Borrowings ({currentYearData.year})</span>
-                <span className="text-[10px] font-semibold bg-amber-100 text-amber-900 border border-amber-300 px-2 py-0.5 rounded-md">
-                  Year-Wise User Input
-                </span>
-                {currentYearData.hasCustomLongTermBorrowings && (
-                  <span className="text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 px-2 py-0.5 rounded-md">
-                    Custom Entered
+          {/* Dedicated Separate Year-Wise Card: Existing Reschedulable Borrowings & Loan Rate */}
+          <div className="bg-amber-50/70 backdrop-blur-md border border-amber-300/90 rounded-2xl p-5 shadow-xs space-y-4">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 border-b border-amber-200/80 pb-3">
+              <div className="space-y-1 max-w-2xl">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-bold text-slate-900">
+                    Existing Borrowings &amp; Rescheduling Debt Profile ({currentYearData.year})
                   </span>
-                )}
+                  <span className="text-[10px] font-semibold bg-amber-100 text-amber-900 border border-amber-300 px-2 py-0.5 rounded-md">
+                    Year-Wise User Input
+                  </span>
+                  {(currentYearData.hasCustomLongTermBorrowings || currentYearData.hasCustomShortTermBorrowings) && (
+                    <span className="text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 px-2 py-0.5 rounded-md">
+                      Custom Entered
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-slate-600">
+                  Edit Long-Term and Short-Term Borrowings independently for any previous or projected year. Edits automatically update Finance Cost (@ {(assumptions.loanInterestRatePct ?? 15.5).toFixed(2)}%), Tax, Net Profit, Balance Sheet, Notes, Ratios, and Debt Service Coverage.
+                </p>
               </div>
-              <p className="text-[11px] text-slate-600">
-                Edit Long-Term Borrowings independently for each financial year. Updates automatically synchronize with Statement of Financial Position, Notes (Note 10 / 7.00), Debt-to-Equity &amp; Leverage Ratios, and all Excel/Word/PDF exports.
-              </p>
+              <div className="bg-white/90 border border-amber-200 rounded-xl px-3.5 py-2 text-right shrink-0">
+                <span className="text-[10px] text-slate-500 block">Combined Debt (LT + ST)</span>
+                <span className="font-mono text-sm font-bold text-slate-900 tabular-nums">
+                  {companyProfile.reportingCurrency}{' '}
+                  {((currentYearData.longTermBorrowings ?? 0) + (currentYearData.shortTermBorrowings ?? 0)).toLocaleString()}
+                </span>
+              </div>
             </div>
-            <div className="w-full md:w-64 space-y-1">
-              <label className="text-[11px] text-slate-700 font-medium flex items-center justify-between">
-                <span>Input Value ({companyProfile.reportingCurrency})</span>
-                <span className="text-[10px] font-mono text-amber-800 font-semibold">Direct Editable</span>
-              </label>
-              <input
-                type="number"
-                step="any"
-                min={0}
-                value={currentYearData.longTermBorrowings ?? 0}
-                onChange={(e) => {
-                  const nextVal = Math.max(0, Number(e.target.value) || 0);
-                  handleDriverChange(currentYearData.year, 'longTermBorrowings', nextVal);
-                }}
-                aria-label={`Long-Term Borrowings Inspector ${currentYearData.year}`}
-                className="w-full text-base font-bold rounded-xl px-3.5 py-2 font-mono tabular-nums bg-white border-2 border-amber-400 focus:border-amber-600 focus:ring-1 focus:ring-amber-500 text-slate-900"
-              />
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="space-y-1">
+                <label className="text-[11px] text-slate-700 font-medium flex items-center justify-between">
+                  <span>Long-Term Borrowings ({companyProfile.reportingCurrency})</span>
+                  <span className="text-[10px] font-mono text-amber-800 font-semibold">Term Loan</span>
+                </label>
+                <input
+                  type="number"
+                  step="any"
+                  min={0}
+                  value={currentYearData.longTermBorrowings ?? 0}
+                  onChange={(e) => {
+                    const nextVal = Math.max(0, Number(e.target.value) || 0);
+                    handleDriverChange(currentYearData.year, 'longTermBorrowings', nextVal);
+                  }}
+                  aria-label={`Long-Term Borrowings Inspector ${currentYearData.year}`}
+                  className="w-full text-sm font-bold rounded-xl px-3.5 py-2 font-mono tabular-nums bg-white border-2 border-amber-400 focus:border-amber-600 focus:ring-1 focus:ring-amber-500 text-slate-900"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[11px] text-slate-700 font-medium flex items-center justify-between">
+                  <span>Short-Term Borrowings ({companyProfile.reportingCurrency})</span>
+                  <span className="text-[10px] font-mono text-amber-800 font-semibold">WC / STL</span>
+                </label>
+                <input
+                  type="number"
+                  step="any"
+                  min={0}
+                  value={currentYearData.shortTermBorrowings ?? 0}
+                  onChange={(e) => {
+                    const nextVal = Math.max(0, Number(e.target.value) || 0);
+                    handleDriverChange(currentYearData.year, 'shortTermBorrowings', nextVal);
+                  }}
+                  aria-label={`Short-Term Borrowings Inspector ${currentYearData.year}`}
+                  className="w-full text-sm font-bold rounded-xl px-3.5 py-2 font-mono tabular-nums bg-white border-2 border-amber-400 focus:border-amber-600 focus:ring-1 focus:ring-amber-500 text-slate-900"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[11px] text-slate-700 font-medium flex items-center justify-between">
+                  <span>Model Loan Interest Rate (% p.a.)</span>
+                  <span className="text-[10px] font-mono text-emerald-700 font-semibold">Default 15.50%</span>
+                </label>
+                <input
+                  type="number"
+                  step="0.05"
+                  min={0}
+                  max={45}
+                  value={assumptions.loanInterestRatePct ?? 15.5}
+                  onChange={(e) =>
+                    onUpdateAssumptions({
+                      ...assumptions,
+                      loanInterestRatePct: Math.max(0, Number(e.target.value) || 0),
+                    })
+                  }
+                  aria-label={`Inspector Loan Interest Rate ${currentYearData.year}`}
+                  className="w-full text-sm font-bold rounded-xl px-3.5 py-2 font-mono tabular-nums bg-white border border-slate-300 focus:border-amber-600 focus:ring-1 focus:ring-amber-500 text-slate-900"
+                />
+              </div>
             </div>
           </div>
 

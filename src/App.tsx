@@ -30,6 +30,7 @@ import {
   calculateBalanceSheet,
   generateNotesToFinancialStatements,
   deriveDependentFinancials,
+  recalculateYearOnLoanOrRateChange,
   calculateDriverAutoFillSeries,
   recalculateAllYearsWithUpdatedDriver,
   buildPreviousFormatData,
@@ -46,6 +47,10 @@ import {
   createZeroHistoricalInputs,
   normalizeFinancialYearEnd,
 } from './services/financialEngine';
+import {
+  runComprehensiveCharteredAudit,
+  applyInstantAuditRectifications,
+} from './services/charteredAuditEngine';
 import { rebuildScheduleSummaries } from './services/repaymentScheduleParser';
 import {
   exportCompletePackageExcel,
@@ -77,6 +82,7 @@ import {
   RepaymentScheduleSnapshot,
   PreviousFormatYearData,
   FinancialYearEndOption,
+  InstantRectificationSnapshot,
 } from './types/financial';
 
 export default function App() {
@@ -111,6 +117,11 @@ export default function App() {
   const [isScheduleImplemented, setIsScheduleImplemented] = useState<boolean>(false);
   const [lastImplementationResult, setLastImplementationResult] = useState<ImplementScheduleResult | null>(null);
   const [openScheduleStudio, setOpenScheduleStudio] = useState<boolean>(false);
+
+  // Chartered Accountancy Audit & Instant Rectification State
+  const [rectificationSnapshot, setRectificationSnapshot] = useState<InstantRectificationSnapshot | null>(null);
+  const [lastAuditRunAt, setLastAuditRunAt] = useState<string | null>(null);
+  const [lastRectificationAppliedCount, setLastRectificationAppliedCount] = useState<number | null>(null);
 
   // Derived: Active Historical Years based on user's flexible individual year selection
   const activeHistoricalInputs = useMemo(() => {
@@ -294,6 +305,39 @@ export default function App() {
     );
   }, [allYearsInputs, incomeStatements, balanceSheets, cashFlowStatements, isScheduleImplemented, parsedSchedule, calcOptions]);
 
+  // Comprehensive Chartered Accountancy Audit Report
+  const charteredAuditReport = useMemo(() => {
+    return runComprehensiveCharteredAudit({
+      inputs: allYearsInputs,
+      incomeStatements,
+      balanceSheets,
+      cashFlowStatements,
+      equityStatements,
+      fixedAssetsSchedule,
+      debtServiceCoverage,
+      assumptions,
+      companyProfile,
+      cellOverrides,
+      statementConfig,
+      parsedSchedule,
+      isScheduleImplemented,
+    });
+  }, [
+    allYearsInputs,
+    incomeStatements,
+    balanceSheets,
+    cashFlowStatements,
+    equityStatements,
+    fixedAssetsSchedule,
+    debtServiceCoverage,
+    assumptions,
+    companyProfile,
+    cellOverrides,
+    statementConfig,
+    parsedSchedule,
+    isScheduleImplemented,
+  ]);
+
   // Synchronize parsed schedule year-wise aggregation when FY end or model years change
   const modelYearsKey = useMemo(() => allYearsInputs.map(y => y.year).join(','), [allYearsInputs]);
   useEffect(() => {
@@ -416,13 +460,128 @@ export default function App() {
       nextProjYears = Array.from({ length: targetCount }, (_, i) => maxHist + 1 + i);
     }
 
-    setAssumptions({
+    const nextAssumptions: ProjectionAssumptions = {
       ...updated,
       historicalYearsCount: histYears.length,
       selectedHistoricalYears: histYears,
       selectedProjectedYears: nextProjYears,
       projectedYearsCount: nextProjYears ? nextProjYears.length : updated.projectedYearsCount,
+    };
+
+    // If loanInterestRatePct changed, dynamically re-price any non-schedule-locked projected overrides
+    if (
+      (updated.loanInterestRatePct ?? 15.5) !== (assumptions.loanInterestRatePct ?? 15.5) &&
+      Object.keys(customProjectedOverrides).length > 0
+    ) {
+      setCustomProjectedOverrides(prev => {
+        const next = { ...prev };
+        const sortedProjKeys = Object.keys(next).map(Number).sort((a, b) => a - b);
+        let prevRef: YearDataInput | null = baseYearInput;
+        for (const yr of sortedProjKeys) {
+          const item = next[yr];
+          if (item && !item.isScheduleLocked) {
+            const recalc = recalculateYearOnLoanOrRateChange(item, prevRef, nextAssumptions, {
+              loanRateOverridePct: nextAssumptions.loanInterestRatePct ?? 15.5,
+              recalculateFinanceCostFromDebt: true,
+            });
+            next[yr] = recalc;
+            prevRef = recalc;
+          } else if (item) {
+            prevRef = item;
+          }
+        }
+        return next;
+      });
+    }
+
+    setAssumptions(nextAssumptions);
+  };
+
+  // Explicit 1-Click Re-Price for Non-Schedule-Locked Existing & Projected Debt @ Loan Rate
+  const handleApplyLoanRateToNonLockedYears = (ratePct: number) => {
+    const nextAssumptions: ProjectionAssumptions = { ...assumptions, loanInterestRatePct: ratePct };
+    setAssumptions(nextAssumptions);
+
+    const updatedAll: YearDataInput[] = [];
+    for (let i = 0; i < allYearsInputs.length; i++) {
+      const y = allYearsInputs[i];
+      const prev = i > 0 ? updatedAll[i - 1] : null;
+      if (!y.isScheduleLocked && (y.longTermBorrowings + y.shortTermBorrowings > 0 || y.financeCost > 0)) {
+        updatedAll.push(
+          recalculateYearOnLoanOrRateChange(y, prev, nextAssumptions, {
+            loanRateOverridePct: ratePct,
+            recalculateFinanceCostFromDebt: true,
+          })
+        );
+      } else {
+        updatedAll.push(y);
+      }
+    }
+
+    setHistoricalYearsStore(prev => {
+      const next = { ...prev };
+      updatedAll.filter(y => !y.isProjected).forEach(y => {
+        next[y.year] = { ...y, isProjected: false };
+      });
+      return next;
     });
+    if (Object.keys(customProjectedOverrides).length > 0) {
+      setCustomProjectedOverrides(prev => {
+        const next = { ...prev };
+        updatedAll.filter(y => y.isProjected && next[y.year]).forEach(y => {
+          next[y.year] = y;
+        });
+        return next;
+      });
+    }
+  };
+
+  // Chartered Accountancy Audit & Instant Rectification Handlers
+  const handleRunCharteredAudit = () => {
+    setLastAuditRunAt(new Date().toISOString());
+    setLastRectificationAppliedCount(null);
+  };
+
+  const handleInstantRectification = (findingIdsToApply?: string[]) => {
+    setRectificationSnapshot({
+      capturedAt: new Date().toISOString(),
+      appliedFindingIds: findingIdsToApply || charteredAuditReport.findings.filter(f => f.isAutoRectifiable).map(f => f.id),
+      historicalYearsStore: JSON.parse(JSON.stringify(historicalYearsStore)),
+      customProjectedOverrides: JSON.parse(JSON.stringify(customProjectedOverrides)),
+      assumptions: JSON.parse(JSON.stringify(assumptions)),
+      cellOverrides: JSON.parse(JSON.stringify(cellOverrides)),
+    });
+
+    const result = applyInstantAuditRectifications({
+      findingIdsToApply,
+      allYearsInputs,
+      historicalYearsStore,
+      customProjectedOverrides,
+      assumptions,
+      cellOverrides,
+      statementConfig,
+      companyProfile,
+      parsedSchedule,
+      isScheduleImplemented,
+    });
+
+    setHistoricalYearsStore(result.historicalYearsStore);
+    setCustomProjectedOverrides(result.customProjectedOverrides);
+    setAssumptions(result.assumptions);
+    setCellOverrides(result.cellOverrides);
+    setLastAuditRunAt(result.postAuditReport.auditedAt);
+    setLastRectificationAppliedCount(result.appliedFindingIds.length);
+  };
+
+  const handleUndoLastRectification = () => {
+    if (!rectificationSnapshot) return;
+    setHistoricalYearsStore(rectificationSnapshot.historicalYearsStore);
+    setCustomProjectedOverrides(rectificationSnapshot.customProjectedOverrides);
+    setAssumptions(rectificationSnapshot.assumptions);
+    setCellOverrides(rectificationSnapshot.cellOverrides);
+    setRectificationSnapshot(null);
+    setLastRectificationAppliedCount(null);
+    setLastAuditRunAt(new Date().toISOString());
   };
 
   // Individual Year Selection Handlers (Previous & Projected)
@@ -678,37 +837,46 @@ export default function App() {
     }
 
     const prevYearObj = yearIdx > 0 ? allYearsInputs[yearIdx - 1] : null;
+    const isLoanBalanceEdit = driver === 'longTermBorrowings' || driver === 'shortTermBorrowings';
 
-    const updatedDrivers = {
-      year: currentYearObj.year,
-      isProjected: currentYearObj.isProjected,
-      salesRevenue: driver === 'salesRevenue' ? val : currentYearObj.salesRevenue,
-      closingInventory: driver === 'closingInventory' ? val : currentYearObj.closingInventory,
-      financeCost: driver === 'financeCost' ? val : currentYearObj.financeCost,
-      netProfit: driver === 'netProfit' ? val : currentYearObj.netProfit,
-      repaymentOfBorrowings: driver === 'repaymentOfBorrowings' ? val : currentYearObj.repaymentOfBorrowings,
-      fixedAssetsGross: driver === 'fixedAssetsGross' ? val : currentYearObj.fixedAssetsGross,
-    };
+    let recomputedYear: YearDataInput;
+    if (isLoanBalanceEdit) {
+      const cleanVal = Math.max(0, val);
+      recomputedYear = recalculateYearOnLoanOrRateChange(
+        currentYearObj,
+        prevYearObj,
+        assumptions,
+        {
+          ...(driver === 'longTermBorrowings'
+            ? { longTermBorrowings: cleanVal, hasCustomLongTermBorrowings: true }
+            : { shortTermBorrowings: cleanVal, hasCustomShortTermBorrowings: true }),
+          loanRateOverridePct: assumptions.loanInterestRatePct ?? 15.5,
+          recalculateFinanceCostFromDebt: !currentYearObj.isScheduleLocked,
+        }
+      );
+    } else {
+      const updatedDrivers = {
+        year: currentYearObj.year,
+        isProjected: currentYearObj.isProjected,
+        salesRevenue: driver === 'salesRevenue' ? val : currentYearObj.salesRevenue,
+        closingInventory: driver === 'closingInventory' ? val : currentYearObj.closingInventory,
+        financeCost: driver === 'financeCost' ? val : currentYearObj.financeCost,
+        netProfit: driver === 'netProfit' ? val : currentYearObj.netProfit,
+        repaymentOfBorrowings: driver === 'repaymentOfBorrowings' ? val : currentYearObj.repaymentOfBorrowings,
+        fixedAssetsGross: driver === 'fixedAssetsGross' ? val : currentYearObj.fixedAssetsGross,
+      };
+      recomputedYear = deriveDependentFinancials(updatedDrivers, prevYearObj, assumptions, currentYearObj);
+    }
 
-    const existingForCompute: YearDataInput =
-      driver === 'longTermBorrowings'
-        ? {
-            ...currentYearObj,
-            longTermBorrowings: Math.max(0, val),
-            hasCustomLongTermBorrowings: true,
-          }
-        : currentYearObj;
-
-    const recomputedYear = deriveDependentFinancials(updatedDrivers, prevYearObj, assumptions, existingForCompute);
-
-    if (driver === 'longTermBorrowings') {
+    if (isLoanBalanceEdit) {
+      const ovKey = driver === 'longTermBorrowings' ? 'bs_longTermBorrowings' : 'bs_shortTermBorrowings';
       setCellOverrides(prev => {
-        if (prev.bs_longTermBorrowings?.[year] === undefined) return prev;
+        if (prev[ovKey]?.[year] === undefined) return prev;
         const next = { ...prev };
-        const yrCopy = { ...next.bs_longTermBorrowings };
+        const yrCopy = { ...next[ovKey] };
         delete yrCopy[year];
-        if (Object.keys(yrCopy).length === 0) delete next.bs_longTermBorrowings;
-        else next.bs_longTermBorrowings = yrCopy;
+        if (Object.keys(yrCopy).length === 0) delete next[ovKey];
+        else next[ovKey] = yrCopy;
         return next;
       });
     }
@@ -718,6 +886,39 @@ export default function App() {
         ...prev,
         [year]: { ...recomputedYear, isProjected: false },
       }));
+      // Cascade updated historical debt baseline into non-schedule-locked projected overrides if any exist
+      if (isLoanBalanceEdit && Object.keys(customProjectedOverrides).length > 0) {
+        setCustomProjectedOverrides(prev => {
+          const next = { ...prev };
+          const sortedProj = Object.keys(next).map(Number).sort((a, b) => a - b);
+          let cascadePrev = recomputedYear;
+          for (const py of sortedProj) {
+            const ov = next[py];
+            if (ov && !ov.isScheduleLocked) {
+              const cascaded = deriveDependentFinancials(
+                {
+                  year: ov.year,
+                  isProjected: true,
+                  salesRevenue: ov.salesRevenue,
+                  closingInventory: ov.closingInventory,
+                  financeCost: ov.financeCost,
+                  netProfit: ov.netProfit,
+                  repaymentOfBorrowings: ov.repaymentOfBorrowings,
+                  fixedAssetsGross: ov.fixedAssetsGross,
+                },
+                cascadePrev,
+                assumptions,
+                ov
+              );
+              next[py] = cascaded;
+              cascadePrev = cascaded;
+            } else if (ov) {
+              cascadePrev = ov;
+            }
+          }
+          return next;
+        });
+      }
     } else {
       setCustomProjectedOverrides(prev => ({
         ...prev,
@@ -900,10 +1101,24 @@ export default function App() {
     const key = `${statement}_${field}`;
 
     if (targetField && yearObj) {
+      if (targetField === 'longTermBorrowings' || targetField === 'shortTermBorrowings') {
+        const yIdx = allYearsInputs.findIndex(y => y.year === year);
+        const prevY = yIdx > 0 ? allYearsInputs[yIdx - 1] : null;
+        const cleanVal = Math.max(0, val);
+        const updatedYear = recalculateYearOnLoanOrRateChange(yearObj, prevY, assumptions, {
+          ...(targetField === 'longTermBorrowings'
+            ? { longTermBorrowings: cleanVal, hasCustomLongTermBorrowings: true }
+            : { shortTermBorrowings: cleanVal, hasCustomShortTermBorrowings: true }),
+          loanRateOverridePct: assumptions.loanInterestRatePct ?? 15.5,
+          recalculateFinanceCostFromDebt: !yearObj.isScheduleLocked,
+        });
+        handleUpdateYearData(updatedYear);
+        return;
+      }
+
       const updatedYear: YearDataInput = {
         ...yearObj,
-        [targetField]: field === 'dividendsPaid' ? Math.abs(val) : targetField === 'longTermBorrowings' ? Math.max(0, val) : val,
-        ...(targetField === 'longTermBorrowings' ? { hasCustomLongTermBorrowings: true } : {}),
+        [targetField]: field === 'dividendsPaid' ? Math.abs(val) : val,
       };
 
       if (targetField === 'repaymentOfBorrowings') {
@@ -921,10 +1136,11 @@ export default function App() {
           updatedYear.dividendsPaid;
         updatedYear.longTermBorrowings = Math.max(0, (yearObj.longTermBorrowings || 0) - diff);
         updatedYear.cashAndEquivalentsBS = Math.max(0, (yearObj.cashAndEquivalentsBS || 0) - diff);
-        updatedYear.financeCost = Math.max(
-          200,
-          Math.round((updatedYear.longTermBorrowings + updatedYear.shortTermBorrowings) * 0.085)
-        );
+        const totalDebtAfterRepay = updatedYear.longTermBorrowings + updatedYear.shortTermBorrowings;
+        const activeRate = Math.max(0, (assumptions.loanInterestRatePct ?? 15.5) / 100);
+        updatedYear.financeCost = totalDebtAfterRepay > 0 && activeRate > 0
+          ? Math.max(0, Math.round(totalDebtAfterRepay * activeRate))
+          : 0;
       }
 
       handleUpdateYearData(updatedYear);
@@ -1093,6 +1309,9 @@ export default function App() {
     setIsScheduleImplemented(false);
     setLastImplementationResult(null);
     setOpenScheduleStudio(false);
+    setRectificationSnapshot(null);
+    setLastAuditRunAt(null);
+    setLastRectificationAppliedCount(null);
     setStatementConfig(prev =>
       prev.map(item => (item.customValues ? { ...item, customValues: {} } : item))
     );
@@ -1336,6 +1555,7 @@ export default function App() {
               caseResetKey={caseResetKey}
               assumptions={assumptions}
               onUpdateAssumptions={handleUpdateAssumptions}
+              onApplyLoanRateToNonLockedYears={handleApplyLoanRateToNonLockedYears}
               inputMode={inputMode}
               onToggleInputMode={setInputMode}
               onGenerateAutomaticProjections={handleGenerateAutomaticProjections}
@@ -1399,6 +1619,14 @@ export default function App() {
               isScheduleImplemented={isScheduleImplemented}
               parsedSchedule={parsedSchedule}
               onJumpToRepaymentSchedule={handleJumpToRepaymentSchedule}
+              auditReport={charteredAuditReport}
+              lastAuditRunAt={lastAuditRunAt}
+              lastRectificationAppliedCount={lastRectificationAppliedCount}
+              hasRectificationSnapshot={Boolean(rectificationSnapshot)}
+              onRunAudit={handleRunCharteredAudit}
+              onInstantRectification={handleInstantRectification}
+              onUndoLastRectification={handleUndoLastRectification}
+              onOpenEntitySetup={() => setIsProfileModalOpen(true)}
             />
           )}
         </main>

@@ -267,6 +267,23 @@ export const ProjectionEngineView: React.FC<ProjectionEngineViewProps> = ({
                 className="w-full bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-slate-900 font-mono tabular-nums focus:outline-none focus:ring-1 focus:ring-emerald-500"
               />
             </div>
+
+            <div className="space-y-1 pt-1 border-t border-slate-200/80">
+              <label className="text-slate-800 font-semibold flex justify-between">
+                <span>Loan Rescheduling Interest Rate (% p.a.)</span>
+                <span className="font-mono text-amber-800 font-bold">{(assumptions.loanInterestRatePct ?? 15.5).toFixed(2)}%</span>
+              </label>
+              <input
+                type="number"
+                step="0.05"
+                min={0}
+                max={45}
+                value={assumptions.loanInterestRatePct ?? 15.5}
+                onChange={(e) => handleChange('loanInterestRatePct', Math.max(0, Number(e.target.value) || 0))}
+                aria-label="Loan Rescheduling Interest Rate (%)"
+                className="w-full bg-amber-50/50 border border-amber-300 rounded-lg px-3 py-1.5 text-slate-900 font-mono font-bold tabular-nums focus:outline-none focus:ring-1 focus:ring-amber-500"
+              />
+            </div>
           </div>
         </div>
       </div>
