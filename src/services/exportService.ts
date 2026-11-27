@@ -41,6 +41,8 @@ import {
 } from '../types/financial';
 import {
   FIXED_ASSET_CATEGORY_CONFIG_IDS,
+  STD_BS_SECTIONS,
+  STD_CF_SECTIONS,
   getCustomItemYearValue,
   resolveEffectiveLabel,
   buildProjectedQuantNoteRows,
@@ -229,6 +231,42 @@ function getUnscopedCustomIncomeRows(options: ExportSyncOptions | undefined): St
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 }
 
+function getUnscopedCustomRows(
+  options: ExportSyncOptions | undefined,
+  statement: StatementConfigItem['statement'],
+  standardSections: readonly string[]
+): StatementConfigItem[] {
+  return (options?.statementConfig || [])
+    .filter(
+      item =>
+        item.isCustom &&
+        item.isVisible &&
+        item.statement === statement &&
+        !standardSections.includes(item.section)
+    )
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+}
+
+export function shouldShowDetailedFACategories(
+  fa: ScheduleOfFixedAssetsYear | undefined,
+  options?: ExportSyncOptions
+): boolean {
+  if (!fa || !fa.categories || fa.categories.length === 0) return false;
+  const hasCustomFA = (options?.statementConfig || []).some(
+    c => c.statement === 'fixedAssets' && c.isCustom && c.isVisible
+  );
+  if (hasCustomFA) return true;
+  if (FIXED_ASSET_CATEGORY_CONFIG_IDS.some(id => !isVis(options, id))) return true;
+  const anyLabelEdited = FIXED_ASSET_CATEGORY_CONFIG_IDS.some((id, idx) => {
+    if (options?.labelOverrides?.[`fa_${idx}`]) return true;
+    const cfgItem = options?.statementConfig?.find(c => c.id === id);
+    const defName = fa.allCategories?.[idx]?.name;
+    return Boolean(cfgItem && defName && cfgItem.label !== defName);
+  });
+  if (anyLabelEdited) return true;
+  return Object.keys(options?.cellOverrides || {}).some(k => k.startsWith('fa_'));
+}
+
 /**
  * Formats a list of 1-indexed Excel row numbers into a compact formula expression
  * e.g. [7,8,9,10] -> "SUM(B7:B10)", [7,9] -> "B7+B9", [] -> "0"
@@ -272,7 +310,7 @@ function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-const exportedDocxBuffersForTest: { filename: string; size: number }[] = [];
+const exportedDocxBuffersForTest: { filename: string; size: number; buffer?: Uint8Array }[] = [];
 export function getCapturedDocxExportsForTest() {
   return exportedDocxBuffersForTest;
 }
@@ -283,7 +321,7 @@ export function clearCapturedDocxExportsForTest() {
 async function emitDocxDocument(doc: Document, filename: string) {
   if (typeof document === 'undefined') {
     const buf = await Packer.toBuffer(doc);
-    exportedDocxBuffersForTest.push({ filename, size: buf.byteLength });
+    exportedDocxBuffersForTest.push({ filename, size: buf.byteLength, buffer: new Uint8Array(buf) });
     return;
   }
   const blob = await Packer.toBlob(doc);
@@ -713,7 +751,8 @@ function stylePreviousFormatSheet(
   ws: XLSX.WorkSheet,
   colCount: number,
   orientation: 'portrait' | 'landscape',
-  boldLabels: Set<string>
+  boldLabels: Set<string>,
+  extraDoubleBottomLabels?: Set<string>
 ) {
   setWorksheetPrintSetup(ws, orientation, 14, 1);
   const totalRows = getSheetRowCount(ws);
@@ -753,6 +792,7 @@ function stylePreviousFormatSheet(
     'Net Profit After Income Tax',
     'f) Cash & Cash Equivalents at end of period (D+E)',
     'TOTAL CLOSING EQUITY',
+    ...(extraDoubleBottomLabels ? Array.from(extraDoubleBottomLabels) : []),
   ]);
 
   for (let r = 6; r < totalRows; r++) {
@@ -1135,11 +1175,10 @@ function styleProjectedScheduleASheet(ws: XLSX.WorkSheet, headerTopRows: number[
         });
       }
     }
-    const itemR = rSub + 1;
-    const totR = rSub + 2;
-    for (const r of [itemR, totR]) {
-      if (r >= totalRows) continue;
-      const isTot = r === totR;
+    for (let r = rSub + 1; r < totalRows; r++) {
+      const rowLabel = getRowStringVal(ws, r, 1).trim();
+      if (!rowLabel) break;
+      const isTot = rowLabel === 'Total';
       setRowHeightPt(ws, r, 18);
       for (let c = 0; c < colCount; c++) {
         applyCellStyle(ws, r, c, {
@@ -1156,6 +1195,7 @@ function styleProjectedScheduleASheet(ws: XLSX.WorkSheet, headerTopRows: number[
           },
         });
       }
+      if (isTot) break;
     }
   }
 }
@@ -1286,11 +1326,9 @@ function buildIncomeStatementSheet(
   }
   customRev.forEach(ci => {
     const vals = data.map(d => getCustomItemYearValue(ci, d.year));
-    if (hasAnyNonZeroValue(vals)) {
-      const cr = nextRow();
-      rows.push([ci.label, ...vals.map(v => nCell(v))]);
-      gpInputs.push(cr);
-    }
+    const cr = nextRow();
+    rows.push([ci.label, ...vals.map(v => nCell(v))]);
+    gpInputs.push(cr);
   });
 
   if (isVis(options, 'inc_costOfSales')) {
@@ -1326,11 +1364,9 @@ function buildIncomeStatementSheet(
   }
   customOpex.forEach(ci => {
     const vals = data.map(d => getCustomItemYearValue(ci, d.year));
-    if (hasAnyNonZeroValue(vals)) {
-      const cr = nextRow();
-      rows.push([ci.label, ...vals.map(v => nCell(v))]);
-      ebitInputs.push(cr);
-    }
+    const cr = nextRow();
+    rows.push([ci.label, ...vals.map(v => nCell(v))]);
+    ebitInputs.push(cr);
   });
 
   if (isVis(options, 'inc_depreciationExpense')) {
@@ -1376,11 +1412,9 @@ function buildIncomeStatementSheet(
 
   customNonOp.forEach(ci => {
     const vals = data.map(d => getCustomItemYearValue(ci, d.year));
-    if (hasAnyNonZeroValue(vals)) {
-      const cr = nextRow();
-      rows.push([ci.label, ...vals.map(v => nCell(v))]);
-      pbtInputs.push(cr);
-    }
+    const cr = nextRow();
+    rows.push([ci.label, ...vals.map(v => nCell(v))]);
+    pbtInputs.push(cr);
   });
 
   const pbtRow = nextRow();
@@ -1437,6 +1471,11 @@ function buildBalanceSheetWorksheet(
     rows.push([label, ...vals.map(v => nCell(v))]);
   };
 
+  const pushBsCustomRow = (rowTracker: number[], label: string, vals: number[]) => {
+    rowTracker.push(nextRow());
+    rows.push([label, ...vals.map(v => nCell(v))]);
+  };
+
   const caRows: number[] = [];
   if (isVis(options, 'bs_cashAndEquivalents')) {
     pushBsRowIfNonZero(caRows, lbl(options, 'bs', 'cashAndEquivalents', 'Cash and Cash Equivalents'), data.map(d => ovVal(options, 'bs', 'cashAndEquivalents', d.year, d.cashAndEquivalents)));
@@ -1454,7 +1493,7 @@ function buildBalanceSheetWorksheet(
     pushBsRowIfNonZero(caRows, lbl(options, 'bs', 'otherCurrentAssets', 'Other Current Assets'), data.map(d => ovVal(options, 'bs', 'otherCurrentAssets', d.year, d.otherCurrentAssets)));
   }
   getCustomRows(options, 'balanceSheet', 'Current Assets').forEach(ci => {
-    pushBsRowIfNonZero(caRows, ci.label, data.map(d => getCustomItemYearValue(ci, d.year)));
+    pushBsCustomRow(caRows, ci.label, data.map(d => getCustomItemYearValue(ci, d.year)));
   });
 
   const totalCaRow = nextRow();
@@ -1477,7 +1516,7 @@ function buildBalanceSheetWorksheet(
     pushBsRowIfNonZero(ncaRows, lbl(options, 'bs', 'otherNonCurrentAssets', 'Other Non-Current Assets'), data.map(d => ovVal(options, 'bs', 'otherNonCurrentAssets', d.year, d.otherNonCurrentAssets)));
   }
   getCustomRows(options, 'balanceSheet', 'Non-Current Assets').forEach(ci => {
-    pushBsRowIfNonZero(ncaRows, ci.label, data.map(d => getCustomItemYearValue(ci, d.year)));
+    pushBsCustomRow(ncaRows, ci.label, data.map(d => getCustomItemYearValue(ci, d.year)));
   });
 
   const totalNcaRow = nextRow();
@@ -1516,7 +1555,7 @@ function buildBalanceSheetWorksheet(
     pushBsRowIfNonZero(clRows, lbl(options, 'bs', 'currentTaxPayable', 'Current Tax Payable'), data.map(d => ovVal(options, 'bs', 'currentTaxPayable', d.year, d.currentTaxPayable)));
   }
   getCustomRows(options, 'balanceSheet', 'Current Liabilities').forEach(ci => {
-    pushBsRowIfNonZero(clRows, ci.label, data.map(d => getCustomItemYearValue(ci, d.year)));
+    pushBsCustomRow(clRows, ci.label, data.map(d => getCustomItemYearValue(ci, d.year)));
   });
 
   const totalClRow = nextRow();
@@ -1536,7 +1575,7 @@ function buildBalanceSheetWorksheet(
     pushBsRowIfNonZero(nclRows, lbl(options, 'bs', 'otherNonCurrentLiabilities', 'Other Non-Current Liabilities'), data.map(d => ovVal(options, 'bs', 'otherNonCurrentLiabilities', d.year, d.otherNonCurrentLiabilities)));
   }
   getCustomRows(options, 'balanceSheet', 'Non-Current Liabilities').forEach(ci => {
-    pushBsRowIfNonZero(nclRows, ci.label, data.map(d => getCustomItemYearValue(ci, d.year)));
+    pushBsCustomRow(nclRows, ci.label, data.map(d => getCustomItemYearValue(ci, d.year)));
   });
 
   const totalNclRow = nextRow();
@@ -1568,8 +1607,12 @@ function buildBalanceSheetWorksheet(
   if (isVis(options, 'bs_reserves')) {
     pushBsRowIfNonZero(eqRows, lbl(options, 'bs', 'reserves', 'Reserves'), data.map(d => ovVal(options, 'bs', 'reserves', d.year, d.reserves)));
   }
-  getCustomRows(options, 'balanceSheet', 'Equity').forEach(ci => {
-    pushBsRowIfNonZero(eqRows, ci.label, data.map(d => getCustomItemYearValue(ci, d.year)));
+  [
+    ...getCustomRows(options, 'balanceSheet', 'Equity'),
+    ...getUnscopedCustomRows(options, 'balanceSheet', STD_BS_SECTIONS),
+    ...getCustomRows(options, 'equity'),
+  ].forEach(ci => {
+    pushBsCustomRow(eqRows, ci.label, data.map(d => getCustomItemYearValue(ci, d.year)));
   });
 
   const totalEqRow = nextRow();
@@ -1673,8 +1716,11 @@ function buildCashFlowWorksheet(
   if (isVis(options, 'cf_wc_other_pay')) {
     pushCfRowIfNonZero(wcRows, lbl(options, 'cf', 'changeInOtherPayables', 'Increase / (Decrease) in Other Payables'), data.map(d => ovVal(options, 'cf', 'changeInOtherPayables', d.year, d.changeInOtherPayables)));
   }
-  getCustomRows(options, 'cashFlow', 'Operating Activities').forEach(ci => {
-    pushCfRowIfNonZero(wcRows, ci.label, data.map(d => getCustomItemYearValue(ci, d.year)));
+  [
+    ...getCustomRows(options, 'cashFlow', 'Operating Activities'),
+    ...getUnscopedCustomRows(options, 'cashFlow', STD_CF_SECTIONS),
+  ].forEach(ci => {
+    pushCfRowIfNonZero(wcRows, ci.label, data.map(d => getCustomItemYearValue(ci, d.year)), true);
   });
 
   const cashGenOpsRow = nextRow();
@@ -1722,7 +1768,7 @@ function buildCashFlowWorksheet(
     pushCfRowIfNonZero(invRows, lbl(options, 'cf', 'dividendsReceived', 'Dividends Received'), data.map(d => ovVal(options, 'cf', 'dividendsReceived', d.year, d.dividendsReceived)));
   }
   getCustomRows(options, 'cashFlow', 'Investing Activities').forEach(ci => {
-    pushCfRowIfNonZero(invRows, ci.label, data.map(d => getCustomItemYearValue(ci, d.year)));
+    pushCfRowIfNonZero(invRows, ci.label, data.map(d => getCustomItemYearValue(ci, d.year)), true);
   });
 
   const netInvCashRow = nextRow();
@@ -1769,7 +1815,7 @@ function buildCashFlowWorksheet(
   }
   const customFinRows = getCustomRows(options, 'cashFlow', 'Financing Activities');
   customFinRows.forEach(ci => {
-    pushCfRowIfNonZero(finBreakdownRows, ci.label, data.map(d => getCustomItemYearValue(ci, d.year)));
+    pushCfRowIfNonZero(finBreakdownRows, ci.label, data.map(d => getCustomItemYearValue(ci, d.year)), true);
   });
 
   const netFinCashRow = nextRow();
@@ -1959,10 +2005,8 @@ function buildEquityWorksheet(
   const customEqRows: number[] = [];
   getCustomRows(options, 'equity').forEach(ci => {
     const vals = data.map(d => getCustomItemYearValue(ci, d.year));
-    if (hasAnyNonZeroValue(vals)) {
-      customEqRows.push(nextRow());
-      rows.push([ci.label, ...vals.map(v => nCell(v))]);
-    }
+    customEqRows.push(nextRow());
+    rows.push([ci.label, ...vals.map(v => nCell(v))]);
   });
 
   rows.push([]);
@@ -2025,7 +2069,7 @@ export function resolveFACategoriesForExport(
       depRate: 0,
     };
   });
-  return [...visibleStd, ...customRows].filter(c =>
+  const filteredStd = visibleStd.filter(c =>
     hasAnyNonZeroValue([
       c.costOpening,
       c.additions,
@@ -2038,6 +2082,7 @@ export function resolveFACategoriesForExport(
       c.netBookValue,
     ])
   );
+  return [...filteredStd, ...customRows];
 }
 
 function buildFixedAssetsWorksheet(
@@ -3436,7 +3481,7 @@ export async function exportDocumentWord(
 }
 
 // Shared synchronized Section 76 table-row builders for Word & PDF complete packages
-function buildSyncIncomeTextRows(incomeData: IncomeStatementYear[], options?: ExportSyncOptions): (string | number)[][] {
+export function buildSyncIncomeTextRows(incomeData: IncomeStatementYear[], options?: ExportSyncOptions): (string | number)[][] {
   const customRev = getCustomRows(options, 'income', 'Revenue & Gross Margin');
   const customOpex = getCustomRows(options, 'income', 'Operating Expenses');
   const customNonOp = [...getCustomRows(options, 'income', 'Non-Operating & Tax'), ...getUnscopedCustomIncomeRows(options)];
@@ -3450,7 +3495,7 @@ function buildSyncIncomeTextRows(incomeData: IncomeStatementYear[], options?: Ex
       incomeData.map(d => ovVal(options, 'income', 'revenue', d.year, d.revenue - customRev.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0)))
     );
   }
-  customRev.forEach(ci => pushIfNonZero(ci.label, incomeData.map(d => getCustomItemYearValue(ci, d.year))));
+  customRev.forEach(ci => rows.push([ci.label, ...incomeData.map(d => getCustomItemYearValue(ci, d.year))]));
   if (isVis(options, 'inc_costOfSales')) {
     pushIfNonZero(lbl(options, 'income', 'costOfSales', 'Cost of Sales'), incomeData.map(d => -ovVal(options, 'income', 'costOfSales', d.year, d.costOfSales)));
   }
@@ -3461,7 +3506,7 @@ function buildSyncIncomeTextRows(incomeData: IncomeStatementYear[], options?: Ex
       incomeData.map(d => -ovVal(options, 'income', 'operatingExpenses', d.year, d.operatingExpenses + customOpex.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0)))
     );
   }
-  customOpex.forEach(ci => pushIfNonZero(ci.label, incomeData.map(d => getCustomItemYearValue(ci, d.year))));
+  customOpex.forEach(ci => rows.push([ci.label, ...incomeData.map(d => getCustomItemYearValue(ci, d.year))]));
   if (isVis(options, 'inc_depreciationExpense')) {
     pushIfNonZero(lbl(options, 'income', 'depreciationExpense', 'Depreciation Expense'), incomeData.map(d => -ovVal(options, 'income', 'depreciationExpense', d.year, d.depreciationExpense)));
   }
@@ -3475,7 +3520,7 @@ function buildSyncIncomeTextRows(incomeData: IncomeStatementYear[], options?: Ex
   if (isVis(options, 'inc_financeCost')) {
     pushIfNonZero(lbl(options, 'income', 'financeCost', 'Finance Cost (Mandatory Direct Entry)'), incomeData.map(d => -ovVal(options, 'income', 'financeCost', d.year, d.financeCost)));
   }
-  customNonOp.forEach(ci => pushIfNonZero(ci.label, incomeData.map(d => getCustomItemYearValue(ci, d.year))));
+  customNonOp.forEach(ci => rows.push([ci.label, ...incomeData.map(d => getCustomItemYearValue(ci, d.year))]));
   rows.push([lbl(options, 'income', 'profitBeforeTax', 'Profit Before Tax (EBT)'), ...incomeData.map(d => ovVal(options, 'income', 'profitBeforeTax', d.year, d.profitBeforeTax))]);
   if (isVis(options, 'inc_taxExpense')) {
     pushIfNonZero(lbl(options, 'income', 'taxExpense', 'Income Tax Expense'), incomeData.map(d => -ovVal(options, 'income', 'taxExpense', d.year, d.taxExpense)));
@@ -3484,7 +3529,7 @@ function buildSyncIncomeTextRows(incomeData: IncomeStatementYear[], options?: Ex
   return rows;
 }
 
-function buildSyncBalanceTextRows(balanceData: BalanceSheetYear[], options?: ExportSyncOptions): (string | number)[][] {
+export function buildSyncBalanceTextRows(balanceData: BalanceSheetYear[], options?: ExportSyncOptions): (string | number)[][] {
   const rows: (string | number)[][] = [];
   const pushIfNonZero = (label: string, vals: number[]) => {
     if (hasAnyNonZeroValue(vals)) rows.push([label, ...vals]);
@@ -3494,29 +3539,33 @@ function buildSyncBalanceTextRows(balanceData: BalanceSheetYear[], options?: Exp
   if (isVis(options, 'bs_otherReceivables')) pushIfNonZero(lbl(options, 'bs', 'otherReceivables', 'Other Receivables & Prepayments'), balanceData.map(d => ovVal(options, 'bs', 'otherReceivables', d.year, d.otherReceivables)));
   if (isVis(options, 'bs_closingInventory')) pushIfNonZero(lbl(options, 'bs', 'closingInventory', 'Closing Inventory'), balanceData.map(d => ovVal(options, 'bs', 'closingInventory', d.year, d.closingInventory)));
   if (isVis(options, 'bs_otherCurrentAssets')) pushIfNonZero(lbl(options, 'bs', 'otherCurrentAssets', 'Other Current Assets'), balanceData.map(d => ovVal(options, 'bs', 'otherCurrentAssets', d.year, d.otherCurrentAssets)));
-  getCustomRows(options, 'balanceSheet', 'Current Assets').forEach(ci => pushIfNonZero(ci.label, balanceData.map(d => getCustomItemYearValue(ci, d.year))));
+  getCustomRows(options, 'balanceSheet', 'Current Assets').forEach(ci => rows.push([ci.label, ...balanceData.map(d => getCustomItemYearValue(ci, d.year))]));
   rows.push([lbl(options, 'bs', 'totalCurrentAssets', 'Total Current Assets'), ...balanceData.map(d => ovVal(options, 'bs', 'totalCurrentAssets', d.year, d.totalCurrentAssets))]);
   if (isVis(options, 'bs_propertyPlantEquipment')) pushIfNonZero(lbl(options, 'bs', 'propertyPlantEquipment', 'Property, Plant and Equipment (NBV)'), balanceData.map(d => ovVal(options, 'bs', 'propertyPlantEquipment', d.year, d.propertyPlantEquipment)));
   if (isVis(options, 'bs_intangibleAssets')) pushIfNonZero(lbl(options, 'bs', 'intangibleAssets', 'Intangible Assets'), balanceData.map(d => ovVal(options, 'bs', 'intangibleAssets', d.year, d.intangibleAssets)));
   if (isVis(options, 'bs_otherNonCurrentAssets')) pushIfNonZero(lbl(options, 'bs', 'otherNonCurrentAssets', 'Other Non-Current Assets'), balanceData.map(d => ovVal(options, 'bs', 'otherNonCurrentAssets', d.year, d.otherNonCurrentAssets)));
-  getCustomRows(options, 'balanceSheet', 'Non-Current Assets').forEach(ci => pushIfNonZero(ci.label, balanceData.map(d => getCustomItemYearValue(ci, d.year))));
+  getCustomRows(options, 'balanceSheet', 'Non-Current Assets').forEach(ci => rows.push([ci.label, ...balanceData.map(d => getCustomItemYearValue(ci, d.year))]));
   rows.push([lbl(options, 'bs', 'totalNonCurrentAssets', 'Total Non-Current Assets'), ...balanceData.map(d => ovVal(options, 'bs', 'totalNonCurrentAssets', d.year, d.totalNonCurrentAssets))]);
   rows.push([lbl(options, 'bs', 'totalAssets', 'TOTAL ASSETS'), ...balanceData.map(d => ovVal(options, 'bs', 'totalAssets', d.year, d.totalAssets))]);
   if (isVis(options, 'bs_tradePayables')) pushIfNonZero(lbl(options, 'bs', 'tradePayables', 'Trade Payables'), balanceData.map(d => ovVal(options, 'bs', 'tradePayables', d.year, d.tradePayables)));
   if (isVis(options, 'bs_otherPayables')) pushIfNonZero(lbl(options, 'bs', 'otherPayables', 'Other Payables & Accruals'), balanceData.map(d => ovVal(options, 'bs', 'otherPayables', d.year, d.otherPayables)));
   if (isVis(options, 'bs_shortTermBorrowings')) pushIfNonZero(lbl(options, 'bs', 'shortTermBorrowings', 'Short-Term Borrowings'), balanceData.map(d => ovVal(options, 'bs', 'shortTermBorrowings', d.year, d.shortTermBorrowings)));
   if (isVis(options, 'bs_currentTaxPayable')) pushIfNonZero(lbl(options, 'bs', 'currentTaxPayable', 'Current Tax Payable'), balanceData.map(d => ovVal(options, 'bs', 'currentTaxPayable', d.year, d.currentTaxPayable)));
-  getCustomRows(options, 'balanceSheet', 'Current Liabilities').forEach(ci => pushIfNonZero(ci.label, balanceData.map(d => getCustomItemYearValue(ci, d.year))));
+  getCustomRows(options, 'balanceSheet', 'Current Liabilities').forEach(ci => rows.push([ci.label, ...balanceData.map(d => getCustomItemYearValue(ci, d.year))]));
   rows.push([lbl(options, 'bs', 'totalCurrentLiabilities', 'Total Current Liabilities'), ...balanceData.map(d => ovVal(options, 'bs', 'totalCurrentLiabilities', d.year, d.totalCurrentLiabilities))]);
   if (isVis(options, 'bs_longTermBorrowings')) pushIfNonZero(lbl(options, 'bs', 'longTermBorrowings', 'Long-Term Borrowings'), balanceData.map(d => ovVal(options, 'bs', 'longTermBorrowings', d.year, d.longTermBorrowings)));
   if (isVis(options, 'bs_otherNonCurrentLiabilities')) pushIfNonZero(lbl(options, 'bs', 'otherNonCurrentLiabilities', 'Other Non-Current Liabilities'), balanceData.map(d => ovVal(options, 'bs', 'otherNonCurrentLiabilities', d.year, d.otherNonCurrentLiabilities)));
-  getCustomRows(options, 'balanceSheet', 'Non-Current Liabilities').forEach(ci => pushIfNonZero(ci.label, balanceData.map(d => getCustomItemYearValue(ci, d.year))));
+  getCustomRows(options, 'balanceSheet', 'Non-Current Liabilities').forEach(ci => rows.push([ci.label, ...balanceData.map(d => getCustomItemYearValue(ci, d.year))]));
   rows.push([lbl(options, 'bs', 'totalNonCurrentLiabilities', 'Total Non-Current Liabilities'), ...balanceData.map(d => ovVal(options, 'bs', 'totalNonCurrentLiabilities', d.year, d.totalNonCurrentLiabilities))]);
   rows.push([lbl(options, 'bs', 'totalLiabilities', 'TOTAL LIABILITIES'), ...balanceData.map(d => ovVal(options, 'bs', 'totalLiabilities', d.year, d.totalLiabilities))]);
   if (isVis(options, 'bs_shareCapital')) pushIfNonZero(lbl(options, 'bs', 'shareCapital', 'Share Capital'), balanceData.map(d => ovVal(options, 'bs', 'shareCapital', d.year, d.shareCapital)));
   if (isVis(options, 'bs_retainedEarnings')) pushIfNonZero(lbl(options, 'bs', 'retainedEarnings', 'Retained Earnings'), balanceData.map(d => ovVal(options, 'bs', 'retainedEarnings', d.year, d.retainedEarnings)));
   if (isVis(options, 'bs_reserves')) pushIfNonZero(lbl(options, 'bs', 'reserves', 'Reserves'), balanceData.map(d => ovVal(options, 'bs', 'reserves', d.year, d.reserves)));
-  getCustomRows(options, 'balanceSheet', 'Equity').forEach(ci => pushIfNonZero(ci.label, balanceData.map(d => getCustomItemYearValue(ci, d.year))));
+  [
+    ...getCustomRows(options, 'balanceSheet', 'Equity'),
+    ...getUnscopedCustomRows(options, 'balanceSheet', STD_BS_SECTIONS),
+    ...getCustomRows(options, 'equity'),
+  ].forEach(ci => rows.push([ci.label, ...balanceData.map(d => getCustomItemYearValue(ci, d.year))]));
   rows.push([lbl(options, 'bs', 'totalEquity', 'TOTAL EQUITY'), ...balanceData.map(d => ovVal(options, 'bs', 'totalEquity', d.year, d.totalEquity))]);
   rows.push([lbl(options, 'bs', 'totalLiabilitiesAndEquity', 'TOTAL LIABILITIES & EQUITY'), ...balanceData.map(d => ovVal(options, 'bs', 'totalLiabilitiesAndEquity', d.year, d.totalLiabilitiesAndEquity))]);
   rows.push([
@@ -3548,7 +3597,10 @@ export function buildSyncCashFlowTextRows(cashFlowData: CashFlowStatementYear[],
   if (isVis(options, 'cf_wc_other_ca')) pushIfNonZero(lbl(options, 'cf', 'changeInOtherCA', '(Increase) / Decrease in Other Current Assets'), cashFlowData.map(d => ovVal(options, 'cf', 'changeInOtherCA', d.year, d.changeInOtherCA ?? 0)));
   if (isVis(options, 'cf_wc_payables')) pushIfNonZero(lbl(options, 'cf', 'changeInPayables', 'Increase / (Decrease) in Trade Payables'), cashFlowData.map(d => ovVal(options, 'cf', 'changeInPayables', d.year, d.changeInPayables)));
   if (isVis(options, 'cf_wc_other_pay')) pushIfNonZero(lbl(options, 'cf', 'changeInOtherPayables', 'Increase / (Decrease) in Other Payables'), cashFlowData.map(d => ovVal(options, 'cf', 'changeInOtherPayables', d.year, d.changeInOtherPayables)));
-  getCustomRows(options, 'cashFlow', 'Operating Activities').forEach(ci => pushIfNonZero(ci.label, cashFlowData.map(d => getCustomItemYearValue(ci, d.year))));
+  [
+    ...getCustomRows(options, 'cashFlow', 'Operating Activities'),
+    ...getUnscopedCustomRows(options, 'cashFlow', STD_CF_SECTIONS),
+  ].forEach(ci => rows.push([ci.label, ...cashFlowData.map(d => getCustomItemYearValue(ci, d.year))]));
   rows.push([lbl(options, 'cf', 'cashGeneratedFromOperations', 'Cash Generated from Operations'), ...cashFlowData.map(d => ovVal(options, 'cf', 'cashGeneratedFromOperations', d.year, d.cashGeneratedFromOperations))]);
   if (isVis(options, 'cf_tax_paid')) pushIfNonZero(lbl(options, 'cf', 'incomeTaxPaid', 'Income Tax Paid'), cashFlowData.map(d => ovVal(options, 'cf', 'incomeTaxPaid', d.year, d.incomeTaxPaid)));
   if (isVis(options, 'cf_finance_paid')) pushIfNonZero(lbl(options, 'cf', 'financeCostPaid', 'Finance Cost Paid'), cashFlowData.map(d => ovVal(options, 'cf', 'financeCostPaid', d.year, d.financeCostPaid)));
@@ -3558,7 +3610,7 @@ export function buildSyncCashFlowTextRows(cashFlowData: CashFlowStatementYear[],
   if (isVis(options, 'cf_pur_intangible')) pushIfNonZero(lbl(options, 'cf', 'purchaseIntangibles', 'Purchase of Intangible Assets'), cashFlowData.map(d => ovVal(options, 'cf', 'purchaseIntangibles', d.year, d.purchaseIntangibles)));
   if (isVis(options, 'cf_interest_rec')) pushIfNonZero(lbl(options, 'cf', 'interestReceived', 'Interest Received'), cashFlowData.map(d => ovVal(options, 'cf', 'interestReceived', d.year, d.interestReceived)));
   if (isVis(options, 'cf_dividends_rec')) pushIfNonZero(lbl(options, 'cf', 'dividendsReceived', 'Dividends Received'), cashFlowData.map(d => ovVal(options, 'cf', 'dividendsReceived', d.year, d.dividendsReceived)));
-  getCustomRows(options, 'cashFlow', 'Investing Activities').forEach(ci => pushIfNonZero(ci.label, cashFlowData.map(d => getCustomItemYearValue(ci, d.year))));
+  getCustomRows(options, 'cashFlow', 'Investing Activities').forEach(ci => rows.push([ci.label, ...cashFlowData.map(d => getCustomItemYearValue(ci, d.year))]));
   rows.push([lbl(options, 'cf', 'netCashFromInvesting', 'NET CASH FROM / (USED IN) INVESTING'), ...cashFlowData.map(d => ovVal(options, 'cf', 'netCashFromInvesting', d.year, d.netCashFromInvesting))]);
   if (isVis(options, 'cf_shares_issue')) pushIfNonZero(lbl(options, 'cf', 'financingProceedsShares', 'Proceeds from Issue of Share Capital'), cashFlowData.map(d => ovVal(options, 'cf', 'financingProceedsShares', d.year, d.financingProceedsShares)));
   if (isVis(options, 'cf_borrow_proceeds')) pushIfNonZero(lbl(options, 'cf', 'financingProceedsBorrowings', 'Proceeds from Borrowings & Financing'), cashFlowData.map(d => ovVal(options, 'cf', 'financingProceedsBorrowings', d.year, d.financingProceedsBorrowings)));
@@ -3572,7 +3624,7 @@ export function buildSyncCashFlowTextRows(cashFlowData: CashFlowStatementYear[],
     ),
   ]);
   if (isVis(options, 'cf_dividends_paid')) pushIfNonZero(lbl(options, 'cf', 'financingDividendsPaid', 'Dividends Paid'), cashFlowData.map(d => ovVal(options, 'cf', 'financingDividendsPaid', d.year, d.financingDividendsPaid)));
-  getCustomRows(options, 'cashFlow', 'Financing Activities').forEach(ci => pushIfNonZero(ci.label, cashFlowData.map(d => getCustomItemYearValue(ci, d.year))));
+  getCustomRows(options, 'cashFlow', 'Financing Activities').forEach(ci => rows.push([ci.label, ...cashFlowData.map(d => getCustomItemYearValue(ci, d.year))]));
   if (isVis(options, 'cf_direct_financing')) pushIfNonZero(lbl(options, 'cf', 'directlyEnteredFinancingCashFlow', 'Directly Entered Financing Cash Flow'), cashFlowData.map(d => ovVal(options, 'cf', 'directlyEnteredFinancingCashFlow', d.year, d.directlyEnteredFinancingCashFlow)));
   rows.push([lbl(options, 'cf', 'netCashFromFinancing', 'NET CASH FROM / (USED IN) FINANCING'), ...cashFlowData.map(d => ovVal(options, 'cf', 'netCashFromFinancing', d.year, d.netCashFromFinancing))]);
   rows.push([lbl(options, 'cf', 'netChangeInCash', 'Net Change in Cash and Equivalents'), ...cashFlowData.map(d => ovVal(options, 'cf', 'netChangeInCash', d.year, d.netChangeInCash))]);
@@ -3598,7 +3650,7 @@ export function buildSyncCashFlowTextRows(cashFlowData: CashFlowStatementYear[],
   return rows;
 }
 
-function buildSyncEquityTextRows(equityData: EquityStatementYear[], options?: ExportSyncOptions): (string | number)[][] {
+export function buildSyncEquityTextRows(equityData: EquityStatementYear[], options?: ExportSyncOptions): (string | number)[][] {
   const rows: (string | number)[][] = [];
   const pushIfNonZero = (label: string, vals: number[]) => {
     if (hasAnyNonZeroValue(vals)) rows.push([label, ...vals]);
@@ -3620,7 +3672,7 @@ function buildSyncEquityTextRows(equityData: EquityStatementYear[], options?: Ex
     if (showOci) rows.push([lbl(options, 'eq', 'otherComprehensiveIncome', 'Other Comprehensive Income'), ...ociVals]);
     rows.push([lbl(options, 'eq', 'closingReserves', 'Closing Reserves'), ...closeResVals]);
   }
-  getCustomRows(options, 'equity').forEach(ci => pushIfNonZero(ci.label, equityData.map(d => getCustomItemYearValue(ci, d.year))));
+  getCustomRows(options, 'equity').forEach(ci => rows.push([ci.label, ...equityData.map(d => getCustomItemYearValue(ci, d.year))]));
   rows.push([lbl(options, 'eq', 'totalOpeningEquity', 'TOTAL OPENING EQUITY'), ...equityData.map(d => ovVal(options, 'eq', 'totalOpeningEquity', d.year, d.totalOpeningEquity))]);
   rows.push([lbl(options, 'eq', 'totalClosingEquity', 'TOTAL CLOSING EQUITY'), ...equityData.map(d => ovVal(options, 'eq', 'totalClosingEquity', d.year, d.totalClosingEquity))]);
   return rows;
@@ -4428,16 +4480,25 @@ export function buildPreviousTextTables(
   const customBsNca = getCustomRows(options, 'balanceSheet', 'Non-Current Assets');
   const customBsCl = getCustomRows(options, 'balanceSheet', 'Current Liabilities');
   const customBsNcl = getCustomRows(options, 'balanceSheet', 'Non-Current Liabilities');
-  const customBsEq = getCustomRows(options, 'balanceSheet', 'Equity');
+  const customBsEq = [
+    ...getCustomRows(options, 'balanceSheet', 'Equity'),
+    ...getUnscopedCustomRows(options, 'balanceSheet', STD_BS_SECTIONS),
+    ...getCustomRows(options, 'equity'),
+  ];
 
   const customIncRev = getCustomRows(options, 'income', 'Revenue & Gross Margin');
   const customIncOpex = getCustomRows(options, 'income', 'Operating Expenses');
   const customIncNonOp = [...getCustomRows(options, 'income', 'Non-Operating & Tax'), ...getUnscopedCustomIncomeRows(options)];
 
-  const customCfOp = getCustomRows(options, 'cashFlow', 'Operating Activities');
+  const customCfOp = [
+    ...getCustomRows(options, 'cashFlow', 'Operating Activities'),
+    ...getUnscopedCustomRows(options, 'cashFlow', STD_CF_SECTIONS),
+  ];
   const customCfInv = getCustomRows(options, 'cashFlow', 'Investing Activities');
   const customCfFin = getCustomRows(options, 'cashFlow', 'Financing Activities');
   const customEq = getCustomRows(options, 'equity');
+
+  const hasOtherCA = hasAnyNonZeroValue(prevData.map(d => d.otherCurrentAssets ?? 0));
 
   const bsRows: (string | number)[][] = [
     ['PROPERTIES & ASSETS', ...prevData.map(() => '')],
@@ -4445,10 +4506,23 @@ export function buildPreviousTextTables(
   if (isVis(options, 'bs_propertyPlantEquipment')) {
     pushIfNonZero(bsRows, lbl(options, 'bs', 'propertyPlantEquipment', 'Fixed Assets (at cost less depreciation)'), prevData.map(d => d.fixedAssetsWDV));
   }
+  if (isVis(options, 'bs_intangibleAssets')) {
+    pushIfNonZero(bsRows, lbl(options, 'bs', 'intangibleAssets', 'Intangible Assets'), prevData.map(d => d.intangibleAssets ?? 0));
+  }
+  if (isVis(options, 'bs_otherNonCurrentAssets')) {
+    pushIfNonZero(bsRows, lbl(options, 'bs', 'otherNonCurrentAssets', 'Other Non-Current Assets'), prevData.map(d => d.otherNonCurrentAssets ?? 0));
+  }
   customBsNca.forEach(ci => pushIfNonZero(bsRows, ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year))));
   bsRows.push(['Current Assets', ...prevData.map(d => d.totalCurrentAssets)]);
   if (isVis(options, 'bs_otherReceivables')) {
-    pushIfNonZero(bsRows, lbl(options, 'bs', 'otherReceivables', 'Advances, Deposits & Pre-payments'), prevData.map(d => d.advancesDepositsPrepayments));
+    pushIfNonZero(
+      bsRows,
+      lbl(options, 'bs', 'otherReceivables', 'Advances, Deposits & Pre-payments'),
+      prevData.map(d => (hasOtherCA ? (d.otherReceivablesOnly ?? d.advancesDepositsPrepayments) : d.advancesDepositsPrepayments))
+    );
+  }
+  if (isVis(options, 'bs_otherCurrentAssets') && hasOtherCA) {
+    pushIfNonZero(bsRows, lbl(options, 'bs', 'otherCurrentAssets', 'Other Current Assets'), prevData.map(d => d.otherCurrentAssets ?? 0));
   }
   if (isVis(options, 'bs_closingInventory')) {
     pushIfNonZero(bsRows, lbl(options, 'bs', 'closingInventory', 'Stock & Stores'), prevData.map(d => d.stockAndStores));
@@ -4470,7 +4544,17 @@ export function buildPreviousTextTables(
   }
   bsRows.push(['Capital after drawings', ...prevData.map(d => d.capitalAfterDrawings)]);
   customBsEq.forEach(ci => pushIfNonZero(bsRows, ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year))));
-  customBsNcl.forEach(ci => pushIfNonZero(bsRows, ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year))));
+  const nclPrevRows: (string | number)[][] = [];
+  if (isVis(options, 'bs_longTermBorrowings')) {
+    pushIfNonZero(nclPrevRows, lbl(options, 'bs', 'longTermBorrowings', 'Long Term Loan'), prevData.map(d => d.longTermLoan ?? 0));
+  }
+  if (isVis(options, 'bs_otherNonCurrentLiabilities')) {
+    pushIfNonZero(nclPrevRows, lbl(options, 'bs', 'otherNonCurrentLiabilities', 'Other Non-Current Liabilities'), prevData.map(d => d.otherNonCurrentLiabilities ?? 0));
+  }
+  customBsNcl.forEach(ci => pushIfNonZero(nclPrevRows, ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year))));
+  if (nclPrevRows.length > 0) {
+    bsRows.push(['Non-Current Liabilities', ...prevData.map(() => '')], ...nclPrevRows);
+  }
   bsRows.push(['Current Liabilities', ...prevData.map(d => d.totalCurrentLiabilities)]);
   if (isVis(options, 'bs_otherPayables')) {
     pushIfNonZero(bsRows, lbl(options, 'bs', 'otherPayables', 'For Expenses'), prevData.map(d => d.forExpenses));
@@ -4551,6 +4635,9 @@ export function buildPreviousTextTables(
   if (isVis(options, 'cf_dep')) {
     pushIfNonZero(cfRows, lbl(options, 'cf', 'adjDepreciation', 'Add: Depreciation of Tangible Fixed Assets'), prevData.map(d => d.cfDepreciation));
   }
+  if (isVis(options, 'cf_amort') && isVis(options, 'bs_intangibleAssets')) {
+    pushIfNonZero(cfRows, lbl(options, 'cf', 'adjAmortization', 'Add: Amortization of Intangible Assets'), prevData.map(d => d.cfAmortization ?? 0));
+  }
   if (isVis(options, 'cf_wc_receivables')) {
     pushIfNonZero(cfRows, lbl(options, 'cf', 'changeInReceivables', 'Add: (Increase) or decrease in Current Assets'), prevData.map(d => d.cfChangeInCurrentAssets));
   }
@@ -4568,10 +4655,22 @@ export function buildPreviousTextTables(
   if (isVis(options, 'cf_pur_intangible')) {
     pushIfNonZero(cfRows, lbl(options, 'cf', 'purchaseIntangibles', 'Disposal of Intangible Assets'), prevData.map(d => d.cfDisposalIntangible));
   }
+  if (isVis(options, 'cf_dividends_rec')) {
+    pushIfNonZero(cfRows, lbl(options, 'cf', 'dividendsReceived', 'Dividends Received'), prevData.map(d => d.cfDividendsReceived ?? 0));
+  }
   customCfInv.forEach(ci => pushIfNonZero(cfRows, ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year))));
   cfRows.push(['Net Cash used in investing Activities', ...prevData.map(d => d.cfNetCashInvesting)]);
 
   cfRows.push(['c) CASH FLOWS FROM FINANCING ACTIVITIES:', ...prevData.map(() => '')]);
+  if (isVis(options, 'cf_shares_issue')) {
+    pushIfNonZero(cfRows, lbl(options, 'cf', 'financingProceedsShares', 'Proceeds from Issue of Share Capital'), prevData.map(d => d.cfFinancingProceedsShares ?? 0));
+  }
+  if (isVis(options, 'cf_borrow_proceeds')) {
+    pushIfNonZero(cfRows, lbl(options, 'cf', 'financingProceedsBorrowings', 'Proceeds from Borrowings & Financing'), prevData.map(d => d.cfFinancingProceedsBorrowings ?? 0));
+  }
+  if (isVis(options, 'cf_borrow_repay')) {
+    pushIfNonZero(cfRows, lbl(options, 'cf', 'repaymentOfBorrowings', 'Repayment of Borrowings & Financing'), prevData.map(d => -(d.cfRepaymentOfBorrowings ?? 0)));
+  }
   if (isVis(options, 'cf_dividends_paid')) {
     pushIfNonZero(cfRows, lbl(options, 'cf', 'financingDividendsPaid', 'Drawings'), prevData.map(d => d.cfDrawings));
   }
@@ -4632,16 +4731,25 @@ export function exportPreviousFinancialsExcel(
   const customBsNca = getCustomRows(options, 'balanceSheet', 'Non-Current Assets');
   const customBsCl = getCustomRows(options, 'balanceSheet', 'Current Liabilities');
   const customBsNcl = getCustomRows(options, 'balanceSheet', 'Non-Current Liabilities');
-  const customBsEq = getCustomRows(options, 'balanceSheet', 'Equity');
+  const customBsEq = [
+    ...getCustomRows(options, 'balanceSheet', 'Equity'),
+    ...getUnscopedCustomRows(options, 'balanceSheet', STD_BS_SECTIONS),
+    ...getCustomRows(options, 'equity'),
+  ];
 
   const customIncRev = getCustomRows(options, 'income', 'Revenue & Gross Margin');
   const customIncOpex = getCustomRows(options, 'income', 'Operating Expenses');
   const customIncNonOp = [...getCustomRows(options, 'income', 'Non-Operating & Tax'), ...getUnscopedCustomIncomeRows(options)];
 
-  const customCfOp = getCustomRows(options, 'cashFlow', 'Operating Activities');
+  const customCfOp = [
+    ...getCustomRows(options, 'cashFlow', 'Operating Activities'),
+    ...getUnscopedCustomRows(options, 'cashFlow', STD_CF_SECTIONS),
+  ];
   const customCfInv = getCustomRows(options, 'cashFlow', 'Investing Activities');
   const customCfFin = getCustomRows(options, 'cashFlow', 'Financing Activities');
   const customEq = getCustomRows(options, 'equity');
+
+  const hasOtherCA = hasAnyNonZeroValue(prevData.map(d => d.otherCurrentAssets ?? 0));
 
   // 1. STATEMENT OF FINANCIAL POSITION (dynamic Excel row tracking)
   const bsRows: ExcelCellValue[][] = [
@@ -4664,6 +4772,12 @@ export function exportPreviousFinancialsExcel(
   if (isVis(options, 'bs_propertyPlantEquipment')) {
     pushBsIfNonZero(lbl(options, 'bs', 'propertyPlantEquipment', 'Fixed Assets (at cost less depreciation)'), prevData.map(d => d.fixedAssetsWDV), assetInputs);
   }
+  if (isVis(options, 'bs_intangibleAssets')) {
+    pushBsIfNonZero(lbl(options, 'bs', 'intangibleAssets', 'Intangible Assets'), prevData.map(d => d.intangibleAssets ?? 0), assetInputs);
+  }
+  if (isVis(options, 'bs_otherNonCurrentAssets')) {
+    pushBsIfNonZero(lbl(options, 'bs', 'otherNonCurrentAssets', 'Other Non-Current Assets'), prevData.map(d => d.otherNonCurrentAssets ?? 0), assetInputs);
+  }
   customBsNca.forEach(ci => {
     pushBsIfNonZero(ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year)), assetInputs);
   });
@@ -4672,7 +4786,14 @@ export function exportPreviousFinancialsExcel(
   bsRows.push(['Current Assets', ...prevData.map(d => nCell(d.totalCurrentAssets))]);
   const caChildRows: number[] = [];
   if (isVis(options, 'bs_otherReceivables')) {
-    pushBsIfNonZero(lbl(options, 'bs', 'otherReceivables', 'Advances, Deposits & Pre-payments'), prevData.map(d => d.advancesDepositsPrepayments), caChildRows);
+    pushBsIfNonZero(
+      lbl(options, 'bs', 'otherReceivables', 'Advances, Deposits & Pre-payments'),
+      prevData.map(d => (hasOtherCA ? (d.otherReceivablesOnly ?? d.advancesDepositsPrepayments) : d.advancesDepositsPrepayments)),
+      caChildRows
+    );
+  }
+  if (isVis(options, 'bs_otherCurrentAssets') && hasOtherCA) {
+    pushBsIfNonZero(lbl(options, 'bs', 'otherCurrentAssets', 'Other Current Assets'), prevData.map(d => d.otherCurrentAssets ?? 0), caChildRows);
   }
   if (isVis(options, 'bs_closingInventory')) {
     pushBsIfNonZero(lbl(options, 'bs', 'closingInventory', 'Stock & Stores'), prevData.map(d => d.stockAndStores), caChildRows);
@@ -4724,9 +4845,26 @@ export function exportPreviousFinancialsExcel(
   customBsEq.forEach(ci => {
     pushBsIfNonZero(ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year)), totalCapLiabInputs);
   });
+  const nclExcelCandidates: { label: string; vals: number[] }[] = [];
+  if (isVis(options, 'bs_longTermBorrowings')) {
+    const vals = prevData.map(d => d.longTermLoan ?? 0);
+    if (hasAnyNonZeroValue(vals)) nclExcelCandidates.push({ label: lbl(options, 'bs', 'longTermBorrowings', 'Long Term Loan'), vals });
+  }
+  if (isVis(options, 'bs_otherNonCurrentLiabilities')) {
+    const vals = prevData.map(d => d.otherNonCurrentLiabilities ?? 0);
+    if (hasAnyNonZeroValue(vals)) nclExcelCandidates.push({ label: lbl(options, 'bs', 'otherNonCurrentLiabilities', 'Other Non-Current Liabilities'), vals });
+  }
   customBsNcl.forEach(ci => {
-    pushBsIfNonZero(ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year)), totalCapLiabInputs);
+    const vals = prevData.map(d => getCustomItemYearValue(ci, d.year));
+    if (hasAnyNonZeroValue(vals)) nclExcelCandidates.push({ label: ci.label, vals });
   });
+  if (nclExcelCandidates.length > 0) {
+    bsRows.push(['Non-Current Liabilities', ...prevData.map(() => '')]);
+    nclExcelCandidates.forEach(item => {
+      totalCapLiabInputs.push(nextBsRow());
+      bsRows.push([item.label, ...item.vals.map(v => nCell(v))]);
+    });
+  }
   const clHeaderIdx = bsRows.length;
   const clExcelRow = clHeaderIdx + 1;
   bsRows.push(['Current Liabilities', ...prevData.map(d => nCell(d.totalCurrentLiabilities))]);
@@ -4757,7 +4895,7 @@ export function exportPreviousFinancialsExcel(
   ]);
   const prevOrientation = prevData.length > 4 ? 'landscape' : 'portrait';
   const prevBoldLabels = new Set([
-    'Taka', 'Subtotal', 'Capital after drawings', 'Total', 'Current Assets', 'Current Liabilities',
+    'Taka', 'Subtotal', 'Capital after drawings', 'Total', 'Current Assets', 'Non-Current Liabilities', 'Current Liabilities',
     'Gross Profit', 'Less- Administrative & Selling Expenses', 'Net Operating Profit', 'Net Profit After Income Tax',
     'Net Cash from operating activities', 'Net Cash used in investing Activities', 'Net Cash used in Financing Activities',
     'f) Cash & Cash Equivalents at end of period (D+E)',
@@ -4921,6 +5059,9 @@ export function exportPreviousFinancialsExcel(
   if (isVis(options, 'cf_dep')) {
     pushCfIfNonZero(lbl(options, 'cf', 'adjDepreciation', 'Add: Depreciation of Tangible Fixed Assets'), prevData.map(d => d.cfDepreciation), cfOpChildRows);
   }
+  if (isVis(options, 'cf_amort') && isVis(options, 'bs_intangibleAssets')) {
+    pushCfIfNonZero(lbl(options, 'cf', 'adjAmortization', 'Add: Amortization of Intangible Assets'), prevData.map(d => d.cfAmortization ?? 0), cfOpChildRows);
+  }
   if (isVis(options, 'cf_wc_receivables')) {
     pushCfIfNonZero(lbl(options, 'cf', 'changeInReceivables', 'Add: (Increase) or decrease in Current Assets'), prevData.map(d => d.cfChangeInCurrentAssets), cfOpChildRows);
   }
@@ -4945,6 +5086,9 @@ export function exportPreviousFinancialsExcel(
   if (isVis(options, 'cf_pur_intangible')) {
     pushCfIfNonZero(lbl(options, 'cf', 'purchaseIntangibles', 'Disposal of Intangible Assets'), prevData.map(d => d.cfDisposalIntangible), cfInvChildRows);
   }
+  if (isVis(options, 'cf_dividends_rec')) {
+    pushCfIfNonZero(lbl(options, 'cf', 'dividendsReceived', 'Dividends Received'), prevData.map(d => d.cfDividendsReceived ?? 0), cfInvChildRows);
+  }
   customCfInv.forEach(ci => {
     pushCfIfNonZero(ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year)), cfInvChildRows);
   });
@@ -4956,6 +5100,15 @@ export function exportPreviousFinancialsExcel(
 
   cfRows.push(['c) CASH FLOWS FROM FINANCING ACTIVITIES:', ...prevData.map(() => '')]);
   const cfFinChildRows: number[] = [];
+  if (isVis(options, 'cf_shares_issue')) {
+    pushCfIfNonZero(lbl(options, 'cf', 'financingProceedsShares', 'Proceeds from Issue of Share Capital'), prevData.map(d => d.cfFinancingProceedsShares ?? 0), cfFinChildRows);
+  }
+  if (isVis(options, 'cf_borrow_proceeds')) {
+    pushCfIfNonZero(lbl(options, 'cf', 'financingProceedsBorrowings', 'Proceeds from Borrowings & Financing'), prevData.map(d => d.cfFinancingProceedsBorrowings ?? 0), cfFinChildRows);
+  }
+  if (isVis(options, 'cf_borrow_repay')) {
+    pushCfIfNonZero(lbl(options, 'cf', 'repaymentOfBorrowings', 'Repayment of Borrowings & Financing'), prevData.map(d => -(d.cfRepaymentOfBorrowings ?? 0)), cfFinChildRows);
+  }
   if (isVis(options, 'cf_dividends_paid')) {
     pushCfIfNonZero(lbl(options, 'cf', 'financingDividendsPaid', 'Drawings'), prevData.map(d => d.cfDrawings), cfFinChildRows);
   }
@@ -5135,7 +5288,7 @@ export async function exportPreviousFinancialsWord(
 
   const prevBoldLabels = new Set([
     'PROPERTIES & ASSETS', 'CAPITAL & LIABILITIES',
-    'Taka', 'Subtotal', 'Capital after drawings', 'Total', 'Current Assets', 'Current Liabilities',
+    'Taka', 'Subtotal', 'Capital after drawings', 'Total', 'Current Assets', 'Non-Current Liabilities', 'Current Liabilities',
     'Gross Profit', 'Less- Administrative & Selling Expenses', 'Net Operating Profit', 'Net Profit After Income Tax',
     'Net Cash from operating activities', 'Net Cash used in investing Activities', 'Net Cash used in Financing Activities',
     'a) CASH FLOWS FROM OPERATING ACTIVITIES:', 'b) CASH FLOWS FROM INVESTING ACTIVITIES:', 'c) CASH FLOWS FROM FINANCING ACTIVITIES:',
@@ -5349,7 +5502,7 @@ export function exportPreviousFinancialsPdf(
   };
 
   const boldLabels = new Set([
-    'Taka', 'Subtotal', 'Capital after drawings', 'Total', 'Current Assets', 'Current Liabilities',
+    'Taka', 'Subtotal', 'Capital after drawings', 'Total', 'Current Assets', 'Non-Current Liabilities', 'Current Liabilities',
     'Gross Profit', 'Less- Administrative & Selling Expenses', 'Net Operating Profit', 'Net Profit After Income Tax',
     'Net Cash from operating activities', 'Net Cash used in investing Activities', 'Net Cash used in Financing Activities',
     'f) Cash & Cash Equivalents at end of period (D+E)',
@@ -5581,13 +5734,20 @@ export function buildProjectedTextTables(
   const customBsNca = getCustomRows(options, 'balanceSheet', 'Non-Current Assets');
   const customBsCl = getCustomRows(options, 'balanceSheet', 'Current Liabilities');
   const customBsNcl = getCustomRows(options, 'balanceSheet', 'Non-Current Liabilities');
-  const customBsEq = getCustomRows(options, 'balanceSheet', 'Equity');
+  const customBsEq = [
+    ...getCustomRows(options, 'balanceSheet', 'Equity'),
+    ...getUnscopedCustomRows(options, 'balanceSheet', STD_BS_SECTIONS),
+    ...getCustomRows(options, 'equity'),
+  ];
 
   const customIncRev = getCustomRows(options, 'income', 'Revenue & Gross Margin');
   const customIncOpex = getCustomRows(options, 'income', 'Operating Expenses');
   const customIncNonOp = [...getCustomRows(options, 'income', 'Non-Operating & Tax'), ...getUnscopedCustomIncomeRows(options)];
 
-  const customCfOp = getCustomRows(options, 'cashFlow', 'Operating Activities');
+  const customCfOp = [
+    ...getCustomRows(options, 'cashFlow', 'Operating Activities'),
+    ...getUnscopedCustomRows(options, 'cashFlow', STD_CF_SECTIONS),
+  ];
   const customCfInv = getCustomRows(options, 'cashFlow', 'Investing Activities');
   const customCfFin = getCustomRows(options, 'cashFlow', 'Financing Activities');
 
@@ -5595,6 +5755,7 @@ export function buildProjectedTextTables(
   const cogsBaseLbl = lbl(options, 'income', 'costOfSales', 'Cost of Goods Sold');
 
   const showAdminOpexRow = isVis(options, 'inc_operatingExpenses') || isVis(options, 'inc_depreciationExpense');
+  const hasOtherCA = hasAnyNonZeroValue(projData.map(d => d.otherCurrentAssets ?? 0));
 
   const pushProj3IfNonZero = (target: (string | number)[][], label: string, noteRef: string, vals: number[]) => {
     if (hasAnyNonZeroValue(vals)) target.push([label, noteRef, ...vals]);
@@ -5609,23 +5770,34 @@ export function buildProjectedTextTables(
   ];
   const ncaDetailRows: (string | number)[][] = [];
   if (isVis(options, 'bs_propertyPlantEquipment')) {
-    pushProj3IfNonZero(
-      ncaDetailRows,
-      ppeLbl,
-      'Schedule-A',
-      projData.map(d => d.propertyPlantEquipments - customBsNca.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0))
-    );
+    pushProj3IfNonZero(ncaDetailRows, ppeLbl, 'Schedule-A', projData.map(d => d.propertyPlantEquipments));
+  }
+  if (isVis(options, 'bs_intangibleAssets')) {
+    pushProj3IfNonZero(ncaDetailRows, lbl(options, 'bs', 'intangibleAssets', 'Intangible Assets'), '', projData.map(d => d.intangibleAssets ?? 0));
+  }
+  if (isVis(options, 'bs_otherNonCurrentAssets')) {
+    pushProj3IfNonZero(ncaDetailRows, lbl(options, 'bs', 'otherNonCurrentAssets', 'Other Non-Current Assets'), '', projData.map(d => d.otherNonCurrentAssets ?? 0));
   }
   customBsNca.forEach(ci => pushProj3IfNonZero(ncaDetailRows, ci.label, '', projData.map(d => getCustomItemYearValue(ci, d.year))));
   if (ncaDetailRows.length > 0) {
     bsRows.push(['Non Current Assets', '', ...projData.map(() => '')], ...ncaDetailRows);
   }
-  bsRows.push(['Total Non-Current Assets', '', ...projData.map(d => d.propertyPlantEquipments)]);
+  bsRows.push(['Total Non-Current Assets', '', ...projData.map(d => d.totalNonCurrentAssets ?? d.propertyPlantEquipments)]);
 
   const caDetailRows: (string | number)[][] = [];
   if (isVis(options, 'bs_closingInventory')) pushProj3IfNonZero(caDetailRows, invLbl, '3.00', projData.map(d => d.inventories));
   if (isVis(options, 'bs_tradeReceivables')) pushProj3IfNonZero(caDetailRows, trRecLbl, '4.00', projData.map(d => d.tradeAndOtherReceivables));
-  if (isVis(options, 'bs_otherReceivables')) pushProj3IfNonZero(caDetailRows, advLbl, '5.00', projData.map(d => d.advanceDepositPrepayments));
+  if (isVis(options, 'bs_otherReceivables')) {
+    pushProj3IfNonZero(
+      caDetailRows,
+      advLbl,
+      '5.00',
+      projData.map(d => (hasOtherCA ? (d.otherReceivablesOnly ?? d.advanceDepositPrepayments) : d.advanceDepositPrepayments))
+    );
+  }
+  if (isVis(options, 'bs_otherCurrentAssets') && hasOtherCA) {
+    pushProj3IfNonZero(caDetailRows, lbl(options, 'bs', 'otherCurrentAssets', 'Other Current Assets'), '', projData.map(d => d.otherCurrentAssets ?? 0));
+  }
   if (isVis(options, 'bs_cashAndEquivalents')) pushProj3IfNonZero(caDetailRows, cashLbl, '6.00', projData.map(d => d.cashAndCashEquivalents));
   customBsCa.forEach(ci => pushProj3IfNonZero(caDetailRows, ci.label, '', projData.map(d => getCustomItemYearValue(ci, d.year))));
   if (caDetailRows.length > 0) {
@@ -5647,11 +5819,14 @@ export function buildProjectedTextTables(
 
   const nclDetailRows: (string | number)[][] = [];
   if (isVis(options, 'bs_longTermBorrowings')) {
+    pushProj3IfNonZero(nclDetailRows, ltLoanLbl, '7.00', projData.map(d => d.longTermLoan));
+  }
+  if (isVis(options, 'bs_otherNonCurrentLiabilities')) {
     pushProj3IfNonZero(
       nclDetailRows,
-      ltLoanLbl,
-      '7.00',
-      projData.map(d => d.longTermLoan - customBsNcl.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0))
+      lbl(options, 'bs', 'otherNonCurrentLiabilities', 'Other Non-Current Liabilities'),
+      '',
+      projData.map(d => d.otherNonCurrentLiabilities ?? 0)
     );
   }
   customBsNcl.forEach(ci => pushProj3IfNonZero(nclDetailRows, ci.label, '', projData.map(d => getCustomItemYearValue(ci, d.year))));
@@ -5725,12 +5900,16 @@ export function buildProjectedTextTables(
   if (isVis(options, 'cf_tax_paid')) pushCfIfNonZero(cfRows, lbl(options, 'cf', 'incomeTaxPaid', 'Increase/(Decrease) In Provisions For Tax'), projData.map(d => d.cfChangeProvisionsTax));
   if (isVis(options, 'cf_wc_other_pay')) pushCfIfNonZero(cfRows, lbl(options, 'cf', 'changeInOtherPayables', 'Increase/(Decrease) Liabilities For Expense'), projData.map(d => d.cfChangeLiabilitiesExp));
   if (isVis(options, 'cf_dep')) pushCfIfNonZero(cfRows, lbl(options, 'cf', 'adjDepreciation', 'Depreciation'), projData.map(d => d.cfDepreciation));
+  if (isVis(options, 'cf_amort') && isVis(options, 'bs_intangibleAssets')) {
+    pushCfIfNonZero(cfRows, lbl(options, 'cf', 'adjAmortization', 'Amortization of Intangible Assets'), projData.map(d => d.cfAmortization ?? 0));
+  }
   customCfOp.forEach(ci => pushCfIfNonZero(cfRows, ci.label, projData.map(d => getCustomItemYearValue(ci, d.year))));
   cfRows.push(['Net Cash Used by Operating Activities', ...projData.map(d => d.cfNetCashOperating)]);
 
   cfRows.push(['2. CASH FLOW FROM INVESTING ACTIVITIES:', ...projData.map(() => '')]);
   const invInflowRows: (string | number)[][] = [];
   if (isVis(options, 'cf_sale_ppe')) pushCfIfNonZero(invInflowRows, lbl(options, 'cf', 'salePPE', 'Sale Of Property, Plant & Equipment'), projData.map(d => d.cfSalePPE));
+  if (isVis(options, 'cf_dividends_rec')) pushCfIfNonZero(invInflowRows, lbl(options, 'cf', 'dividendsReceived', 'Dividends Received'), projData.map(d => d.cfDividendsReceived ?? 0));
   pushCfIfNonZero(invInflowRows, 'Capital', projData.map(d => d.cfInvestingCapitalInflow));
   if (invInflowRows.length > 0) {
     cfRows.push(['Inflows:', ...projData.map(() => '')], ...invInflowRows);
@@ -5738,6 +5917,9 @@ export function buildProjectedTextTables(
   const invOutflowRows: (string | number)[][] = [];
   pushCfIfNonZero(invOutflowRows, 'Preliminary Expenses', projData.map(d => d.cfPreliminaryExpenses));
   if (isVis(options, 'cf_pur_ppe')) pushCfIfNonZero(invOutflowRows, lbl(options, 'cf', 'purchasePPE', 'Purchase Property, Plant & Equipment'), projData.map(d => d.cfPurchasePPE));
+  if (isVis(options, 'cf_pur_intangible') && isVis(options, 'bs_intangibleAssets')) {
+    pushCfIfNonZero(invOutflowRows, lbl(options, 'cf', 'purchaseIntangibles', 'Purchase Of Intangible Assets'), projData.map(d => d.cfPurchaseIntangibles ?? 0));
+  }
   pushCfIfNonZero(invOutflowRows, 'Purchase Investment In Debt Or Securities', projData.map(d => d.cfPurchaseInvestment));
   customCfInv.forEach(ci => pushCfIfNonZero(invOutflowRows, ci.label, projData.map(d => getCustomItemYearValue(ci, d.year))));
   if (invOutflowRows.length > 0) {
@@ -5837,17 +6019,25 @@ export function exportProjectedFinancialsExcel(
   const customBsNca = getCustomRows(options, 'balanceSheet', 'Non-Current Assets');
   const customBsCl = getCustomRows(options, 'balanceSheet', 'Current Liabilities');
   const customBsNcl = getCustomRows(options, 'balanceSheet', 'Non-Current Liabilities');
-  const customBsEq = getCustomRows(options, 'balanceSheet', 'Equity');
+  const customBsEq = [
+    ...getCustomRows(options, 'balanceSheet', 'Equity'),
+    ...getUnscopedCustomRows(options, 'balanceSheet', STD_BS_SECTIONS),
+    ...getCustomRows(options, 'equity'),
+  ];
 
   const customIncRev = getCustomRows(options, 'income', 'Revenue & Gross Margin');
   const customIncOpex = getCustomRows(options, 'income', 'Operating Expenses');
   const customIncNonOp = [...getCustomRows(options, 'income', 'Non-Operating & Tax'), ...getUnscopedCustomIncomeRows(options)];
 
-  const customCfOp = getCustomRows(options, 'cashFlow', 'Operating Activities');
+  const customCfOp = [
+    ...getCustomRows(options, 'cashFlow', 'Operating Activities'),
+    ...getUnscopedCustomRows(options, 'cashFlow', STD_CF_SECTIONS),
+  ];
   const customCfInv = getCustomRows(options, 'cashFlow', 'Investing Activities');
   const customCfFin = getCustomRows(options, 'cashFlow', 'Financing Activities');
 
   const showAdminOpexRow = isVis(options, 'inc_operatingExpenses') || isVis(options, 'inc_depreciationExpense');
+  const hasOtherCA = hasAnyNonZeroValue(projData.map(d => d.otherCurrentAssets ?? 0));
 
   // 1. Statement of Financial Position (dynamic Excel row tracking)
   const bsRows: ExcelCellValue[][] = [
@@ -5863,8 +6053,16 @@ export function exportProjectedFinancialsExcel(
   const nextBsRow = () => bsRows.length + 1;
   const ncaCandidates: { label: string; noteRef: string; vals: number[] }[] = [];
   if (isVis(options, 'bs_propertyPlantEquipment')) {
-    const ppeVals = projData.map(d => d.propertyPlantEquipments - customBsNca.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0));
+    const ppeVals = projData.map(d => d.propertyPlantEquipments);
     if (hasAnyNonZeroValue(ppeVals)) ncaCandidates.push({ label: ppeLbl, noteRef: 'Schedule-A', vals: ppeVals });
+  }
+  if (isVis(options, 'bs_intangibleAssets')) {
+    const vals = projData.map(d => d.intangibleAssets ?? 0);
+    if (hasAnyNonZeroValue(vals)) ncaCandidates.push({ label: lbl(options, 'bs', 'intangibleAssets', 'Intangible Assets'), noteRef: '', vals });
+  }
+  if (isVis(options, 'bs_otherNonCurrentAssets')) {
+    const vals = projData.map(d => d.otherNonCurrentAssets ?? 0);
+    if (hasAnyNonZeroValue(vals)) ncaCandidates.push({ label: lbl(options, 'bs', 'otherNonCurrentAssets', 'Other Non-Current Assets'), noteRef: '', vals });
   }
   customBsNca.forEach(ci => {
     const vals = projData.map(d => getCustomItemYearValue(ci, d.year));
@@ -5883,7 +6081,7 @@ export function exportProjectedFinancialsExcel(
     'Total Non-Current Assets',
     '',
     ...projData.map((d, i) =>
-      fCell(excelSumRows(colLetter(yearStartColIdx + i), ncaRows), d.propertyPlantEquipments)
+      fCell(excelSumRows(colLetter(yearStartColIdx + i), ncaRows), d.totalNonCurrentAssets ?? d.propertyPlantEquipments)
     ),
   ]);
 
@@ -5897,8 +6095,12 @@ export function exportProjectedFinancialsExcel(
     if (hasAnyNonZeroValue(vals)) caCandidates.push({ label: trRecLbl, noteRef: '4.00', vals });
   }
   if (isVis(options, 'bs_otherReceivables')) {
-    const vals = projData.map(d => d.advanceDepositPrepayments);
+    const vals = projData.map(d => (hasOtherCA ? (d.otherReceivablesOnly ?? d.advanceDepositPrepayments) : d.advanceDepositPrepayments));
     if (hasAnyNonZeroValue(vals)) caCandidates.push({ label: advLbl, noteRef: '5.00', vals });
+  }
+  if (isVis(options, 'bs_otherCurrentAssets') && hasOtherCA) {
+    const vals = projData.map(d => d.otherCurrentAssets ?? 0);
+    if (hasAnyNonZeroValue(vals)) caCandidates.push({ label: lbl(options, 'bs', 'otherCurrentAssets', 'Other Current Assets'), noteRef: '', vals });
   }
   if (isVis(options, 'bs_cashAndEquivalents')) {
     const vals = projData.map(d => d.cashAndCashEquivalents);
@@ -5967,8 +6169,12 @@ export function exportProjectedFinancialsExcel(
 
   const nclCandidates: { label: string; noteRef: string; vals: number[] }[] = [];
   if (isVis(options, 'bs_longTermBorrowings')) {
-    const vals = projData.map(d => d.longTermLoan - customBsNcl.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0));
+    const vals = projData.map(d => d.longTermLoan);
     if (hasAnyNonZeroValue(vals)) nclCandidates.push({ label: ltLoanLbl, noteRef: '7.00', vals });
+  }
+  if (isVis(options, 'bs_otherNonCurrentLiabilities')) {
+    const vals = projData.map(d => d.otherNonCurrentLiabilities ?? 0);
+    if (hasAnyNonZeroValue(vals)) nclCandidates.push({ label: lbl(options, 'bs', 'otherNonCurrentLiabilities', 'Other Non-Current Liabilities'), noteRef: '', vals });
   }
   customBsNcl.forEach(ci => {
     const vals = projData.map(d => getCustomItemYearValue(ci, d.year));
@@ -6235,6 +6441,9 @@ export function exportProjectedFinancialsExcel(
   if (isVis(options, 'cf_tax_paid')) pushCfExcelIfNonZero(lbl(options, 'cf', 'incomeTaxPaid', 'Increase/(Decrease) In Provisions For Tax'), projData.map(d => d.cfChangeProvisionsTax), cfOpRows);
   if (isVis(options, 'cf_wc_other_pay')) pushCfExcelIfNonZero(lbl(options, 'cf', 'changeInOtherPayables', 'Increase/(Decrease) Liabilities For Expense'), projData.map(d => d.cfChangeLiabilitiesExp), cfOpRows);
   if (isVis(options, 'cf_dep')) pushCfExcelIfNonZero(lbl(options, 'cf', 'adjDepreciation', 'Depreciation'), projData.map(d => d.cfDepreciation), cfOpRows);
+  if (isVis(options, 'cf_amort') && isVis(options, 'bs_intangibleAssets')) {
+    pushCfExcelIfNonZero(lbl(options, 'cf', 'adjAmortization', 'Amortization of Intangible Assets'), projData.map(d => d.cfAmortization ?? 0), cfOpRows);
+  }
   customCfOp.forEach(ci => pushCfExcelIfNonZero(ci.label, projData.map(d => getCustomItemYearValue(ci, d.year)), cfOpRows));
   const cfNetOpRow = nextCfRow();
   cfRows.push([
@@ -6248,6 +6457,10 @@ export function exportProjectedFinancialsExcel(
   if (isVis(options, 'cf_sale_ppe')) {
     const vals = projData.map(d => d.cfSalePPE);
     if (hasAnyNonZeroValue(vals)) invInflowCandidates.push({ label: lbl(options, 'cf', 'salePPE', 'Sale Of Property, Plant & Equipment'), vals });
+  }
+  if (isVis(options, 'cf_dividends_rec')) {
+    const vals = projData.map(d => d.cfDividendsReceived ?? 0);
+    if (hasAnyNonZeroValue(vals)) invInflowCandidates.push({ label: lbl(options, 'cf', 'dividendsReceived', 'Dividends Received'), vals });
   }
   const invCapVals = projData.map(d => d.cfInvestingCapitalInflow);
   if (hasAnyNonZeroValue(invCapVals)) invInflowCandidates.push({ label: 'Capital', vals: invCapVals });
@@ -6264,6 +6477,10 @@ export function exportProjectedFinancialsExcel(
   if (isVis(options, 'cf_pur_ppe')) {
     const vals = projData.map(d => d.cfPurchasePPE);
     if (hasAnyNonZeroValue(vals)) invOutflowCandidates.push({ label: lbl(options, 'cf', 'purchasePPE', 'Purchase Property, Plant & Equipment'), vals });
+  }
+  if (isVis(options, 'cf_pur_intangible') && isVis(options, 'bs_intangibleAssets')) {
+    const vals = projData.map(d => d.cfPurchaseIntangibles ?? 0);
+    if (hasAnyNonZeroValue(vals)) invOutflowCandidates.push({ label: lbl(options, 'cf', 'purchaseIntangibles', 'Purchase Of Intangible Assets'), vals });
   }
   const purInvVals = projData.map(d => d.cfPurchaseInvestment);
   if (hasAnyNonZeroValue(purInvVals)) invOutflowCandidates.push({ label: 'Purchase Investment In Debt Or Securities', vals: purInvVals });

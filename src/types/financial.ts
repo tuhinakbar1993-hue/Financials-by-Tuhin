@@ -342,7 +342,11 @@ export interface PreviousFormatYearData {
 
   // Statement of Financial Position
   fixedAssetsWDV: number;
+  intangibleAssets?: number;
+  otherNonCurrentAssets?: number;
   advancesDepositsPrepayments: number;
+  otherReceivablesOnly?: number;
+  otherCurrentAssets?: number;
   stockAndStores: number; // exact closingInventory
   billsReceivable: number;
   cashAndCashEquivalents: number;
@@ -354,6 +358,8 @@ export interface PreviousFormatYearData {
   capitalSubtotal: number;
   drawings: number;
   capitalAfterDrawings: number;
+  longTermLoan?: number;
+  otherNonCurrentLiabilities?: number;
   forExpenses: number;
   accountsPayable: number;
   shortTermLoan: number;
@@ -389,14 +395,18 @@ export interface PreviousFormatYearData {
   // Statement of Cash Flows
   cfNetIncome: number;
   cfDepreciation: number;
+  cfAmortization?: number;
   cfChangeInCurrentAssets: number;
   cfChangeInCWIP: number;
   cfChangeInCurrentLiabilities: number;
   cfNetCashOperating: number;
   cfAcquisitionPPE: number;
   cfDisposalIntangible: number;
+  cfDividendsReceived?: number;
   cfNetCashInvesting: number;
   cfDrawings: number;
+  cfFinancingProceedsShares?: number;
+  cfFinancingProceedsBorrowings?: number;
   cfRepaymentOfBorrowings: number; // exact repaymentOfBorrowings (reflected cleanly)
   cfOpeningBalance: number;
   cfNetCashFinancing: number;
@@ -412,6 +422,8 @@ export interface PreviousFormatYearData {
   eqNetProfitForYear: number;
   eqDividendsPaid: number;
   eqClosingRetainedEarnings: number;
+  eqOpeningReserves?: number;
+  eqOtherComprehensiveIncome?: number;
   eqClosingReserves: number;
   eqTotalClosingEquity: number;
 
@@ -424,6 +436,7 @@ export interface PreviousFormatYearData {
   faDepreciationCharged: number;
   faWDV: number;
   faGrossAssetBase: number; // exact fixedAssetsGross
+  faSchedule?: ScheduleOfFixedAssetsYear;
 }
 
 export interface PreviousComparativePair {
@@ -440,9 +453,14 @@ export interface ProjectedFormatYearData {
 
   // Statement of Financial Position
   propertyPlantEquipments: number; // Schedule-A WDV
+  intangibleAssets?: number;
+  otherNonCurrentAssets?: number;
+  totalNonCurrentAssets?: number;
   inventories: number; // Note 3.00 (exact closingInventory)
   tradeAndOtherReceivables: number; // Note 4.00
   advanceDepositPrepayments: number; // Note 5.00
+  otherReceivablesOnly?: number;
+  otherCurrentAssets?: number;
   cashAndCashEquivalents: number; // Note 6.00
   totalCurrentAssets: number;
   totalAssets: number;
@@ -455,6 +473,7 @@ export interface ProjectedFormatYearData {
   closingCapital: number;
 
   longTermLoan: number; // Note 7.00
+  otherNonCurrentLiabilities?: number;
   tradeAndOtherPayables: number; // Note 8.00
   provisionsForTax: number; // Note 9.00
   shortTermLoan: number; // Note 10.00
@@ -486,13 +505,16 @@ export interface ProjectedFormatYearData {
   cfChangeProvisionsTax: number;
   cfChangeLiabilitiesExp: number;
   cfDepreciation: number;
+  cfAmortization?: number;
   cfNetCashOperating: number;
 
   cfSalePPE: number;
   cfInvestingCapitalInflow: number;
   cfPreliminaryExpenses: number;
   cfPurchasePPE: number;
+  cfPurchaseIntangibles?: number;
   cfPurchaseInvestment: number;
+  cfDividendsReceived?: number;
   cfNetCashInvesting: number;
 
   cfLoanReceived: number; // Net debt inflow / (-repaymentOfBorrowings)
@@ -539,6 +561,7 @@ export interface ProjectedFormatYearData {
   schedDepreciation: number;
   schedWDV: number;
   schedGrossAssetBase: number; // exact fixedAssetsGross
+  faSchedule?: ScheduleOfFixedAssetsYear;
 }
 
 // ---------------- REPAYMENT SCHEDULE INTEGRATION & DEBT SERVICING TYPES ---------------- //

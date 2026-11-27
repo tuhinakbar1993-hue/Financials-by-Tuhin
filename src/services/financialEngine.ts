@@ -157,6 +157,20 @@ export function getCustomItemYearValue(item: StatementConfigItem, year: number):
   return item.sign === 'negative' && raw > 0 ? -raw : raw;
 }
 
+export const STD_BS_SECTIONS = [
+  'Current Assets',
+  'Non-Current Assets',
+  'Current Liabilities',
+  'Non-Current Liabilities',
+  'Equity',
+] as const;
+
+export const STD_CF_SECTIONS = [
+  'Operating Activities',
+  'Investing Activities',
+  'Financing Activities',
+] as const;
+
 export function getVisibleCustomItemsSum(
   statementConfig: StatementConfigItem[] | undefined,
   statement: StatementConfigItem['statement'],
@@ -171,6 +185,25 @@ export function getVisibleCustomItemsSum(
         item.isVisible &&
         item.statement === statement &&
         (!section || item.section === section)
+    )
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+    .reduce((sum, item) => sum + getCustomItemYearValue(item, year), 0);
+}
+
+export function getVisibleUnscopedCustomItemsSum(
+  statementConfig: StatementConfigItem[] | undefined,
+  statement: StatementConfigItem['statement'],
+  year: number,
+  standardSections: readonly string[]
+): number {
+  if (!statementConfig) return 0;
+  return statementConfig
+    .filter(
+      item =>
+        item.isCustom &&
+        item.isVisible &&
+        item.statement === statement &&
+        !standardSections.includes(item.section)
     )
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
     .reduce((sum, item) => sum + getCustomItemYearValue(item, year), 0);
@@ -2890,11 +2923,19 @@ export function calculateCashFlowStatement(
       : currTaxPayable;
     const changeInTaxPayable = currTaxPayable - prevTaxPayable;
 
-    const customOperating = getVisibleCustomItemsSum(
-      options?.statementConfig,
-      'cashFlow',
-      input.year,
-      'Operating Activities'
+    const customOperating = r2(
+      getVisibleCustomItemsSum(
+        options?.statementConfig,
+        'cashFlow',
+        input.year,
+        'Operating Activities'
+      ) +
+        getVisibleUnscopedCustomItemsSum(
+          options?.statementConfig,
+          'cashFlow',
+          input.year,
+          STD_CF_SECTIONS
+        )
     );
 
     const cashGeneratedFromOperations =
@@ -3370,7 +3411,20 @@ export function calculateBalanceSheet(
       input.year,
       'Equity'
     );
-    const totalEquity = r2(shareCapital + retainedEarnings + reserves + customEquityBS);
+    const customUnscopedBS = getVisibleUnscopedCustomItemsSum(
+      options?.statementConfig,
+      'balanceSheet',
+      input.year,
+      STD_BS_SECTIONS
+    );
+    const customEquityStmt = getVisibleCustomItemsSum(
+      options?.statementConfig,
+      'equity',
+      input.year
+    );
+    const totalEquity = r2(
+      shareCapital + retainedEarnings + reserves + customEquityBS + customUnscopedBS + customEquityStmt
+    );
 
     const totalLiabilitiesAndEquity = r2(totalLiabilities + totalEquity);
     const balanceCheck = r2(totalAssets - totalLiabilitiesAndEquity);
@@ -3488,7 +3542,14 @@ export function generateNotesToFinancialStatements(
   const note5Categories = [...stdFACats, ...customFACats];
 
   const customEquityRows = (cfg || [])
-    .filter(item => item.isCustom && item.isVisible && item.statement === 'balanceSheet' && item.section === 'Equity')
+    .filter(
+      item =>
+        item.isCustom &&
+        item.isVisible &&
+        (item.statement === 'equity' ||
+          (item.statement === 'balanceSheet' &&
+            (item.section === 'Equity' || !STD_BS_SECTIONS.includes(item.section))))
+    )
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
     .map(item => ({
       label: item.label,
@@ -3500,8 +3561,16 @@ export function generateNotesToFinancialStatements(
 
   const cCustomRev = getVisibleCustomItemsSum(cfg, 'income', currYear, 'Revenue & Gross Margin');
   const pCustomRev = getVisibleCustomItemsSum(cfg, 'income', prevYear, 'Revenue & Gross Margin');
-  const cCustomEqBs = getVisibleCustomItemsSum(cfg, 'balanceSheet', currYear, 'Equity');
-  const pCustomEqBs = getVisibleCustomItemsSum(cfg, 'balanceSheet', prevYear, 'Equity');
+  const cCustomEqBs = r2(
+    getVisibleCustomItemsSum(cfg, 'balanceSheet', currYear, 'Equity') +
+      getVisibleUnscopedCustomItemsSum(cfg, 'balanceSheet', currYear, STD_BS_SECTIONS) +
+      getVisibleCustomItemsSum(cfg, 'equity', currYear)
+  );
+  const pCustomEqBs = r2(
+    getVisibleCustomItemsSum(cfg, 'balanceSheet', prevYear, 'Equity') +
+      getVisibleUnscopedCustomItemsSum(cfg, 'balanceSheet', prevYear, STD_BS_SECTIONS) +
+      getVisibleCustomItemsSum(cfg, 'equity', prevYear)
+  );
 
   const cRevenue = noteVal('income', 'revenue', currYear, cIS.revenue, 'inc_revenue', cCustomRev);
   const pRevenue = noteVal('income', 'revenue', prevYear, pIS.revenue, 'inc_revenue', pCustomRev);
@@ -4163,28 +4232,41 @@ export function buildPreviousFormatData(
 
     // Balance Sheet exact structure synchronized with BalanceSheetYear
     const fixedAssetsWDV = bs.propertyPlantEquipment;
+    const intangibleAssets = bs.intangibleAssets;
+    const otherNonCurrentAssets = bs.otherNonCurrentAssets;
     const customCurrentAssetsBS = getVisibleCustomItemsSum(options?.statementConfig, 'balanceSheet', inp.year, 'Current Assets');
     const customNonCurrentAssetsBS = getVisibleCustomItemsSum(options?.statementConfig, 'balanceSheet', inp.year, 'Non-Current Assets');
     const customCurrentLiabBS = getVisibleCustomItemsSum(options?.statementConfig, 'balanceSheet', inp.year, 'Current Liabilities');
     const customNonCurrentLiabBS = getVisibleCustomItemsSum(options?.statementConfig, 'balanceSheet', inp.year, 'Non-Current Liabilities');
     const customEquityBS = getVisibleCustomItemsSum(options?.statementConfig, 'balanceSheet', inp.year, 'Equity');
-    const advancesDepositsPrepayments = r2(bs.otherReceivables + bs.otherCurrentAssets);
+    const customUnscopedBS = getVisibleUnscopedCustomItemsSum(options?.statementConfig, 'balanceSheet', inp.year, STD_BS_SECTIONS);
+    const customEqStmt = getVisibleCustomItemsSum(options?.statementConfig, 'equity', inp.year);
+    const totalEquityExtras = r2(customEquityBS + customUnscopedBS + customEqStmt);
+
+    const otherReceivablesOnly = bs.otherReceivables;
+    const otherCurrentAssets = bs.otherCurrentAssets;
+    const advancesDepositsPrepayments = r2(otherReceivablesOnly + otherCurrentAssets);
     const billsReceivable = bs.tradeReceivables;
     const cashAndCashEquivalents = bs.cashAndEquivalents;
     const totalCurrentAssets = r2(
       advancesDepositsPrepayments + stockAndStores + billsReceivable + cashAndCashEquivalents + customCurrentAssetsBS
     );
-    const totalAssetsTaka = r2(fixedAssetsWDV + customNonCurrentAssetsBS + totalCurrentAssets);
+    const totalAssetsTaka = r2(
+      fixedAssetsWDV + intangibleAssets + otherNonCurrentAssets + customNonCurrentAssetsBS + totalCurrentAssets
+    );
 
     const forExpenses = bs.otherPayables;
     const accountsPayable = bs.tradePayables;
-    const shortTermLoan = r2(bs.shortTermBorrowings + bs.longTermBorrowings);
+    const shortTermLoan = bs.shortTermBorrowings;
+    const longTermLoan = bs.longTermBorrowings;
+    const otherNonCurrentLiabilities = bs.otherNonCurrentLiabilities;
     const provisionForTaxation = bs.currentTaxPayable;
     const totalCurrentLiabilities = r2(
       forExpenses + accountsPayable + shortTermLoan + provisionForTaxation + customCurrentLiabBS
     );
+    const totalNonCurrentLiab = r2(longTermLoan + otherNonCurrentLiabilities + customNonCurrentLiabBS);
 
-    const capitalAfterDrawings = r2(totalAssetsTaka - totalCurrentLiabilities - customNonCurrentLiabBS - customEquityBS);
+    const capitalAfterDrawings = r2(totalAssetsTaka - totalCurrentLiabilities - totalNonCurrentLiab - totalEquityExtras);
     const drawings = eq.dividendsPaid;
     const capitalSubtotal = r2(capitalAfterDrawings + drawings);
     const openingCapital = r2(capitalSubtotal - netProfitAfterIncomeTax);
@@ -4193,6 +4275,7 @@ export function buildPreviousFormatData(
     const prevBS = hIdx > 0 ? prevResults[hIdx - 1] : null;
     const cfNetIncome = vis('cf_pbt') ? netProfitAfterIncomeTax : 0;
     const cfDepreciation = vis('cf_dep') ? depreciation : 0;
+    const cfAmortization = vis('cf_amort') && vis('bs_intangibleAssets') ? cf.adjAmortization : 0;
     const nonCashCA = r2(advancesDepositsPrepayments + stockAndStores + billsReceivable + customCurrentAssetsBS);
     const prevNonCashCA = prevBS
       ? r2(prevBS.advancesDepositsPrepayments + prevBS.stockAndStores + prevBS.billsReceivable)
@@ -4206,22 +4289,32 @@ export function buildPreviousFormatData(
         ? r2(totalCurrentLiabilities - prevBS.totalCurrentLiabilities)
         : Math.round(totalCurrentLiabilities * 0.05)
       : 0;
-    const customCfOp = getVisibleCustomItemsSum(options?.statementConfig, 'cashFlow', inp.year, 'Operating Activities');
+    const customCfOp = r2(
+      getVisibleCustomItemsSum(options?.statementConfig, 'cashFlow', inp.year, 'Operating Activities') +
+        getVisibleUnscopedCustomItemsSum(options?.statementConfig, 'cashFlow', inp.year, STD_CF_SECTIONS)
+    );
     const customCfInv = getVisibleCustomItemsSum(options?.statementConfig, 'cashFlow', inp.year, 'Investing Activities');
     const customCfFin = getVisibleCustomItemsSum(options?.statementConfig, 'cashFlow', inp.year, 'Financing Activities');
     const cfNetCashOperating = r2(
-      cfNetIncome + cfDepreciation + cfChangeInCurrentAssets + cfChangeInCWIP + cfChangeInCurrentLiabilities + customCfOp
+      cfNetIncome + cfDepreciation + cfAmortization + cfChangeInCurrentAssets + cfChangeInCWIP + cfChangeInCurrentLiabilities + customCfOp
     );
 
     const cfAcquisitionPPE = cf.purchasePPE;
     const cfDisposalIntangible = vis('cf_pur_intangible') ? r2(fa.totalDisposals - fa.totalDepDisposals) : 0;
-    const cfNetCashInvesting = r2(cfAcquisitionPPE + cfDisposalIntangible + customCfInv);
+    const cfDividendsReceived = vis('cf_dividends_rec') ? cf.dividendsReceived : 0;
+    const cfNetCashInvesting = r2(cfAcquisitionPPE + cfDisposalIntangible + cfDividendsReceived + customCfInv);
 
     const cfDrawings = vis('cf_dividends_paid') ? -drawings : 0;
+    const cfFinancingProceedsShares = vis('cf_shares_issue') ? cf.financingProceedsShares : 0;
+    const cfFinancingProceedsBorrowings = vis('cf_borrow_proceeds') ? cf.financingProceedsBorrowings : 0;
+    const cfRepayRowVal = vis('cf_borrow_repay') ? -repaymentOfBorrowings : 0;
+    const activeFinExclPlug = r2(
+      cfDrawings + cfFinancingProceedsShares + cfFinancingProceedsBorrowings + cfRepayRowVal + customCfFin
+    );
     const cfOpeningBalance = hIdx === 0
       ? 0
-      : r2(capitalAfterDrawings - (prevBS!.capitalAfterDrawings + netProfitAfterIncomeTax - drawings));
-    const cfNetCashFinancing = r2(cfDrawings + cfOpeningBalance + customCfFin);
+      : r2((cashAndCashEquivalents - prevBS!.cfCashEnding) - (cfNetCashOperating + cfNetCashInvesting + activeFinExclPlug));
+    const cfNetCashFinancing = r2(activeFinExclPlug + cfOpeningBalance);
 
     const cfNetIncreaseCash = r2(cfNetCashOperating + cfNetCashInvesting + cfNetCashFinancing);
     const cfCashBeginning = prevBS
@@ -4233,7 +4326,11 @@ export function buildPreviousFormatData(
       year: inp.year,
       dateLabel: formatFyEndDateCode(inp.year, financialYearEnd),
       fixedAssetsWDV,
+      intangibleAssets,
+      otherNonCurrentAssets,
       advancesDepositsPrepayments,
+      otherReceivablesOnly,
+      otherCurrentAssets,
       stockAndStores,
       billsReceivable,
       cashAndCashEquivalents,
@@ -4244,12 +4341,14 @@ export function buildPreviousFormatData(
       capitalSubtotal,
       drawings,
       capitalAfterDrawings,
+      longTermLoan,
+      otherNonCurrentLiabilities,
       forExpenses,
       accountsPayable,
       shortTermLoan,
       provisionForTaxation,
       totalCurrentLiabilities,
-      totalCapitalAndLiabilities: r2(capitalAfterDrawings + customEquityBS + customNonCurrentLiabBS + totalCurrentLiabilities),
+      totalCapitalAndLiabilities: r2(capitalAfterDrawings + totalEquityExtras + totalNonCurrentLiab + totalCurrentLiabilities),
       sales,
       costOfGoodsSold,
       grossProfit,
@@ -4275,14 +4374,18 @@ export function buildPreviousFormatData(
       netProfitAfterIncomeTax,
       cfNetIncome,
       cfDepreciation,
+      cfAmortization,
       cfChangeInCurrentAssets,
       cfChangeInCWIP,
       cfChangeInCurrentLiabilities,
       cfNetCashOperating,
       cfAcquisitionPPE,
       cfDisposalIntangible,
+      cfDividendsReceived,
       cfNetCashInvesting,
       cfDrawings,
+      cfFinancingProceedsShares,
+      cfFinancingProceedsBorrowings,
       cfRepaymentOfBorrowings: repaymentOfBorrowings,
       cfOpeningBalance,
       cfNetCashFinancing,
@@ -4296,6 +4399,8 @@ export function buildPreviousFormatData(
       eqNetProfitForYear: eq.netProfitForYear,
       eqDividendsPaid: eq.dividendsPaid,
       eqClosingRetainedEarnings: eq.closingRetainedEarnings,
+      eqOpeningReserves: eq.openingReserves,
+      eqOtherComprehensiveIncome: eq.otherComprehensiveIncome,
       eqClosingReserves: eq.closingReserves,
       eqTotalClosingEquity: eq.totalClosingEquity,
       faOpening: fa.totalCostOpening,
@@ -4306,6 +4411,7 @@ export function buildPreviousFormatData(
       faDepreciationCharged: fa.totalDepCharge,
       faWDV: fa.totalNetBookValue,
       faGrossAssetBase: faGrossAssetBase,
+      faSchedule: fa,
     });
   });
 
@@ -4464,12 +4570,18 @@ export function buildProjectedFormatData(
     const customNonCurrentAssetsBS = getVisibleCustomItemsSum(options?.statementConfig, 'balanceSheet', inp.year, 'Non-Current Assets');
     const customCurrentLiabBS = getVisibleCustomItemsSum(options?.statementConfig, 'balanceSheet', inp.year, 'Current Liabilities');
     const customNonCurrentLiabBS = getVisibleCustomItemsSum(options?.statementConfig, 'balanceSheet', inp.year, 'Non-Current Liabilities');
-    const propertyPlantEquipments = r2(bs.propertyPlantEquipment + customNonCurrentAssetsBS);
+    const propertyPlantEquipments = bs.propertyPlantEquipment;
+    const intangibleAssets = bs.intangibleAssets;
+    const otherNonCurrentAssets = bs.otherNonCurrentAssets;
+    const totalNonCurrentAssets = bs.totalNonCurrentAssets;
     const tradeAndOtherReceivables = bs.tradeReceivables;
-    const advanceDepositPrepayments = r2(bs.otherReceivables + bs.otherCurrentAssets);
+    const otherReceivablesOnly = bs.otherReceivables;
+    const otherCurrentAssets = bs.otherCurrentAssets;
+    const advanceDepositPrepayments = r2(otherReceivablesOnly + otherCurrentAssets);
 
     // Liabilities
-    const longTermLoan = r2(bs.longTermBorrowings + customNonCurrentLiabBS);
+    const longTermLoan = bs.longTermBorrowings;
+    const otherNonCurrentLiabilities = bs.otherNonCurrentLiabilities;
     const tradeAndOtherPayables = bs.tradePayables;
     const provisionsForTax = bs.currentTaxPayable;
     const shortTermLoan = bs.shortTermBorrowings;
@@ -4481,7 +4593,12 @@ export function buildProjectedFormatData(
     // Cash Flow Statement (exact roll-forward matching Projected_Financials PDF + element toggles)
     const prevInv = prevProj ? prevProj.inventories : (prevBS ? prevBS.closingInventory : Math.round(inventories * 0.9));
     const prevRec = prevProj ? prevProj.tradeAndOtherReceivables : (prevBS ? prevBS.tradeReceivables : Math.round(tradeAndOtherReceivables * 0.9));
-    const prevAdv = prevProj ? prevProj.advanceDepositPrepayments : (prevBS ? prevBS.otherReceivables + prevBS.otherCurrentAssets : Math.round(advanceDepositPrepayments * 0.9));
+    const prevAdv = prevProj
+      ? (prevProj.otherReceivablesOnly ?? prevProj.advanceDepositPrepayments)
+      : (prevBS ? prevBS.otherReceivables : Math.round(otherReceivablesOnly * 0.9));
+    const prevOthCA = prevProj
+      ? (prevProj.otherCurrentAssets ?? 0)
+      : (prevBS ? prevBS.otherCurrentAssets : Math.round(otherCurrentAssets * 0.9));
     const prevPay = prevProj ? prevProj.tradeAndOtherPayables : (prevBS ? prevBS.tradePayables : Math.round(tradeAndOtherPayables * 0.9));
     const prevTax = prevProj ? prevProj.provisionsForTax : (prevBS ? prevBS.currentTaxPayable : Math.round(provisionsForTax * 0.9));
     const prevExp = prevProj ? prevProj.liabilitiesForExp : (prevBS ? prevBS.otherPayables : Math.round(liabilitiesForExp * 0.9));
@@ -4492,8 +4609,9 @@ export function buildProjectedFormatData(
     const cfChangeReceivables =
       vis('cf_wc_receivables') && vis('bs_tradeReceivables') ? r2(-(tradeAndOtherReceivables - prevRec)) : 0;
     const cfChangeAdvanceDeposit =
-      vis('cf_wc_other_rec') && vis('bs_otherReceivables') ? r2(-(advanceDepositPrepayments - prevAdv)) : 0;
-    const cfChangeCurrentAssets = 0;
+      vis('cf_wc_other_rec') && vis('bs_otherReceivables') ? r2(-(otherReceivablesOnly - prevAdv)) : 0;
+    const cfChangeCurrentAssets =
+      vis('cf_wc_other_ca') && vis('bs_otherCurrentAssets') ? r2(-(otherCurrentAssets - prevOthCA)) : 0;
     const cfChangeCurrentLiabilities = 0;
     const cfChangeTradePayables =
       vis('cf_wc_payables') && vis('bs_tradePayables') ? r2(tradeAndOtherPayables - prevPay) : 0;
@@ -4502,7 +4620,11 @@ export function buildProjectedFormatData(
     const cfChangeLiabilitiesExp =
       vis('cf_wc_other_pay') && vis('bs_otherPayables') ? r2(liabilitiesForExp - prevExp) : 0;
     const cfDepreciation = vis('cf_dep') ? inc.depreciationExpense : 0;
-    const customCfOp = getVisibleCustomItemsSum(options?.statementConfig, 'cashFlow', inp.year, 'Operating Activities');
+    const cfAmortization = vis('cf_amort') && vis('bs_intangibleAssets') ? cf.adjAmortization : 0;
+    const customCfOp = r2(
+      getVisibleCustomItemsSum(options?.statementConfig, 'cashFlow', inp.year, 'Operating Activities') +
+        getVisibleUnscopedCustomItemsSum(options?.statementConfig, 'cashFlow', inp.year, STD_CF_SECTIONS)
+    );
     const customCfInv = getVisibleCustomItemsSum(options?.statementConfig, 'cashFlow', inp.year, 'Investing Activities');
     const customCfFin = getVisibleCustomItemsSum(options?.statementConfig, 'cashFlow', inp.year, 'Financing Activities');
 
@@ -4517,6 +4639,7 @@ export function buildProjectedFormatData(
       cfChangeProvisionsTax +
       cfChangeLiabilitiesExp +
       cfDepreciation +
+      cfAmortization +
       customCfOp
     );
 
@@ -4525,9 +4648,18 @@ export function buildProjectedFormatData(
     const cfInvestingCapitalInflow = 0;
     const cfPreliminaryExpenses = 0;
     const cfPurchasePPE = cf.purchasePPE;
+    const cfPurchaseIntangibles = vis('cf_pur_intangible') && vis('bs_intangibleAssets') ? cf.purchaseIntangibles : 0;
     const cfPurchaseInvestment = 0;
+    const cfDividendsReceived = vis('cf_dividends_rec') ? cf.dividendsReceived : 0;
     const cfNetCashInvesting = r2(
-      cfSalePPE + cfInvestingCapitalInflow + cfPreliminaryExpenses + cfPurchasePPE + cfPurchaseInvestment + customCfInv
+      cfSalePPE +
+      cfInvestingCapitalInflow +
+      cfPreliminaryExpenses +
+      cfPurchasePPE +
+      cfPurchaseIntangibles +
+      cfPurchaseInvestment +
+      cfDividendsReceived +
+      customCfInv
     );
 
     // Financing (keeps gross Loan Received and Repayment of Borrowings & Financing separate without netting;
@@ -4562,11 +4694,15 @@ export function buildProjectedFormatData(
     const totalCurrentAssets = r2(
       inventories + tradeAndOtherReceivables + advanceDepositPrepayments + cashAndCashEquivalents + customCurrentAssetsBS
     );
-    const totalAssets = r2(propertyPlantEquipments + totalCurrentAssets);
+    const totalAssets = r2(totalNonCurrentAssets + totalCurrentAssets);
 
     // Capital Roll-forward ensuring Total Assets === Total Equity & Liabilities (0.00 variance!)
     const customEquityBS = getVisibleCustomItemsSum(options?.statementConfig, 'balanceSheet', inp.year, 'Equity');
-    const closingCapital = r2(totalAssets - longTermLoan - totalCurrentLiabilities - customEquityBS);
+    const customUnscopedBS = getVisibleUnscopedCustomItemsSum(options?.statementConfig, 'balanceSheet', inp.year, STD_BS_SECTIONS);
+    const customEqStmt = getVisibleCustomItemsSum(options?.statementConfig, 'equity', inp.year);
+    const totalEquityExtras = r2(customEquityBS + customUnscopedBS + customEqStmt);
+    const totalNonCurrentLiab = r2(longTermLoan + otherNonCurrentLiabilities + customNonCurrentLiabBS);
+    const closingCapital = r2(totalAssets - totalNonCurrentLiab - totalCurrentLiabilities - totalEquityExtras);
     const equitySubtotal = r2(closingCapital + drawings);
     const capital = prevProj
       ? prevProj.closingCapital
@@ -4579,8 +4715,8 @@ export function buildProjectedFormatData(
     const note4ReceivablesReceived = prevRec + note4ReceivablesAdded - tradeAndOtherReceivables;
 
     const note5AdvTurnover = varyBounded(0.105, inp.year, 185, 0.028, 0.06, 0.16);
-    const note5AdvanceAdded = Math.max(0, advanceDepositPrepayments - prevAdv) + Math.round(advanceDepositPrepayments * note5AdvTurnover);
-    const note5AdvanceAdjusted = prevAdv + note5AdvanceAdded - advanceDepositPrepayments;
+    const note5AdvanceAdded = Math.max(0, otherReceivablesOnly - prevAdv) + Math.round(otherReceivablesOnly * note5AdvTurnover);
+    const note5AdvanceAdjusted = prevAdv + note5AdvanceAdded - otherReceivablesOnly;
 
     const note8PayTurnover = varyBounded(0.15, inp.year, 190, 0.032, 0.10, 0.22);
     const note8PayablesAdded = Math.max(0, tradeAndOtherPayables - prevPay) + Math.round(costOfGoodsSold * note8PayTurnover);
@@ -4616,9 +4752,14 @@ export function buildProjectedFormatData(
     projResults.push({
       year: inp.year,
       propertyPlantEquipments,
+      intangibleAssets,
+      otherNonCurrentAssets,
+      totalNonCurrentAssets,
       inventories,
       tradeAndOtherReceivables,
       advanceDepositPrepayments,
+      otherReceivablesOnly,
+      otherCurrentAssets,
       cashAndCashEquivalents,
       totalCurrentAssets,
       totalAssets,
@@ -4629,12 +4770,13 @@ export function buildProjectedFormatData(
       drawings,
       closingCapital,
       longTermLoan,
+      otherNonCurrentLiabilities,
       tradeAndOtherPayables,
       provisionsForTax,
       shortTermLoan,
       liabilitiesForExp,
       totalCurrentLiabilities,
-      totalEquityAndLiabilities: r2(closingCapital + customEquityBS + longTermLoan + totalCurrentLiabilities),
+      totalEquityAndLiabilities: r2(closingCapital + totalEquityExtras + totalNonCurrentLiab + totalCurrentLiabilities),
       sales,
       costOfGoodsSold,
       grossProfit,
@@ -4656,12 +4798,15 @@ export function buildProjectedFormatData(
       cfChangeProvisionsTax,
       cfChangeLiabilitiesExp,
       cfDepreciation,
+      cfAmortization,
       cfNetCashOperating,
       cfSalePPE,
       cfInvestingCapitalInflow,
       cfPreliminaryExpenses,
       cfPurchasePPE,
+      cfPurchaseIntangibles,
       cfPurchaseInvestment,
+      cfDividendsReceived,
       cfNetCashInvesting,
       cfLoanReceived,
       cfAdditionalCapital,
@@ -4702,6 +4847,7 @@ export function buildProjectedFormatData(
       schedDepreciation: fa.totalDepCharge,
       schedWDV: fa.totalNetBookValue,
       schedGrossAssetBase,
+      faSchedule: fa,
     });
   });
 
@@ -4775,14 +4921,14 @@ export function buildProjectedQuantNoteRows(
     );
   }
 
-  if (keep('bs_otherReceivables') || keep('bs_otherCurrentAssets')) {
+  if (keep('bs_otherReceivables')) {
     rows.push(
       { noteNo: '5.00', label: advLbl, configId: 'bs_otherReceivables', isSectionHeader: true, isBold: true, values: nulls() },
       { noteNo: '', label: 'As Per Last Year', configId: 'bs_otherReceivables', indent: true, values: projData.map(d => d.note5AdvanceOpening) },
       { noteNo: '', label: 'Add: During the Year', configId: 'bs_otherReceivables', indent: true, values: projData.map(d => d.note5AdvanceAdded) },
       { noteNo: '', label: 'Subtotal', configId: 'bs_otherReceivables', isBold: true, isSubtotal: true, indent: true, values: projData.map(d => d.note5AdvanceOpening + d.note5AdvanceAdded) },
       { noteNo: '', label: 'Less: Adjustment', configId: 'bs_otherReceivables', indent: true, values: projData.map(d => d.note5AdvanceAdjusted) },
-      { noteNo: '', label: `Closing ${advLbl}`, configId: 'bs_otherReceivables', isBold: true, isSubtotal: true, indent: true, values: projData.map(d => d.advanceDepositPrepayments) },
+      { noteNo: '', label: `Closing ${advLbl}`, configId: 'bs_otherReceivables', isBold: true, isSubtotal: true, indent: true, values: projData.map(d => d.otherReceivablesOnly ?? d.advanceDepositPrepayments) },
     );
   }
 
