@@ -1372,7 +1372,200 @@ for (const docItem of capturedDocx) {
 }
 
 xlsxCjs.writeFile = origWriteFile;
+
+// ============================================================================
+// 10. SAVED USER DEFAULT CONFIG, HISTORICAL UNPAID LOANS & FINAL YEAR LT = NIL
+// ============================================================================
+
+// (A) Save User-Selected Financial Statement Items as Default (mock globalThis.localStorage)
+const memStorage: Record<string, string> = {};
+(globalThis as unknown as { localStorage: Storage }).localStorage = {
+  getItem: (k: string) => (k in memStorage ? memStorage[k] : null),
+  setItem: (k: string, v: string) => {
+    memStorage[k] = String(v);
+  },
+  removeItem: (k: string) => {
+    delete memStorage[k];
+  },
+  clear: () => {
+    Object.keys(memStorage).forEach(k => delete memStorage[k]);
+  },
+  key: (i: number) => Object.keys(memStorage)[i] ?? null,
+  get length() {
+    return Object.keys(memStorage).length;
+  },
+} as Storage;
+
+const customSavedCfg: StatementConfigItem[] = engine.DEFAULT_STATEMENT_CONFIG_ITEMS.map(item =>
+  item.id === 'bs_otherNonCurrentAssets'
+    ? { ...item, isVisible: false }
+    : item.id === 'inc_revenue'
+    ? { ...item, label: 'Turnover & Net Sales' }
+    : item
+).concat([
+  {
+    id: 'custom_test_default_line',
+    statement: 'income',
+    section: 'Operating Expenses',
+    label: 'Saved Custom Audit Fee',
+    isMandatory: false,
+    isVisible: true,
+    order: 99,
+    isCustom: true,
+    sign: 'negative',
+    customValues: { 2025: 12345 },
+  },
+]);
+
+const savedRes = engine.saveStatementConfigAsDefault(customSavedCfg);
+assert.equal(savedRes.ok, true, 'saveStatementConfigAsDefault must succeed when storage is available');
+
+const reloadedCfg = engine.loadDefaultStatementConfig();
+assert.equal(reloadedCfg.hasSavedDefault, true, 'loadDefaultStatementConfig must report hasSavedDefault=true');
+assert.equal(
+  reloadedCfg.items.find(i => i.id === 'bs_otherNonCurrentAssets')!.isVisible,
+  false,
+  'Deselected item must persist across reloads'
+);
+assert.equal(
+  reloadedCfg.items.find(i => i.id === 'inc_revenue')!.label,
+  'Turnover & Net Sales',
+  'Customized label must persist across reloads'
+);
+const reloadedCustom = reloadedCfg.items.find(i => i.id === 'custom_test_default_line');
+assert(reloadedCustom, 'Saved custom element template must persist across reloads');
+assert.deepEqual(reloadedCustom!.customValues, {}, 'Saved default template must clear case-specific customValues');
+
+const factoryRestored = engine.clearSavedDefaultStatementConfig();
+assert.equal(
+  factoryRestored.find(i => i.id === 'bs_otherNonCurrentAssets')!.isVisible,
+  true,
+  'clearSavedDefaultStatementConfig must restore factory defaults'
+);
+assert.equal(engine.loadDefaultStatementConfig().hasSavedDefault, false, 'Cleared default must report hasSavedDefault=false');
+
+// (B) Recognition of Previous Unpaid Loans under Long-Term Borrowings & Finance Cost (ABABIL schedule)
+const abHist2023 = ababilOrdered.find(y => y.year === 2023)!;
+const abHist2024 = ababilOrdered.find(y => y.year === 2024)!;
+const abHist2025 = ababilOrdered.find(y => y.year === 2025)!;
+[abHist2023, abHist2024, abHist2025].forEach(h => {
+  assert.equal(h.repaymentOfBorrowings, 0, `Unpaid historical year ${h.year} must carry 0 principal repayment`);
+  assert.equal(h.financingProceedsBorrowings, 0, `Unpaid historical year ${h.year} must carry 0 new borrowing proceeds`);
+  assert.equal(h.shortTermBorrowings, 0, `Unpaid historical year ${h.year} must recognize loan under Long-Term Borrowings (ST=0)`);
+  assert(h.longTermBorrowings > 0, `Unpaid historical year ${h.year} must carry positive Long-Term Borrowings`);
+  assert(h.financeCost > 0, `Unpaid historical year ${h.year} must recognize Finance Cost on unpaid debt`);
+});
+assert(
+  Math.abs(abHist2025.longTermBorrowings - ababilSched.metadata.investmentMade) < 0.05,
+  `2025 Long-Term Borrowings (${abHist2025.longTermBorrowings}) must match unpaid loan balance (${ababilSched.metadata.investmentMade})`
+);
+
+// (C) Avoidance of 2027 Disbursement Double-Counting & Complete LT Settlement to NIL (0) by Final Projected Year
+const ab2027 = ababilOrdered.find(y => y.year === 2027)!;
+const abFinal = ababilOrdered[ababilOrdered.length - 1];
+assert(
+  Math.abs(ab2027.longTermBorrowings - 2113842.29) < 1,
+  `Projected 2027 LT Borrowings must equal schedule closing balance 2113842.29 (no double counting), got ${ab2027.longTermBorrowings}`
+);
+assert.equal(
+  abFinal.longTermBorrowings,
+  0,
+  `Final projected year (${abFinal.year}) Long-Term Borrowings must be NIL (0), got ${abFinal.longTermBorrowings}`
+);
+assert.equal(
+  abBs[abBs.length - 1].longTermBorrowings,
+  0,
+  `Final projected Balance Sheet (${abFinal.year}) Long-Term Borrowings must be NIL (0)`
+);
+assert(
+  cleanAbabilAudit.passedChecks.some(p => p.id === 'pass-final-lt-nil'),
+  'Audit report must verify pass-final-lt-nil passed check when final projected LT debt is 0'
+);
+
+// (D) Shorter 7-Year Horizon Ending 2032 Also Settles LT Borrowings to NIL (0)
+const shortHorizonRes = engine.implementRepaymentScheduleIntoModel({
+  schedule: ababilSched,
+  historicalYearsStore: ababilHistStore,
+  customProjectedOverrides: {},
+  assumptions: {
+    ...engine.DEFAULT_PROJECTION_ASSUMPTIONS,
+    selectedProjectedYears: [2026, 2027, 2028, 2029, 2030, 2031, 2032],
+    projectedYearsCount: 7,
+  },
+  autoIncludeScheduleYears: true,
+  alignHistoricalScale: true,
+});
+const shortHorizonFinal =
+  shortHorizonRes.customProjectedOverrides[
+    shortHorizonRes.assumptions.selectedProjectedYears![
+      shortHorizonRes.assumptions.selectedProjectedYears!.length - 1
+    ]
+  ];
+assert.equal(
+  shortHorizonFinal.longTermBorrowings,
+  0,
+  `Schedule terminal year (${shortHorizonFinal.year}) Long-Term Borrowings must be NIL (0), got ${shortHorizonFinal.longTermBorrowings}`
+);
+
+// (E) Automatic Projection Horizon (Without Uploaded Schedule) Also Settles Long-Term Borrowings to NIL (0) by Final Projected Year
+const baselineFinalBs = baseline.bs[baseline.bs.length - 1];
+assert.equal(
+  baselineFinalBs.longTermBorrowings,
+  0,
+  `Baseline automatic projection final year (${baselineFinalBs.year}) Long-Term Borrowings must be NIL (0), got ${baselineFinalBs.longTermBorrowings}`
+);
+
+// (F) Audit Detection & Instant Rectification of Unsettled Final-Year Long-Term Borrowings
+const unsettledInputs = ababilOrdered.map((y, idx) =>
+  idx === ababilOrdered.length - 1
+    ? { ...y, longTermBorrowings: 125000, hasCustomLongTermBorrowings: true }
+    : y
+);
+const usFa = engine.calculateScheduleOfFixedAssets(unsettledInputs);
+const usInc = engine.calculateIncomeStatement(unsettledInputs, usFa);
+const usCf = engine.calculateCashFlowStatement(unsettledInputs, usInc, usFa);
+const usEq = engine.calculateEquityStatement(unsettledInputs, usInc);
+const usBs = engine.calculateBalanceSheet(unsettledInputs, usEq, usFa, usCf, undefined, usInc);
+const usDscr = engine.calculateDebtServiceCoverage(unsettledInputs, usInc, usBs, usCf, ababilSched);
+const unsettledAudit = auditMod.runComprehensiveCharteredAudit({
+  inputs: unsettledInputs,
+  incomeStatements: usInc,
+  balanceSheets: usBs,
+  cashFlowStatements: usCf,
+  equityStatements: usEq,
+  fixedAssetsSchedule: usFa,
+  debtServiceCoverage: usDscr,
+  assumptions: ababilResult.assumptions,
+  companyProfile: engine.INITIAL_COMPANY_PROFILE,
+  cellOverrides: {},
+  statementConfig: engine.DEFAULT_STATEMENT_CONFIG_ITEMS,
+  parsedSchedule: ababilSched,
+  isScheduleImplemented: true,
+});
+assert(
+  unsettledAudit.findings.some(f => f.rectificationAction === 'SETTLE_FINAL_YEAR_LT_BORROWINGS'),
+  'Audit engine must detect unsettled LT borrowings in final projected year under implemented schedule'
+);
+const settledRect = auditMod.applyInstantAuditRectifications({
+  allYearsInputs: unsettledInputs,
+  historicalYearsStore: Object.fromEntries(unsettledInputs.filter(y => !y.isProjected).map(y => [y.year, y])),
+  customProjectedOverrides: Object.fromEntries(unsettledInputs.filter(y => y.isProjected).map(y => [y.year, y])),
+  assumptions: ababilResult.assumptions,
+  cellOverrides: {},
+  statementConfig: engine.DEFAULT_STATEMENT_CONFIG_ITEMS,
+  companyProfile: engine.INITIAL_COMPANY_PROFILE,
+  parsedSchedule: ababilSched,
+  isScheduleImplemented: true,
+});
+assert.equal(settledRect.postAuditReport.criticalCount, 0, 'Instant rectification must resolve unsettled final-year LT borrowings cleanly');
+assert.equal(
+  settledRect.customProjectedOverrides[abFinal.year].longTermBorrowings,
+  0,
+  'Instant rectification must settle final projected year LT borrowings to 0'
+);
+
 console.log('ALL VERIFICATION CHECKS PASSED! Workbooks:', capturedWorkbooks.map(c => c.filename), 'Docx:', capturedDocx.map(d => `${d.filename}(${d.size}B)`));
+
 
 
 

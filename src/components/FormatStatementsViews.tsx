@@ -13,6 +13,8 @@ import {
   CheckSquare,
   Square,
   RotateCcw,
+  BookmarkCheck,
+  Check,
 } from 'lucide-react';
 import {
   CompanyProfile,
@@ -124,6 +126,10 @@ interface PreviousFormatSuiteViewProps {
   statementConfig?: StatementConfigItem[];
   onUpdateStatementConfig?: (items: StatementConfigItem[]) => void;
   onResetStatementConfig?: () => void;
+  onSaveStatementConfigAsDefault?: () => void;
+  onResetFactoryStatementConfig?: () => void;
+  hasSavedDefaultConfig?: boolean;
+  savedDefaultAt?: string | null;
   labelOverrides?: StatementLabelOverrides;
   cellOverrides?: StatementCellOverrides;
 }
@@ -139,12 +145,22 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
   statementConfig = [],
   onUpdateStatementConfig,
   onResetStatementConfig,
+  onSaveStatementConfigAsDefault,
+  onResetFactoryStatementConfig,
+  hasSavedDefaultConfig = false,
   labelOverrides = {},
   cellOverrides = {},
 }) => {
   const [subTab, setSubTab] = useState<'all' | 'bs' | 'is' | 'cf' | 'eq' | 'fa'>('all');
   const [selectedPairId, setSelectedPairId] = useState<string>(() => comparativePairs[0]?.id || 'all');
   const [isCustomizeMode, setIsCustomizeMode] = useState<boolean>(false);
+  const [savedDefaultNotice, setSavedDefaultNotice] = useState<boolean>(false);
+  const triggerSaveDefault = () => {
+    if (!onSaveStatementConfigAsDefault) return;
+    onSaveStatementConfigAsDefault();
+    setSavedDefaultNotice(true);
+    setTimeout(() => setSavedDefaultNotice(false), 3000);
+  };
 
   const isElemVisible = (id: string): boolean => {
     const found = statementConfig.find(c => c.id === id);
@@ -317,6 +333,20 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                 </button>
               </>
             )}
+            {isCustomizeMode && onSaveStatementConfigAsDefault && (
+              <button
+                type="button"
+                onClick={triggerSaveDefault}
+                className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1 transition-colors ${
+                  savedDefaultNotice
+                    ? 'bg-emerald-600 text-white border-emerald-600'
+                    : 'bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-600'
+                }`}
+              >
+                {savedDefaultNotice ? <Check className="w-3.5 h-3.5" /> : <BookmarkCheck className="w-3.5 h-3.5" />}
+                {savedDefaultNotice ? 'Saved Default!' : 'Save as Default'}
+              </button>
+            )}
             {isCustomizeMode && onResetStatementConfig && (
               <button
                 type="button"
@@ -324,7 +354,16 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                 className="px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 text-xs font-medium flex items-center gap-1"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                Reset Defaults
+                {hasSavedDefaultConfig ? 'Saved Default' : 'Reset Defaults'}
+              </button>
+            )}
+            {isCustomizeMode && hasSavedDefaultConfig && onResetFactoryStatementConfig && (
+              <button
+                type="button"
+                onClick={onResetFactoryStatementConfig}
+                className="px-2.5 py-1.5 rounded-lg bg-white hover:bg-rose-50 text-rose-700 border border-slate-300 text-xs font-medium"
+              >
+                Factory Defaults
               </button>
             )}
             {comparativePairs.length > 0 && (
@@ -1515,6 +1554,10 @@ interface ProjectedFormatSuiteViewProps {
   statementConfig?: StatementConfigItem[];
   onUpdateStatementConfig?: (items: StatementConfigItem[]) => void;
   onResetStatementConfig?: () => void;
+  onSaveStatementConfigAsDefault?: () => void;
+  onResetFactoryStatementConfig?: () => void;
+  hasSavedDefaultConfig?: boolean;
+  savedDefaultAt?: string | null;
   labelOverrides?: StatementLabelOverrides;
   cellOverrides?: StatementCellOverrides;
   parsedSchedule?: ParsedRepaymentSchedule | null;
@@ -1529,6 +1572,9 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
   statementConfig = [],
   onUpdateStatementConfig,
   onResetStatementConfig,
+  onSaveStatementConfigAsDefault,
+  onResetFactoryStatementConfig,
+  hasSavedDefaultConfig = false,
   labelOverrides = {},
   cellOverrides = {},
   parsedSchedule = null,
@@ -1536,6 +1582,13 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
 }) => {
   const [subTab, setSubTab] = useState<'all' | 'bs' | 'pl' | 'cf' | 'notes' | 'sched'>('all');
   const [isCustomizeMode, setIsCustomizeMode] = useState<boolean>(false);
+  const [savedDefaultNotice, setSavedDefaultNotice] = useState<boolean>(false);
+  const triggerSaveDefault = () => {
+    if (!onSaveStatementConfigAsDefault) return;
+    onSaveStatementConfigAsDefault();
+    setSavedDefaultNotice(true);
+    setTimeout(() => setSavedDefaultNotice(false), 3000);
+  };
 
   const isElemVisible = (id: string): boolean => {
     const found = statementConfig.find(c => c.id === id);
@@ -1681,6 +1734,20 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
               </button>
             </>
           )}
+          {isCustomizeMode && onSaveStatementConfigAsDefault && (
+            <button
+              type="button"
+              onClick={triggerSaveDefault}
+              className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 transition-colors ${
+                savedDefaultNotice
+                  ? 'bg-emerald-600 text-white border-emerald-600'
+                  : 'bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-600'
+              }`}
+            >
+              {savedDefaultNotice ? <Check className="w-3.5 h-3.5" /> : <BookmarkCheck className="w-3.5 h-3.5" />}
+              {savedDefaultNotice ? 'Saved Default!' : 'Save as Default'}
+            </button>
+          )}
           {isCustomizeMode && onResetStatementConfig && (
             <button
               type="button"
@@ -1688,7 +1755,16 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
               className="px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 text-xs font-medium flex items-center gap-1 whitespace-nowrap shrink-0"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              Reset Defaults
+              {hasSavedDefaultConfig ? 'Saved Default' : 'Reset Defaults'}
+            </button>
+          )}
+          {isCustomizeMode && hasSavedDefaultConfig && onResetFactoryStatementConfig && (
+            <button
+              type="button"
+              onClick={onResetFactoryStatementConfig}
+              className="px-2.5 py-1.5 rounded-lg bg-white hover:bg-rose-50 text-rose-700 border border-slate-300 text-xs font-medium whitespace-nowrap shrink-0"
+            >
+              Factory Defaults
             </button>
           )}
           <button

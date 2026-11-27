@@ -401,8 +401,8 @@ export function runComprehensiveCharteredAudit(params: RunAuditParams): Chartere
       const impliedRatePct = (inp.financeCost / referenceDebt) * 100;
       const devPp = Math.abs(impliedRatePct - targetLoanRate);
       const isProjDeviation = inp.isProjected && devPp > Math.max(4.5, targetLoanRate * 0.35);
-      const isCustomHistZeroInterest = !inp.isProjected && (inp.hasCustomLongTermBorrowings || inp.hasCustomShortTermBorrowings) && inp.financeCost === 0;
-      if (isProjDeviation || isCustomHistZeroInterest) {
+      const isHistZeroInterest = !inp.isProjected && debtBal > 0 && inp.financeCost === 0;
+      if (isProjDeviation || isHistZeroInterest) {
         rateMismatchCount++;
         const expectedFinCost = Math.round(referenceDebt * (targetLoanRate / 100));
         findings.push({
@@ -412,8 +412,8 @@ export function runComprehensiveCharteredAudit(params: RunAuditParams): Chartere
           category: 'Loan Rescheduling & Debt Servicing',
           standardRef: `IFRS 9 Effective Interest Audit (${targetLoanRate.toFixed(2)}% Loan Rate)`,
           title: `Interest Rate vs Loan Balance Discrepancy (${yr})`,
-          description: isCustomHistZeroInterest
-            ? `User-entered existing loan balance (${fmtNum(debtBal)}) carries 0 Finance Cost despite an active ${targetLoanRate.toFixed(2)}% interest rate.`
+          description: isHistZeroInterest
+            ? `Unpaid historical loan balance (${fmtNum(debtBal)}) carries 0 Finance Cost despite an active ${targetLoanRate.toFixed(2)}% interest rate.`
             : `Implied effective borrowing rate in ${yr} is ${impliedRatePct.toFixed(2)}% (Finance Cost ${fmtNum(inp.financeCost)} on Debt ${fmtNum(referenceDebt)}), deviating significantly from configured ${targetLoanRate.toFixed(2)}%.`,
           impactSummary: 'Understates/overstates debt servicing burden, Interest Coverage, and Taxable Profit.',
           currentValue: `${impliedRatePct.toFixed(2)}% (${fmtNum(inp.financeCost)})`,
@@ -516,6 +516,46 @@ export function runComprehensiveCharteredAudit(params: RunAuditParams): Chartere
       }
     }
   });
+
+  // Final Projected Year Long-Term Borrowings NIL (0) Check when Schedule Expects Complete Settlement
+  const projInputsOnly = inputs.filter(y => y.isProjected);
+  const finalProjInp = projInputsOnly[projInputsOnly.length - 1];
+  const expectZeroFinalLt = Boolean(
+    isScheduleImplemented ||
+      (parsedSchedule?.isValid &&
+        parsedSchedule.closingBalance !== undefined &&
+        Math.abs(parsedSchedule.closingBalance) < 0.05)
+  );
+  if (finalProjInp && isElementActive('bs_longTermBorrowings')) {
+    const finalLtBs = balanceSheets.find(b => b.year === finalProjInp.year)?.longTermBorrowings ?? finalProjInp.longTermBorrowings ?? 0;
+    if (expectZeroFinalLt && finalLtBs > 0.05) {
+      schedLockGapCount++;
+      findings.push({
+        id: `audit-final-year-lt-not-nil-${finalProjInp.year}`,
+        year: finalProjInp.year,
+        severity: 'critical',
+        category: 'Loan Rescheduling & Debt Servicing',
+        standardRef: 'Rescheduling Terminal Settlement (Final Year LT Loan = NIL)',
+        title: `Unsettled Long-Term Borrowings in Final Projected Year (${finalProjInp.year})`,
+        description: `Final projected financial year ${finalProjInp.year} still carries Long-Term Borrowings of ${fmtNum(finalLtBs)} despite complete settlement under the Repayment Schedule.`,
+        impactSummary: 'Balance Sheet fails to reflect NIL (0) long-term debt maturity at proposal completion.',
+        currentValue: fmtNum(finalLtBs),
+        expectedValue: '0 (NIL)',
+        isAutoRectifiable: true,
+        requiresManualVerification: false,
+        rectificationAction: 'SETTLE_FINAL_YEAR_LT_BORROWINGS',
+        rectificationPreview: `Settle remaining ${fmtNum(finalLtBs)} principal in ${finalProjInp.year} so Long-Term Borrowings close at NIL (0).`,
+      });
+    } else if (Math.abs(finalLtBs) <= 0.05) {
+      passedChecks.push({
+        id: 'pass-final-lt-nil',
+        category: 'Loan Rescheduling & Debt Servicing',
+        standardRef: 'Rescheduling Terminal Settlement',
+        label: `Final Projected Year (${finalProjInp.year}) Long-Term Borrowings Settled to NIL (0)`,
+        detail: `All rescheduled Long-Term Borrowings amortize completely to 0.00 by ${finalProjInp.year}.`,
+      });
+    }
+  }
 
   // Record clean Audit Assertions in Passed Checks
   if (bsImbalanceCount === 0) {
@@ -828,6 +868,24 @@ export function applyInstantAuditRectifications(
           ...currYr,
           ...blendedDrivers,
         });
+      } else if (action === 'SETTLE_FINAL_YEAR_LT_BORROWINGS') {
+        nextOverrides = clearOverridesMatching(nextOverrides, yr, [], ['bs_longTermBorrowings']);
+        const residualLt = Math.max(0, currYr.longTermBorrowings || 0);
+        const settledRepayment = r2((currYr.repaymentOfBorrowings || 0) + residualLt);
+        const updatedBase: YearDataInput = {
+          ...currYr,
+          longTermBorrowings: 0,
+          hasCustomLongTermBorrowings: true,
+          repaymentOfBorrowings: settledRepayment,
+          financingRepaymentBorrowings: -settledRepayment,
+        };
+        workingYears[idx] = deriveDependentFinancials(
+          updatedBase,
+          prevYr,
+          nextAssumptions,
+          updatedBase,
+          { targetClosingLT: 0 }
+        );
       } else if (action === 'SYNC_CF_CASH_TIE') {
         nextOverrides = clearOverridesMatching(nextOverrides, yr, ['cf_'], ['bs_cashAndEquivalents']);
         const tmpOpts = { statementConfig, cellOverrides: nextOverrides };

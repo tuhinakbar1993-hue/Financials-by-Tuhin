@@ -18,6 +18,8 @@ import {
   ArrowUpRight,
   CheckSquare,
   Square,
+  BookmarkCheck,
+  Check,
 } from 'lucide-react';
 import {
   CompanyProfile,
@@ -87,6 +89,10 @@ interface StatementsViewerProps {
   statementConfig: StatementConfigItem[];
   onUpdateStatementConfig?: (items: StatementConfigItem[]) => void;
   onResetStatementConfig?: () => void;
+  onSaveStatementConfigAsDefault?: () => void;
+  onResetFactoryStatementConfig?: () => void;
+  hasSavedDefaultConfig?: boolean;
+  savedDefaultAt?: string | null;
   assumptions?: ProjectionAssumptions;
   onUpdateAssumptions?: (updated: ProjectionAssumptions) => void;
   cellOverrides?: StatementCellOverrides;
@@ -128,6 +134,10 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
   statementConfig = [],
   onUpdateStatementConfig,
   onResetStatementConfig,
+  onSaveStatementConfigAsDefault,
+  onResetFactoryStatementConfig,
+  hasSavedDefaultConfig = false,
+  savedDefaultAt = null,
   assumptions,
   onUpdateAssumptions,
   cellOverrides = {},
@@ -157,6 +167,13 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
   onJumpToRepaymentSchedule,
   onChangeFinancialYearEnd,
 }) => {
+  const [savedDefaultFeedback, setSavedDefaultFeedback] = useState<boolean>(false);
+  const triggerSaveDefaultConfig = () => {
+    if (!onSaveStatementConfigAsDefault) return;
+    onSaveStatementConfigAsDefault();
+    setSavedDefaultFeedback(true);
+    setTimeout(() => setSavedDefaultFeedback(false), 3000);
+  };
   const [activeStatement, setActiveStatement] = useState<string>('cashFlow');
   const [yearViewMode, setYearViewMode] = useState<'all' | 'historical' | 'projected' | 'comparative5'>('all');
   const [isEditMode, setIsEditMode] = useState<boolean>(false);
@@ -841,15 +858,42 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
               </>
             )}
 
+            {isCustomizeMode && formatMode === 'section76' && onSaveStatementConfigAsDefault && (
+              <button
+                type="button"
+                onClick={triggerSaveDefaultConfig}
+                className={`px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors flex items-center gap-1 whitespace-nowrap shrink-0 ${
+                  savedDefaultFeedback
+                    ? 'bg-emerald-600 text-white border-emerald-600'
+                    : 'bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-600'
+                }`}
+                title="Save current selected elements as the automatic default for future launches and New Case resets"
+              >
+                {savedDefaultFeedback ? <Check className="w-3.5 h-3.5" /> : <BookmarkCheck className="w-3.5 h-3.5" />}
+                {savedDefaultFeedback ? 'Saved Default!' : 'Save as Default'}
+              </button>
+            )}
+
             {isCustomizeMode && formatMode === 'section76' && onResetStatementConfig && (
               <button
                 type="button"
                 onClick={onResetStatementConfig}
                 className="px-2.5 py-1.5 text-xs font-medium text-indigo-700 hover:text-indigo-900 bg-white hover:bg-indigo-50 rounded-lg border border-slate-300 transition-colors flex items-center gap-1 whitespace-nowrap shrink-0"
-                title="Restore all default financial statement elements and labels"
+                title={hasSavedDefaultConfig ? 'Restore your saved default financial statement elements' : 'Restore all default financial statement elements and labels'}
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                Reset Defaults
+                {hasSavedDefaultConfig ? 'Saved Default' : 'Reset Defaults'}
+              </button>
+            )}
+
+            {isCustomizeMode && formatMode === 'section76' && hasSavedDefaultConfig && onResetFactoryStatementConfig && (
+              <button
+                type="button"
+                onClick={onResetFactoryStatementConfig}
+                className="px-2.5 py-1.5 text-xs font-medium text-rose-700 hover:text-rose-900 bg-white hover:bg-rose-50 rounded-lg border border-slate-300 transition-colors whitespace-nowrap shrink-0"
+                title="Clear your saved default and restore original factory defaults"
+              >
+                Factory Defaults
               </button>
             )}
 
@@ -1106,6 +1150,10 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
           statementConfig={statementConfig}
           onUpdateStatementConfig={onUpdateStatementConfig}
           onResetStatementConfig={onResetStatementConfig}
+          onSaveStatementConfigAsDefault={onSaveStatementConfigAsDefault}
+          onResetFactoryStatementConfig={onResetFactoryStatementConfig}
+          hasSavedDefaultConfig={hasSavedDefaultConfig}
+          savedDefaultAt={savedDefaultAt}
           labelOverrides={labelOverrides}
           cellOverrides={cellOverrides}
         />
@@ -1120,6 +1168,10 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
           statementConfig={statementConfig}
           onUpdateStatementConfig={onUpdateStatementConfig}
           onResetStatementConfig={onResetStatementConfig}
+          onSaveStatementConfigAsDefault={onSaveStatementConfigAsDefault}
+          onResetFactoryStatementConfig={onResetFactoryStatementConfig}
+          hasSavedDefaultConfig={hasSavedDefaultConfig}
+          savedDefaultAt={savedDefaultAt}
           labelOverrides={labelOverrides}
           cellOverrides={cellOverrides}
           parsedSchedule={parsedSchedule}

@@ -860,7 +860,8 @@ export function generateAutomaticPrimaryDrivers(
   prevYear: YearDataInput,
   assumptions: ProjectionAssumptions,
   yearNumber: number,
-  stepIndex: number = 1
+  stepIndex: number = 1,
+  amortizeContext?: { remainingProjYears: number; isFinalProjectedYear: boolean }
 ): {
   year: number;
   isProjected: boolean;
@@ -1103,16 +1104,38 @@ export function generateAutomaticPrimaryDrivers(
   const prevLT = prevYear.longTermBorrowings;
   const gNp = yoyPct(netProfit, prevYear.netProfit);
   let repaymentOfBorrowings = 0;
-  if (prevLT > 0 || prevYear.repaymentOfBorrowings > 0) {
+  const remYears = Math.max(1, amortizeContext?.remainingProjYears ?? 1);
+  if (amortizeContext?.isFinalProjectedYear && prevLT > 0) {
+    // Final projected year settles 100% of remaining Long-Term Borrowings cleanly while keeping YoY spread distinct
+    const wcPaydown = prevYear.shortTermBorrowings > 0
+      ? Math.round(prevYear.shortTermBorrowings * varyBounded(0.11, yearNumber, 15, 0.035, 0.04, 0.22))
+      : 0;
+    const rawFinalPay = Math.round(prevLT + wcPaydown);
+    const minSpreadTarget = prevYear.repaymentOfBorrowings > 0
+      ? computeSpreadValue(
+          rawFinalPay,
+          prevYear.repaymentOfBorrowings,
+          Math.max(Math.round(prevLT), Math.round(rawFinalPay * 0.85)),
+          Math.round(rawFinalPay * 1.25),
+          [gFin, gNp],
+          yearNumber,
+          15,
+          1.55
+        )
+      : rawFinalPay;
+    repaymentOfBorrowings = Math.max(Math.round(prevLT), minSpreadTarget);
+  } else if (prevLT > 0 || prevYear.repaymentOfBorrowings > 0) {
     const baseLT = Math.max(500, prevLT);
+    const amortFloor = amortizeContext ? Math.round((prevLT / remYears) * 0.94) : 0;
     const rawPrevRepayRatio = prevYear.repaymentOfBorrowings > 0 ? prevYear.repaymentOfBorrowings / baseLT : 0.12;
     const clampedPrevRepay = clampVal(rawPrevRepayRatio, 0.065, 0.23);
     const yearRepayRatio = varyBounded(clampedPrevRepay * 0.38 + 0.125 * 0.62, yearNumber, 15, 0.022, 0.065, 0.24);
+    const targetRepay = Math.max(400, Math.round(baseLT * yearRepayRatio), amortFloor);
     repaymentOfBorrowings = computeSpreadValue(
-      Math.max(400, baseLT * yearRepayRatio),
+      targetRepay,
       prevYear.repaymentOfBorrowings,
-      Math.max(400, Math.round(baseLT * 0.065)),
-      Math.max(450, Math.round(baseLT * 0.24)),
+      Math.max(400, Math.round(baseLT * 0.065), Math.round(amortFloor * 0.85)),
+      Math.max(450, Math.round(baseLT * 0.28), Math.round(targetRepay * 1.22)),
       [gFin, gNp],
       yearNumber,
       15,
@@ -1527,7 +1550,8 @@ export function deriveDependentFinancials(
   },
   prevYear: YearDataInput | null,
   assumptions: ProjectionAssumptions,
-  existingFullYear?: Partial<YearDataInput>
+  existingFullYear?: Partial<YearDataInput>,
+  projectionOptions?: { targetClosingLT?: number }
 ): YearDataInput {
   const {
     year,
@@ -1828,6 +1852,11 @@ export function deriveDependentFinancials(
       longTermBorrowings = prevYear
         ? Math.max(0, prevYear.longTermBorrowings - absRepayment + Math.round(financingProceedsBorrowings * 0.4))
         : (existingFullYear?.longTermBorrowings ?? Math.max(8000, absRepayment * 4));
+    } else if (projectionOptions?.targetClosingLT !== undefined) {
+      longTermBorrowings = Math.max(0, Math.round(projectionOptions.targetClosingLT));
+      const netDebtChange = financingProceedsBorrowings - absRepayment;
+      const targetTotalDebt = Math.max(longTermBorrowings, prevTotalDebt + netDebtChange);
+      shortTermBorrowings = Math.max(0, targetTotalDebt - longTermBorrowings);
     } else {
       const netDebtChange = financingProceedsBorrowings - absRepayment;
       const targetTotalDebt = Math.max(0, prevTotalDebt + netDebtChange);
@@ -2142,19 +2171,45 @@ export function generateProjectedYears(
   let prevYear = baseInput;
   let stepCounter = 0;
 
-  for (const yearNum of targetYears) {
+  for (let yIdx = 0; yIdx < targetYears.length; yIdx++) {
+    const yearNum = targetYears[yIdx];
+    const remainingProjYears = targetYears.length - yIdx;
+    const isFinalProjectedYear = yIdx === targetYears.length - 1;
     const step = Math.max(1, yearNum - prevYear.year);
     let tempPrev = prevYear;
     if (step > 1) {
       for (let s = 1; s < step; s++) {
         stepCounter += 1;
-        const midDrivers = generateAutomaticPrimaryDrivers(tempPrev, assumptions, prevYear.year + s, stepCounter);
-        tempPrev = deriveDependentFinancials(midDrivers, tempPrev, assumptions);
+        const midDrivers = generateAutomaticPrimaryDrivers(
+          tempPrev,
+          assumptions,
+          prevYear.year + s,
+          stepCounter,
+          { remainingProjYears: remainingProjYears + (step - s), isFinalProjectedYear: false }
+        );
+        const midTargetLT = Math.max(
+          0,
+          Math.round(tempPrev.longTermBorrowings * Math.max(0, (remainingProjYears + step - s - 1) / Math.max(1, remainingProjYears + step - s)))
+        );
+        tempPrev = deriveDependentFinancials(midDrivers, tempPrev, assumptions, undefined, {
+          targetClosingLT: midTargetLT,
+        });
       }
     }
     stepCounter += 1;
-    const finalDrivers = generateAutomaticPrimaryDrivers(tempPrev, assumptions, yearNum, stepCounter);
-    const fullYear = deriveDependentFinancials(finalDrivers, prevYear, assumptions);
+    const finalDrivers = generateAutomaticPrimaryDrivers(
+      tempPrev,
+      assumptions,
+      yearNum,
+      stepCounter,
+      { remainingProjYears, isFinalProjectedYear }
+    );
+    const targetClosingLT = isFinalProjectedYear
+      ? 0
+      : Math.max(0, Math.round(prevYear.longTermBorrowings - Math.min(prevYear.longTermBorrowings, Math.round(finalDrivers.repaymentOfBorrowings * 0.78))));
+    const fullYear = deriveDependentFinancials(finalDrivers, prevYear, assumptions, undefined, {
+      targetClosingLT,
+    });
     projected.push(fullYear);
     prevYear = fullYear;
   }
@@ -3775,6 +3830,175 @@ export const DEFAULT_STATEMENT_CONFIG_ITEMS: StatementConfigItem[] = [
   { id: 'fa_computer_it', statement: 'fixedAssets', section: 'Asset Categories', label: 'Computer, IT & Telecommunications', isMandatory: false, isVisible: true, order: 5 },
 ];
 
+// ---------------- SAVED USER-DEFAULT STATEMENT CONFIG PERSISTENCE ---------------- //
+export const SAVED_STATEMENT_CONFIG_STORAGE_KEY = 'financials_with_tuhin_saved_statement_config_v1';
+
+export interface SavedStatementConfigResult {
+  items: StatementConfigItem[];
+  hasSavedDefault: boolean;
+  savedAt: string | null;
+}
+
+export function mergeSavedStatementConfigWithDefaults(rawSavedItems: unknown): StatementConfigItem[] {
+  if (!Array.isArray(rawSavedItems)) {
+    return DEFAULT_STATEMENT_CONFIG_ITEMS.map(item => ({ ...item }));
+  }
+
+  const savedById = new Map<string, StatementConfigItem>();
+  const validStatements = new Set<StatementConfigItem['statement']>([
+    'income',
+    'balanceSheet',
+    'cashFlow',
+    'equity',
+    'fixedAssets',
+  ]);
+
+  for (const entry of rawSavedItems) {
+    if (!entry || typeof entry !== 'object') continue;
+    const obj = entry as Partial<StatementConfigItem>;
+    if (
+      typeof obj.id !== 'string' ||
+      typeof obj.label !== 'string' ||
+      typeof obj.section !== 'string' ||
+      !obj.statement ||
+      !validStatements.has(obj.statement)
+    ) {
+      continue;
+    }
+    savedById.set(obj.id, {
+      id: obj.id,
+      statement: obj.statement,
+      section: obj.section,
+      label: obj.label,
+      isMandatory: Boolean(obj.isMandatory),
+      isVisible: typeof obj.isVisible === 'boolean' ? obj.isVisible : true,
+      order: typeof obj.order === 'number' && Number.isFinite(obj.order) ? obj.order : 999,
+      isCustom: Boolean(obj.isCustom),
+      sign: obj.sign === 'negative' ? 'negative' : 'positive',
+      customValues: obj.isCustom ? {} : undefined,
+    });
+  }
+
+  const mergedStandard = DEFAULT_STATEMENT_CONFIG_ITEMS.map(defItem => {
+    const saved = savedById.get(defItem.id);
+    if (!saved) return { ...defItem };
+    return {
+      ...defItem,
+      label: saved.label.trim() ? saved.label : defItem.label,
+      isVisible: saved.isVisible,
+      order: saved.order !== 999 ? saved.order : defItem.order,
+    };
+  });
+
+  const standardIds = new Set(DEFAULT_STATEMENT_CONFIG_ITEMS.map(i => i.id));
+  const savedCustomItems: StatementConfigItem[] = [];
+  for (const [id, saved] of savedById.entries()) {
+    if (!standardIds.has(id) && saved.isCustom) {
+      savedCustomItems.push({
+        ...saved,
+        isCustom: true,
+        customValues: {},
+      });
+    }
+  }
+
+  return [...mergedStandard, ...savedCustomItems];
+}
+
+export function loadDefaultStatementConfig(): SavedStatementConfigResult {
+  try {
+    const storage =
+      typeof window !== 'undefined' && window.localStorage
+        ? window.localStorage
+        : typeof globalThis !== 'undefined' && (globalThis as { localStorage?: Storage }).localStorage
+        ? (globalThis as { localStorage?: Storage }).localStorage
+        : undefined;
+    if (!storage) {
+      return {
+        items: DEFAULT_STATEMENT_CONFIG_ITEMS.map(item => ({ ...item })),
+        hasSavedDefault: false,
+        savedAt: null,
+      };
+    }
+    const raw = storage.getItem(SAVED_STATEMENT_CONFIG_STORAGE_KEY);
+    if (!raw) {
+      return {
+        items: DEFAULT_STATEMENT_CONFIG_ITEMS.map(item => ({ ...item })),
+        hasSavedDefault: false,
+        savedAt: null,
+      };
+    }
+    const parsed = JSON.parse(raw) as
+      | { items?: unknown; savedAt?: string }
+      | unknown[];
+    const rawItems = Array.isArray(parsed) ? parsed : parsed?.items;
+    if (!Array.isArray(rawItems) || rawItems.length === 0) {
+      return {
+        items: DEFAULT_STATEMENT_CONFIG_ITEMS.map(item => ({ ...item })),
+        hasSavedDefault: false,
+        savedAt: null,
+      };
+    }
+    return {
+      items: mergeSavedStatementConfigWithDefaults(rawItems),
+      hasSavedDefault: true,
+      savedAt: !Array.isArray(parsed) && typeof parsed?.savedAt === 'string' ? parsed.savedAt : null,
+    };
+  } catch {
+    return {
+      items: DEFAULT_STATEMENT_CONFIG_ITEMS.map(item => ({ ...item })),
+      hasSavedDefault: false,
+      savedAt: null,
+    };
+  }
+}
+
+export function saveStatementConfigAsDefault(items: StatementConfigItem[]): {
+  ok: boolean;
+  savedAt: string;
+  items: StatementConfigItem[];
+} {
+  const sanitized = mergeSavedStatementConfigWithDefaults(items);
+  const savedAt = new Date().toISOString();
+  try {
+    const storage =
+      typeof window !== 'undefined' && window.localStorage
+        ? window.localStorage
+        : typeof globalThis !== 'undefined' && (globalThis as { localStorage?: Storage }).localStorage
+        ? (globalThis as { localStorage?: Storage }).localStorage
+        : undefined;
+    if (!storage) {
+      return { ok: false, savedAt, items: sanitized };
+    }
+    storage.setItem(
+      SAVED_STATEMENT_CONFIG_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        savedAt,
+        items: sanitized,
+      })
+    );
+    return { ok: true, savedAt, items: sanitized };
+  } catch {
+    return { ok: false, savedAt, items: sanitized };
+  }
+}
+
+export function clearSavedDefaultStatementConfig(): StatementConfigItem[] {
+  try {
+    const storage =
+      typeof window !== 'undefined' && window.localStorage
+        ? window.localStorage
+        : typeof globalThis !== 'undefined' && (globalThis as { localStorage?: Storage }).localStorage
+        ? (globalThis as { localStorage?: Storage }).localStorage
+        : undefined;
+    storage?.removeItem(SAVED_STATEMENT_CONFIG_STORAGE_KEY);
+  } catch {
+    // ignore storage errors
+  }
+  return DEFAULT_STATEMENT_CONFIG_ITEMS.map(item => ({ ...item }));
+}
+
 export const COMPANY_TYPE_TEMPLATES: Record<EntityType, { title: string; desc: string; operatingCustomLines: string[]; financingCustomLines: string[] }> = {
   manufacturing: {
     title: 'Manufacturing & Industrial Production',
@@ -4997,7 +5221,10 @@ export function implementRepaymentScheduleIntoModel({
     }
     return mult;
   };
-  const baselineProjRev = lastHistInput.salesRevenue * (1 + projRevRateForYear(firstProjYear));
+  const baselineProjRev =
+    lastHistInput.salesRevenue > 0
+      ? lastHistInput.salesRevenue * (1 + projRevRateForYear(firstProjYear))
+      : Math.max(1000, Math.round((schedule.metadata.investmentMade || schedule.grandTotalPrincipal || 100000) * 1.8));
 
   const investmentMade = schedule.metadata.investmentMade || schedule.grandTotalPrincipal || 0;
   let requiredAnchorProjRev = baselineProjRev;
@@ -5016,17 +5243,29 @@ export function implementRepaymentScheduleIntoModel({
   }
 
   const rawScaleRatio = baselineProjRev > 0 ? requiredAnchorProjRev / baselineProjRev : 1;
-  const needsOptimizationLift = rawScaleRatio > 1.02;
+  const needsOptimizationLift = rawScaleRatio > 1.02 || lastHistInput.salesRevenue <= 0;
   const targetAnchorProjRev = needsOptimizationLift ? requiredAnchorProjRev * 1.08 : baselineProjRev;
   const scaleFactorApplied = baselineProjRev > 0 ? Number((targetAnchorProjRev / baselineProjRev).toFixed(4)) : 1;
 
-  // Optionally align historical baseline proportionally when there is a >1.5x unit/capacity scale jump
-  // (e.g., default sample data in Thousands vs a client schedule in exact Units of BDT)
-  const shouldScaleHist = alignHistoricalScale && scaleFactorApplied > 1.5;
+  // Optionally align historical baseline proportionally when there is a >1.5x unit/capacity scale jump or clean case
+  const shouldScaleHist = alignHistoricalScale && (scaleFactorApplied > 1.5 || lastHistInput.salesRevenue <= 0);
   const hasFutureReschedule = schedSummaries.some(s => s.financialYear > maxHistYear);
-  const firstSchedDS = schedSummaries[0] ? schedSummaries[0].totalPrincipal + schedSummaries[0].totalProfit : 0;
-  // Constrained pre-rescheduling historical scale (~64% of turnaround anchor so historical operations reflect strained repayment ability before rescheduling recovery)
-  const histRevenueScale = shouldScaleHist ? Math.max(1, scaleFactorApplied * 0.64) : 1;
+  const targetLoanRate = clampVal((assumptions.loanInterestRatePct ?? 15.5) / 100, 0, 0.38);
+  const finalProjYear = projYears[projYears.length - 1];
+  const firstSchedYear = schedYears[0];
+  const lastSchedYear = schedYears[schedYears.length - 1];
+
+  // Historical revenue scale under pre-rescheduling distress:
+  // When unpaid previous loans carry @ loanInterestRatePct (15.50%) with 0 principal paid, distressed compressed EBITDA (~8.5% margin)
+  // must logically sit below Finance Cost (~0.62x-0.84x coverage) to justify rescheduling without fabricating fake repayments.
+  const baseHistRefSales = lastHistInput.salesRevenue > 0 ? lastHistInput.salesRevenue : Math.max(1000, Math.round(targetAnchorProjRev * 0.42));
+  const rawHistRevCap = investmentMade > 0 && targetLoanRate > 0
+    ? Math.round((investmentMade * targetLoanRate * 0.72) / 0.088)
+    : Math.round(targetAnchorProjRev * 0.44);
+  const desiredMaxHistRev = Math.min(Math.round(targetAnchorProjRev * 0.44), Math.max(1000, rawHistRevCap));
+  const histRevenueScale = shouldScaleHist
+    ? Math.max(0.4, Number((desiredMaxHistRev / Math.max(1, baseHistRefSales)).toFixed(4)))
+    : 1;
 
   const buildOptimizedYear = (
     yr: number,
@@ -5035,14 +5274,21 @@ export function implementRepaymentScheduleIntoModel({
     existingInput?: YearDataInput
   ): YearDataInput => {
     const sched = schedMap.get(yr);
-    const nextYrSched = schedMap.get(yr + 1);
     const isDistressedHistorical = !isProjected && !sched && hasFutureReschedule;
+    const isFirstProjYear = isProjected && yr === firstProjYear;
+    const preserveCustomHistLT = Boolean(!isProjected && existingInput && existingInput.hasCustomLongTermBorrowings);
+    const preserveCustomHistST = Boolean(!isProjected && existingInput && existingInput.hasCustomShortTermBorrowings);
 
     // Determine Sales Revenue on irregular non-uniform business curve
     let salesRevenue: number;
     if (!isProjected) {
       if (shouldScaleHist) {
-        const baseHistSales = (existingInput?.salesRevenue || lastHistInput.salesRevenue) * histRevenueScale;
+        const refInputSales = existingInput && existingInput.salesRevenue > 0 ? existingInput.salesRevenue : baseHistRefSales;
+        const hIdx = Math.max(0, histYears.indexOf(yr));
+        const fallbackDistressedStep = refInputSales === baseHistRefSales
+          ? Math.round(baseHistRefSales * (0.82 + 0.09 * hIdx))
+          : refInputSales;
+        const baseHistSales = fallbackDistressedStep * histRevenueScale;
         salesRevenue = prevYear && prevYear.salesRevenue > 0
           ? computeSpreadValue(
               baseHistSales,
@@ -5066,27 +5312,44 @@ export function implementRepaymentScheduleIntoModel({
     }
     const gRev = prevYear && prevYear.salesRevenue > 0 ? yoyPct(salesRevenue, prevYear.salesRevenue) : 0;
 
+    // Resolve prior year debt BEFORE computing disbursement boost & Finance Cost
+    const prevLT = prevYear
+      ? prevYear.longTermBorrowings
+      : Math.max(0, existingInput?.longTermBorrowings ?? 0);
+    const prevST = prevYear
+      ? prevYear.shortTermBorrowings
+      : Math.max(0, existingInput?.shortTermBorrowings ?? 0);
+    const prevTotalDebt = r2(prevLT + prevST);
+
+    // Net new disbursement ONLY if schedule disbursement exceeds prior recognized unpaid loan balance (prevents double-counting rescheduling balance)
+    const netNewDisbursement =
+      !isFirstProjYear && sched && sched.disbursementAmount > 0
+        ? Math.max(0, r2(sched.disbursementAmount - prevTotalDebt))
+        : 0;
+
     // Productive Fixed Assets base scales with revenue & non-uniform capex/disposal cycles
+    const histFaBaseRatio =
+      lastHistInput.salesRevenue > 0 && lastHistInput.fixedAssetsGross > 0
+        ? lastHistInput.fixedAssetsGross / lastHistInput.salesRevenue
+        : 0.65;
     const prevGross = prevYear
       ? prevYear.fixedAssetsGross
-      : Math.round(salesRevenue * (lastHistInput.fixedAssetsGross / Math.max(1, lastHistInput.salesRevenue)));
+      : Math.round(salesRevenue * histFaBaseRatio);
 
     let fixedAssetsGross: number;
     let fixedAssetsAdditions: number;
     let fixedAssetsDisposals: number;
 
-    const isFirstProjYear = isProjected && yr === firstProjYear;
-
     if (!isProjected && existingInput && !shouldScaleHist) {
       fixedAssetsGross = existingInput.fixedAssetsGross;
       fixedAssetsAdditions = existingInput.fixedAssetsAdditions;
       fixedAssetsDisposals = existingInput.fixedAssetsDisposals;
-    } else if (!isProjected && existingInput && shouldScaleHist) {
+    } else if (!isProjected && existingInput && shouldScaleHist && existingInput.fixedAssetsGross > 0) {
       fixedAssetsGross = Math.round(existingInput.fixedAssetsGross * histRevenueScale);
       fixedAssetsAdditions = Math.round(existingInput.fixedAssetsAdditions * histRevenueScale);
       fixedAssetsDisposals = Math.round(existingInput.fixedAssetsDisposals * histRevenueScale);
     } else {
-      const disbBoost = !isFirstProjYear && sched && sched.disbursementAmount > 0 ? Math.round(sched.disbursementAmount * 0.45) : 0;
+      const disbBoost = netNewDisbursement > 0 ? Math.round(netNewDisbursement * 0.45) : 0;
       const minCapexPct = Math.max(1.5, capexPct * 0.58);
       const maxCapexPct = Math.min(22, capexPct * 1.48);
       const yearCapexPct = clampVal(capexPct * (1 + deterministicAnnualWave(yr, 11) * 0.34), minCapexPct, maxCapexPct);
@@ -5141,7 +5404,7 @@ export function implementRepaymentScheduleIntoModel({
     const depCharge = Math.round(((prevGross + fixedAssetsGross) / 2) * (effectiveDepPct / 100));
 
     // Pre-rescheduling historical years reflect margin compression & higher cost burden vs post-rescheduling recovery
-    const targetCosPct = isDistressedHistorical ? clampVal((100 - gmPct) + 7.2, 50, 79.5) : (100 - gmPct);
+    const targetCosPct = isDistressedHistorical ? clampVal((100 - gmPct) + 8.6, 50, 79.5) : (100 - gmPct);
     const prevCosPct = prevYear && prevYear.salesRevenue > 0 ? (prevYear.costOfSales / prevYear.salesRevenue) * 100 : targetCosPct;
     const rawCosPct = varyBounded(
       prevYear ? prevCosPct * 0.25 + targetCosPct * 0.75 : targetCosPct,
@@ -5151,7 +5414,7 @@ export function implementRepaymentScheduleIntoModel({
       Math.max(18, targetCosPct - 3.4),
       Math.min(84, targetCosPct + 3.4)
     );
-    const costOfSales = prevYear
+    let costOfSales = prevYear
       ? computeSpreadValue(
           salesRevenue * (rawCosPct / 100),
           prevYear.costOfSales,
@@ -5165,7 +5428,7 @@ export function implementRepaymentScheduleIntoModel({
       : Math.round(salesRevenue * (rawCosPct / 100));
     const gCos = prevYear && prevYear.costOfSales > 0 ? yoyPct(costOfSales, prevYear.costOfSales) : 0;
 
-    const targetOpexPct = isDistressedHistorical ? clampVal(opexPct + 2.8, 8, 34) : opexPct;
+    const targetOpexPct = isDistressedHistorical ? clampVal(opexPct + 3.2, 8, 34) : opexPct;
     const prevOpexPct = prevYear && prevYear.salesRevenue > 0 ? (prevYear.operatingExpenses / prevYear.salesRevenue) * 100 : targetOpexPct;
     const rawOpexPct = varyBounded(
       prevYear ? prevOpexPct * 0.25 + targetOpexPct * 0.75 : targetOpexPct,
@@ -5191,74 +5454,131 @@ export function implementRepaymentScheduleIntoModel({
       : Math.round(salesRevenue * (rawOpexPct / 100));
     const interestIncome = Math.round(salesRevenue * computeInterestIncomeRate(yr, isProjected));
 
-    // Exact Schedule Locks for Principal & Profit on covered years; distressed existing obligations on prior historical years
+    // Resolve Borrowings, Principal Repayments, Borrowing Proceeds, & Finance Cost
+    // Req 2: Previous years recognize unpaid loans under Long-Term Borrowings with 0 principal repaid & logical Finance Cost (@ loanInterestRatePct)
+    // Req 3: Projected years strictly follow schedule, never double-count rescheduling disbursements, & settle Long-Term Borrowings to 0 (NIL) by Final Projected Year
     let exactFinanceCost: number;
     let exactRepayment: number;
+    let financingProceedsBorrowings = 0;
+    let shortTermBorrowings = 0;
+    let longTermBorrowings = 0;
+
     if (sched) {
       exactFinanceCost = sched.totalProfit;
       exactRepayment = sched.totalPrincipal;
+      financingProceedsBorrowings = isFirstProjYear ? 0 : netNewDisbursement;
+      shortTermBorrowings = preserveCustomHistST ? Math.max(0, existingInput!.shortTermBorrowings) : 0;
+      longTermBorrowings =
+        isProjected && yr === finalProjYear && sched.closingBalance < 1
+          ? 0
+          : r2(sched.closingBalance);
     } else if (isDistressedHistorical) {
-      // Strained pre-rescheduling debt obligations exceeding historical EBITDA (EBITDA DSCR ~0.72x - 0.90x)
-      const histEBITDA = Math.max(1000, salesRevenue - costOfSales - operatingExpenses);
-      const targetDistressRatio = varyBounded(1.26, yr, 19, 0.08, 1.15, 1.42);
-      const preReschedFloorDS = Math.round(Math.max(histEBITDA * targetDistressRatio, firstSchedDS * 0.75));
-      const finShare = varyBounded(0.41, yr, 14, 0.035, 0.34, 0.48);
-      const rawDistFin = Math.max(100, Math.round(preReschedFloorDS * finShare));
-      const rawDistRepay = Math.max(100, preReschedFloorDS - rawDistFin);
-      exactFinanceCost = prevYear && prevYear.financeCost > 0
+      // Clients have NOT repaid previous loans and are seeking rescheduling:
+      // 1) Principal Repayment = 0; Borrowing Proceeds = 0
+      // 2) Outstanding previous loans sit under Long-Term Borrowings, accumulating up to exact investmentMade by maxHistYear
+      exactRepayment = 0;
+      financingProceedsBorrowings = 0;
+      shortTermBorrowings = preserveCustomHistST ? Math.max(0, existingInput!.shortTermBorrowings) : 0;
+
+      if (preserveCustomHistLT) {
+        longTermBorrowings = Math.max(0, existingInput!.longTermBorrowings);
+      } else if (investmentMade > 0) {
+        const hIdx = Math.max(0, histYears.indexOf(yr));
+        if (hIdx >= histYears.length - 1 || yr === maxHistYear) {
+          longTermBorrowings = r2(investmentMade);
+        } else {
+          const baseProgressFrac = 0.78 + (0.14 * hIdx) / Math.max(1, histYears.length - 1);
+          const variedFrac = varyBounded(baseProgressFrac, yr, 25, 0.025, 0.72, 0.95);
+          const candidateLt = r2(investmentMade * variedFrac);
+          longTermBorrowings = prevYear && candidateLt <= prevYear.longTermBorrowings
+            ? r2(Math.min(investmentMade * 0.97, prevYear.longTermBorrowings * 1.08))
+            : candidateLt;
+        }
+      } else {
+        longTermBorrowings = Math.round((existingInput?.longTermBorrowings || 0) * (shouldScaleHist ? histRevenueScale : 1));
+      }
+
+      const histDebtBal = r2(longTermBorrowings + shortTermBorrowings);
+      const effHistRate = targetLoanRate > 0
+        ? (yr === maxHistYear
+            ? targetLoanRate
+            : varyBounded(
+                targetLoanRate,
+                yr,
+                14,
+                Math.max(0.005, targetLoanRate * 0.055),
+                Math.max(0.01, targetLoanRate * 0.85),
+                Math.min(0.40, targetLoanRate * 1.15)
+              ))
+        : 0;
+      const rawHistFinCost = histDebtBal > 0 && effHistRate > 0 ? Math.round(histDebtBal * effHistRate) : 0;
+      exactFinanceCost = prevYear && prevYear.financeCost > 0 && rawHistFinCost > 0
         ? computeSpreadValue(
-            rawDistFin,
+            rawHistFinCost,
             prevYear.financeCost,
-            Math.round(rawDistFin * 0.85),
-            Math.round(rawDistFin * 1.15),
+            Math.round(rawHistFinCost * 0.88),
+            Math.round(rawHistFinCost * 1.12),
             [gRev, gCos],
             yr,
             14,
             1.45
           )
-        : rawDistFin;
-      const gHistFin = prevYear && prevYear.financeCost > 0 ? yoyPct(exactFinanceCost, prevYear.financeCost) : 0;
-      exactRepayment = prevYear && prevYear.repaymentOfBorrowings > 0
-        ? computeSpreadValue(
-            rawDistRepay,
-            prevYear.repaymentOfBorrowings,
-            Math.round(rawDistRepay * 0.85),
-            Math.round(rawDistRepay * 1.15),
-            [gHistFin, gRev],
-            yr,
-            15,
-            1.45
-          )
-        : rawDistRepay;
+        : rawHistFinCost;
+
+      // Ensure historical compressed EBITDA stays below Finance Cost when auto-scaling distress so DSCR < 1.0x (DEFICIT)
+      if (shouldScaleHist && exactFinanceCost > 0) {
+        const currentHistEBITDA = salesRevenue - costOfSales - operatingExpenses;
+        const maxDistressedEBITDA = Math.round(exactFinanceCost * varyBounded(0.76, yr, 19, 0.07, 0.60, 0.86));
+        if (currentHistEBITDA > maxDistressedEBITDA) {
+          const neededExtraCost = currentHistEBITDA - maxDistressedEBITDA;
+          costOfSales = Math.min(Math.round(salesRevenue * 0.88), costOfSales + neededExtraCost);
+        }
+      }
     } else if (existingInput && !isProjected) {
       exactFinanceCost = shouldScaleHist ? Math.round(existingInput.financeCost * histRevenueScale) : existingInput.financeCost;
       exactRepayment = shouldScaleHist ? Math.round(existingInput.repaymentOfBorrowings * histRevenueScale) : existingInput.repaymentOfBorrowings;
+      financingProceedsBorrowings = Math.round((existingInput.financingProceedsBorrowings || 0) * (shouldScaleHist ? histRevenueScale : 1));
+      shortTermBorrowings = preserveCustomHistST
+        ? Math.max(0, existingInput.shortTermBorrowings)
+        : Math.round((existingInput.shortTermBorrowings || 0) * (shouldScaleHist ? histRevenueScale : 1));
+      longTermBorrowings = preserveCustomHistLT
+        ? Math.max(0, existingInput.longTermBorrowings)
+        : Math.round((existingInput.longTermBorrowings || 0) * (shouldScaleHist ? histRevenueScale : 1));
     } else {
-      const targetProjRate = clampVal((assumptions.loanInterestRatePct ?? 15.5) / 100, 0, 0.38);
-      const debtBase = prevYear ? prevYear.longTermBorrowings + prevYear.shortTermBorrowings : salesRevenue * 0.15;
-      exactFinanceCost =
-        debtBase > 0 && targetProjRate > 0
-          ? Math.max(
-              100,
-              Math.round(
-                debtBase *
-                  varyBounded(
-                    targetProjRate,
-                    yr,
-                    14,
-                    Math.max(0.006, targetProjRate * 0.055),
-                    Math.max(0.01, targetProjRate * 0.72),
-                    Math.min(0.40, targetProjRate * 1.28)
-                  )
-              )
-            )
-          : 0;
+      // Projected years outside schedule coverage (pre-schedule moratorium OR post-schedule debt-free / residual amortization)
       const inPreScheduleMoratorium = Boolean(
-        isProjected && hasFutureReschedule && schedSummaries[0] && yr < schedSummaries[0].financialYear
+        isProjected && hasFutureReschedule && firstSchedYear && yr < firstSchedYear
       );
-      exactRepayment = inPreScheduleMoratorium
-        ? 0
-        : Math.round((prevYear ? prevYear.longTermBorrowings : salesRevenue * 0.1) * varyBounded(0.12, yr, 15, 0.022, 0.065, 0.22));
+      const isAfterScheduleEnd = Boolean(isProjected && lastSchedYear && yr > lastSchedYear);
+      financingProceedsBorrowings = 0;
+      shortTermBorrowings = existingInput?.hasCustomShortTermBorrowings
+        ? Math.max(0, existingInput.shortTermBorrowings)
+        : 0;
+
+      if (inPreScheduleMoratorium) {
+        exactRepayment = 0;
+        longTermBorrowings = yr === finalProjYear ? 0 : r2(prevLT);
+        exactFinanceCost = prevTotalDebt > 0 && targetLoanRate > 0 ? Math.round(prevTotalDebt * targetLoanRate) : 0;
+      } else if (prevLT <= 0.01 || isAfterScheduleEnd && prevLT <= 0.01) {
+        exactRepayment = 0;
+        exactFinanceCost = 0;
+        longTermBorrowings = 0;
+      } else {
+        const remainingProjList = projYears.filter(py => py >= yr);
+        const remainingCount = Math.max(1, remainingProjList.length);
+        if (yr === finalProjYear) {
+          exactRepayment = r2(prevLT);
+          longTermBorrowings = 0;
+        } else {
+          const stepAmort = r2(Math.min(prevLT, Math.round((prevLT / remainingCount) * 100) / 100));
+          exactRepayment = stepAmort;
+          longTermBorrowings = Math.max(0, r2(prevLT - exactRepayment));
+        }
+        exactFinanceCost =
+          prevTotalDebt > 0 && targetLoanRate > 0
+            ? Math.max(100, Math.round(prevTotalDebt * targetLoanRate))
+            : 0;
+      }
     }
 
     // P&L forward calculation incorporating exact Finance Cost, keeping NP spread distinct from Rev/CoS/OpEx
@@ -5272,9 +5592,10 @@ export function implementRepaymentScheduleIntoModel({
 
     let { np: computedNp } = calcNp(operatingExpenses);
     if (prevYear && prevYear.netProfit !== 0) {
+      const gCosNow = yoyPct(costOfSales, prevYear.costOfSales);
       const gOp0 = yoyPct(operatingExpenses, prevYear.operatingExpenses);
       const gNp0 = yoyPct(computedNp, prevYear.netProfit);
-      const minSp = Math.min(Math.abs(gNp0 - gRev), Math.abs(gNp0 - gCos), Math.abs(gNp0 - gOp0));
+      const minSp = Math.min(Math.abs(gNp0 - gRev), Math.abs(gNp0 - gCosNow), Math.abs(gNp0 - gOp0));
       if (minSp < 1.48) {
         let bestOpex = operatingExpenses;
         let bestDist = Infinity;
@@ -5287,9 +5608,9 @@ export function implementRepaymentScheduleIntoModel({
           const gN = yoyPct(candNp, prevYear.netProfit);
           const sp = Math.min(
             Math.abs(gO - gRev),
-            Math.abs(gO - gCos),
+            Math.abs(gO - gCosNow),
             Math.abs(gN - gRev),
-            Math.abs(gN - gCos),
+            Math.abs(gN - gCosNow),
             Math.abs(gN - gO)
           );
           const dist = Math.abs(candOpex - operatingExpenses);
@@ -5326,7 +5647,7 @@ export function implementRepaymentScheduleIntoModel({
           prevYear.closingInventory,
           Math.round((costOfSales / 365) * minDio),
           Math.round((costOfSales / 365) * maxDio),
-          [gRev, gCos],
+          [gRev, yoyPct(costOfSales, prevYear.costOfSales)],
           yr,
           4,
           1.50
@@ -5344,7 +5665,7 @@ export function implementRepaymentScheduleIntoModel({
           prevYear.tradeReceivables,
           Math.round((salesRevenue / 365) * minDso),
           Math.round((salesRevenue / 365) * maxDso),
-          [gRev, gInv, gCos],
+          [gRev, gInv, yoyPct(costOfSales, prevYear.costOfSales)],
           yr,
           5,
           1.50
@@ -5377,7 +5698,7 @@ export function implementRepaymentScheduleIntoModel({
           prevYear.tradePayables,
           Math.round((costOfSales / 365) * minDpo),
           Math.round((costOfSales / 365) * maxDpo),
-          [gCos, gInv, gTrRec],
+          [yoyPct(costOfSales, prevYear.costOfSales), gInv, gTrRec],
           yr,
           6,
           1.50
@@ -5392,7 +5713,7 @@ export function implementRepaymentScheduleIntoModel({
           prevYear.otherPayables,
           Math.round(tradePayables * 0.175),
           Math.round(tradePayables * 0.335),
-          [gTrPay, gCos],
+          [gTrPay, yoyPct(costOfSales, prevYear.costOfSales)],
           yr,
           8,
           1.50
@@ -5412,54 +5733,6 @@ export function implementRepaymentScheduleIntoModel({
           1.50
         )
       : Math.round(salesRevenue * varyBounded(0.015, yr, 9, 0.004, 0.008, 0.025));
-
-    // Borrowings & Financing Cash Flow synchronized cleanly with Schedule Balance & Disbursement
-    const prevLT = prevYear
-      ? prevYear.longTermBorrowings
-      : Math.max(investmentMade || 0, Math.round((existingInput?.longTermBorrowings || 8000) * (shouldScaleHist ? histRevenueScale : 1)));
-    const prevST = prevYear
-      ? prevYear.shortTermBorrowings
-      : Math.round((existingInput?.shortTermBorrowings || 2500) * (shouldScaleHist ? histRevenueScale : 1));
-    const prevTotalDebt = r2(prevLT + prevST);
-
-    let financingProceedsBorrowings = 0;
-    if (isFirstProjYear) {
-      // First projected year models existing loan rescheduling/restructuring with no fresh loan proceeds
-      financingProceedsBorrowings = 0;
-    } else if (sched) {
-      if (sched.disbursementAmount > 0) {
-        financingProceedsBorrowings = r2(sched.disbursementAmount + Math.round(salesRevenue * varyBounded(0.015, yr, 19, 0.004, 0.008, 0.023)));
-      } else {
-        financingProceedsBorrowings = 0;
-      }
-    } else if (isDistressedHistorical) {
-      // Historical pre-rescheduling working capital / overdraft support prevents negative cash while DSCR remains in DEFICIT
-      const cashNeedForPrincipalAndCapex = Math.round(exactRepayment * 0.95 + Math.max(0, fixedAssetsAdditions - fixedAssetsDisposals) * 0.5);
-      financingProceedsBorrowings = Math.max(
-        Math.round((existingInput?.financingProceedsBorrowings || 0) * (shouldScaleHist ? histRevenueScale : 1)),
-        cashNeedForPrincipalAndCapex
-      );
-    } else if (existingInput && !isProjected) {
-      financingProceedsBorrowings = Math.round((existingInput.financingProceedsBorrowings || 0) * (shouldScaleHist ? histRevenueScale : 1));
-    } else {
-      financingProceedsBorrowings = Math.round(prevST * varyBounded(0.12, yr, 19, 0.042, 0.055, 0.21));
-    }
-
-    // Ensure total debt never drops below remaining scheduled balance + stays non-negative
-    if (!isFirstProjYear && prevTotalDebt + financingProceedsBorrowings < exactRepayment) {
-      financingProceedsBorrowings = r2(exactRepayment - prevTotalDebt + (sched?.closingBalance || 0));
-    }
-    const preserveCustomHistLT = Boolean(!isProjected && existingInput && !shouldScaleHist && existingInput.hasCustomLongTermBorrowings);
-    const preserveCustomHistST = Boolean(!isProjected && existingInput && !shouldScaleHist && existingInput.hasCustomShortTermBorrowings);
-    const targetTotalDebt = Math.max(sched?.closingBalance ?? 0, r2(prevTotalDebt + financingProceedsBorrowings - exactRepayment));
-    const currentMatOfLT = nextYrSched ? nextYrSched.totalPrincipal : 0;
-    const stSalesFloor = Math.round(salesRevenue * varyBounded(0.03, yr, 17, 0.009, 0.015, 0.045));
-    const shortTermBorrowings = preserveCustomHistST
-      ? Math.max(0, existingInput!.shortTermBorrowings)
-      : r2(Math.min(targetTotalDebt, Math.max(currentMatOfLT, stSalesFloor)));
-    const longTermBorrowings = preserveCustomHistLT
-      ? Math.max(0, existingInput!.longTermBorrowings)
-      : r2(Math.max(0, targetTotalDebt - shortTermBorrowings));
 
     const yearDivPayout = isDistressedHistorical
       ? 0
@@ -5484,19 +5757,18 @@ export function implementRepaymentScheduleIntoModel({
         : 0;
     const shareCapital = prevYear
       ? prevYear.shareCapital
-      : Math.round((existingInput?.shareCapital || 12000) * (shouldScaleHist ? histRevenueScale : 1));
+      : Math.round(((existingInput?.shareCapital || 0) > 0 ? existingInput!.shareCapital : 12000) * (shouldScaleHist ? histRevenueScale : 1));
 
     const cashFlowFromFinancing = r2(financingProceedsBorrowings - exactRepayment - dividendsPaid);
-    // For the first chronological year, ensure cashAndEquivalentsBS >= estimated netChangeInCash so openingCash >= 0 & Cash Flow stays 100% RECONCILED
+    // Ensure initial chronological year has sufficient cash buffer for Cash Flow reconciliation
     const estFirstOcf = r2(Math.max(0, netProfit) + depCharge - Math.max(0, netProfit) * 0.12);
     const estFirstCapex = r2(fixedAssetsAdditions - fixedAssetsDisposals);
     const estFirstNetChange = r2(estFirstOcf - estFirstCapex + cashFlowFromFinancing);
     const cashAndEquivalentsBS = prevYear
       ? Math.max(0, r2(prevYear.cashAndEquivalentsBS + (isDistressedHistorical ? -Math.round(salesRevenue * 0.008) : Math.max(0, netProfit) * 0.35)))
       : Math.max(
-          Math.round((existingInput?.cashAndEquivalentsBS || Math.round(salesRevenue * 0.085)) * (shouldScaleHist ? histRevenueScale : 1)),
-          Math.round(estFirstNetChange + salesRevenue * 0.055),
-          Math.round(salesRevenue * 0.05)
+          Math.round(((existingInput?.cashAndEquivalentsBS || 0) > 0 ? existingInput!.cashAndEquivalentsBS : Math.round(salesRevenue * 0.12)) * (shouldScaleHist ? histRevenueScale : 1)),
+          Math.round(Math.max(0, estFirstNetChange) + salesRevenue * 0.15 + investmentMade * 0.25)
         );
 
     return {
@@ -5524,16 +5796,16 @@ export function implementRepaymentScheduleIntoModel({
       otherCurrentAssets,
       intangibleAssets: prevYear
         ? Math.max(0, prevYear.intangibleAssets - Math.min(prevYear.intangibleAssets, Math.round(salesRevenue * varyBounded(0.002, yr, 15, 0.0007, 0.0008, 0.0034))))
-        : Math.round((existingInput?.intangibleAssets || 1400) * (shouldScaleHist ? histRevenueScale : 1)),
+        : Math.round(((existingInput?.intangibleAssets || 0) > 0 ? existingInput!.intangibleAssets : 1400) * (shouldScaleHist ? histRevenueScale : 1)),
       otherNonCurrentAssets: prevYear
         ? prevYear.otherNonCurrentAssets
-        : Math.round((existingInput?.otherNonCurrentAssets || 3900) * (shouldScaleHist ? histRevenueScale : 1)),
+        : Math.round(((existingInput?.otherNonCurrentAssets || 0) > 0 ? existingInput!.otherNonCurrentAssets : 3900) * (shouldScaleHist ? histRevenueScale : 1)),
       shortTermBorrowings,
       longTermBorrowings,
       shareCapital,
       retainedEarningsOpening: prevYear
         ? undefined
-        : existingInput?.retainedEarningsOpening !== undefined
+        : existingInput?.retainedEarningsOpening !== undefined && existingInput.retainedEarningsOpening > 0
         ? Math.round(existingInput.retainedEarningsOpening * (shouldScaleHist ? histRevenueScale : 1))
         : (shouldScaleHist || salesRevenue > 0 ? Math.round(6500 * (shouldScaleHist ? histRevenueScale : 1)) : 0),
       dividendsPaid,
@@ -5566,7 +5838,9 @@ export function implementRepaymentScheduleIntoModel({
     prevBuilt = built;
   }
 
-  // Prudent Chartered Accountancy Dividend Restraint: if a transition projected year dips into negative closing cash while paying dividends, suspend/trim discretionary dividends in that year
+  // Prudent Chartered Accountancy Dividend Restraint & Historical Opening Cash Cushion Pass:
+  // 1) If any historical or projected year dips into negative closing cash while paying dividends, suspend/trim dividends.
+  // 2) Size Year 1 (first historical year) cashAndEquivalentsBS cleanly so distressed unpaid-interest periods never go negative.
   let allOrdered = [
     ...histYears.map(y => updatedHistStore[y]),
     ...projYears.map(y => updatedProjOverrides[y]),
@@ -5612,8 +5886,32 @@ export function implementRepaymentScheduleIntoModel({
     cf = calculateCashFlowStatement(allOrdered, inc, fa);
   }
 
+  const firstHistYr = histYears[0];
+  const minAllCash = cf.length > 0 ? Math.min(...cf.map(c => c.closingCashCalculated)) : 0;
+  const minOpening = cf[0]?.openingCash ?? 0;
+  const targetCashFloor = Math.max(5000, Math.round((updatedHistStore[firstHistYr]?.salesRevenue || 0) * 0.04));
+  if (firstHistYr !== undefined && (minAllCash < targetCashFloor || minOpening < 0)) {
+    const boost = Math.max(
+      minAllCash < targetCashFloor ? Math.ceil(targetCashFloor - minAllCash) : 0,
+      minOpening < 0 ? Math.ceil(-minOpening + targetCashFloor) : 0
+    );
+    if (boost > 0) {
+      updatedHistStore[firstHistYr] = {
+        ...updatedHistStore[firstHistYr],
+        cashAndEquivalentsBS: r2((updatedHistStore[firstHistYr].cashAndEquivalentsBS || 0) + boost),
+      };
+      allOrdered = [
+        ...histYears.map(y => updatedHistStore[y]),
+        ...projYears.map(y => updatedProjOverrides[y]),
+      ];
+      fa = calculateScheduleOfFixedAssets(allOrdered);
+      inc = calculateIncomeStatement(allOrdered, fa);
+      cf = calculateCashFlowStatement(allOrdered, inc, fa);
+    }
+  }
+
   const eq = calculateEquityStatement(allOrdered, inc);
-  const bs = calculateBalanceSheet(allOrdered, eq, fa, cf);
+  const bs = calculateBalanceSheet(allOrdered, eq, fa, cf, undefined, inc);
   const dscrList = calculateDebtServiceCoverage(allOrdered, inc, bs, cf, schedule);
   const coveredList = dscrList.filter(d => d.isScheduleCovered);
   const minEbitdaDscr = coveredList.length > 0 ? Math.min(...coveredList.map(d => d.ebitdaDscr)) : 0;

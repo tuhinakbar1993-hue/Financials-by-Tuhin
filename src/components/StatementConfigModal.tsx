@@ -10,6 +10,8 @@ import {
   RefreshCw,
   Search,
   Sparkles,
+  BookmarkCheck,
+  Check,
 } from 'lucide-react';
 import { StatementConfigItem } from '../types/financial';
 import { generateCustomElementUnevenSeries } from '../services/financialEngine';
@@ -18,6 +20,10 @@ interface StatementConfigViewProps {
   configItems: StatementConfigItem[];
   onUpdateConfig: (items: StatementConfigItem[]) => void;
   onResetDefaults: () => void;
+  onSaveAsDefault?: () => void;
+  onResetFactoryDefaults?: () => void;
+  hasSavedDefault?: boolean;
+  savedDefaultAt?: string | null;
   years?: number[];
 }
 
@@ -52,6 +58,10 @@ export const StatementConfigView: React.FC<StatementConfigViewProps> = ({
   configItems,
   onUpdateConfig,
   onResetDefaults,
+  onSaveAsDefault,
+  onResetFactoryDefaults,
+  hasSavedDefault = false,
+  savedDefaultAt = null,
   years = [],
 }) => {
   const [selectedStatement, setSelectedStatement] = useState<StatementFilter>('all');
@@ -63,6 +73,14 @@ export const StatementConfigView: React.FC<StatementConfigViewProps> = ({
   const [newItemSection, setNewItemSection] = useState('Operating Activities');
   const [newItemSign, setNewItemSign] = useState<'positive' | 'negative'>('positive');
   const [expandedCustomId, setExpandedCustomId] = useState<string | null>(null);
+  const [savedNotice, setSavedNotice] = useState<boolean>(false);
+
+  const handleSaveDefaultClick = () => {
+    if (!onSaveAsDefault) return;
+    onSaveAsDefault();
+    setSavedNotice(true);
+    setTimeout(() => setSavedNotice(false), 3200);
+  };
 
   const availableSections = useMemo(() => {
     const scoped =
@@ -231,20 +249,56 @@ export const StatementConfigView: React.FC<StatementConfigViewProps> = ({
             <span className="text-[11px] font-semibold text-indigo-800 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-md">
               {totalSelectedCount} / {filteredItems.length} Selected
             </span>
+            {hasSavedDefault && (
+              <span
+                className="text-[11px] font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md flex items-center gap-1"
+                title={savedDefaultAt ? `User default saved at ${new Date(savedDefaultAt).toLocaleString()}` : 'Loaded from user-saved default configuration'}
+              >
+                <BookmarkCheck className="w-3 h-3 text-emerald-600" />
+                Saved Default Active
+              </span>
+            )}
           </div>
           <p className="text-xs text-slate-600 mt-1">
             Select or deselect any line item across all 5 financial statements, customize labels, add custom items with year-wise amounts, and recalculate linked subtotals, ratios, previews, and exports automatically.
           </p>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {onSaveAsDefault && (
+            <button
+              type="button"
+              onClick={handleSaveDefaultClick}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors flex items-center gap-1.5 shadow-xs ${
+                savedNotice
+                  ? 'bg-emerald-600 text-white border-emerald-600'
+                  : 'bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-600'
+              }`}
+              title="Save current item selections, order, and custom labels as the automatic default for future launches and New Case resets"
+            >
+              {savedNotice ? <Check className="w-3.5 h-3.5" /> : <BookmarkCheck className="w-3.5 h-3.5" />}
+              {savedNotice ? 'Saved as Default!' : 'Save Selections as Default'}
+            </button>
+          )}
           <button
+            type="button"
             onClick={onResetDefaults}
             className="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-slate-50 rounded-lg border border-slate-300 transition-colors flex items-center gap-1.5"
+            title={hasSavedDefault ? 'Reload your previously saved default selections' : 'Reset to factory default selections'}
           >
             <RefreshCw className="w-3.5 h-3.5" />
-            Reset Defaults
+            {hasSavedDefault ? 'Restore Saved Default' : 'Reset Defaults'}
           </button>
+          {hasSavedDefault && onResetFactoryDefaults && (
+            <button
+              type="button"
+              onClick={onResetFactoryDefaults}
+              className="px-3 py-1.5 text-xs font-medium text-rose-700 bg-white hover:bg-rose-50 rounded-lg border border-slate-300 hover:border-rose-300 transition-colors"
+              title="Clear your saved default profile and restore original factory defaults"
+            >
+              Factory Defaults
+            </button>
+          )}
         </div>
       </div>
 

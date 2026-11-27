@@ -857,24 +857,51 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
                 </span>
               </div>
               <p className="text-[11px] text-slate-600">
-                Enter previous years&apos; existing Long-Term &amp; Short-Term Borrowings below and calibrate the Loan Interest Rate (% p.a., default 15.50%). All dependent Finance Cost, Tax, Net Profit, DSCR, and projections update automatically.
+                Unpaid previous loans are recognized under <strong>Long-Term Borrowings</strong> with logical historical <strong>Finance Cost</strong> (@ {(assumptions.loanInterestRatePct ?? 15.5).toFixed(2)}% p.a. default). In projections, Long-Term Borrowings amortize cleanly to <strong>NIL (0)</strong> by the final projected year in accordance with the Repayment Schedule.
               </p>
             </div>
 
             <div className="flex flex-wrap items-center gap-3 shrink-0">
               {(() => {
                 const histOnly = yearsData.filter(y => !y.isProjected);
+                const projOnly = yearsData.filter(y => y.isProjected);
                 const latestHist = histOnly[histOnly.length - 1];
+                const finalProj = projOnly[projOnly.length - 1];
                 const existingDebt = latestHist ? latestHist.longTermBorrowings + latestHist.shortTermBorrowings : 0;
+                const finalLt = finalProj ? finalProj.longTermBorrowings : 0;
                 return (
-                  <div className="bg-white/90 border border-amber-200 rounded-xl px-3 py-1.5">
-                    <span className="text-[10px] text-slate-500 block">
-                      Latest Pre-Rescheduling Debt ({latestHist?.year ?? 'Hist'})
-                    </span>
-                    <span className="font-mono font-bold text-slate-900 tabular-nums">
-                      {companyProfile.reportingCurrency} {existingDebt.toLocaleString()}
-                    </span>
-                  </div>
+                  <>
+                    <div className="bg-white/90 border border-amber-200 rounded-xl px-3 py-1.5">
+                      <span className="text-[10px] text-slate-500 block">
+                        Latest Unpaid Historical Loan ({latestHist?.year ?? 'Hist'})
+                      </span>
+                      <span className="font-mono font-bold text-slate-900 tabular-nums">
+                        {companyProfile.reportingCurrency} {existingDebt.toLocaleString()}
+                      </span>
+                    </div>
+                    {finalProj && (
+                      <div
+                        className={`border rounded-xl px-3 py-1.5 ${
+                          Math.abs(finalLt) <= 0.05
+                            ? 'bg-emerald-50/90 border-emerald-200'
+                            : 'bg-white/90 border-amber-200'
+                        }`}
+                      >
+                        <span className="text-[10px] text-slate-500 block">
+                          Final Projected LT Loan ({finalProj.year})
+                        </span>
+                        <span
+                          className={`font-mono font-bold tabular-nums ${
+                            Math.abs(finalLt) <= 0.05 ? 'text-emerald-700' : 'text-amber-800'
+                          }`}
+                        >
+                          {Math.abs(finalLt) <= 0.05
+                            ? 'NIL (0) Settled'
+                            : `${companyProfile.reportingCurrency} ${finalLt.toLocaleString()}`}
+                        </span>
+                      </div>
+                    )}
+                  </>
                 );
               })()}
 
@@ -1129,11 +1156,11 @@ export const FinancialDataEntry: React.FC<FinancialDataEntryProps> = ({
                               Long-Term Borrowings
                             </span>
                             <span className="text-[9px] font-semibold bg-amber-100 text-amber-800 border border-amber-300 px-1.5 py-0.5 rounded">
-                              Year-Wise BS Input
+                              Unpaid Loans &rarr; NIL Terminal
                             </span>
                           </div>
                           <span className="text-[11px] text-slate-600 block mt-0.5 leading-snug">
-                            Separate year-wise term debt balance reflected directly across Balance Sheet, Notes, Ratios &amp; Exports.
+                            Recognizes previous unpaid loans in historical years and settles cleanly to NIL (0) by the final projected year under the Repayment Schedule.
                           </span>
                         </div>
                       </div>

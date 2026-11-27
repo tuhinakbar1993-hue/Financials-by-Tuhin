@@ -658,7 +658,8 @@ export type AuditRectificationActionId =
   | 'ZERO_FIRST_PROJ_LOAN_PROCEEDS'
   | 'RECALIBRATE_UNIFORM_RATIOS'
   | 'PRUNE_EXCESSIVE_DIVIDEND_DRAIN'
-  | 'NORMALIZE_ZERO_COGS_OR_WC';
+  | 'NORMALIZE_ZERO_COGS_OR_WC'
+  | 'SETTLE_FINAL_YEAR_LT_BORROWINGS';
 
 export interface CharteredAuditFinding {
   id: string;

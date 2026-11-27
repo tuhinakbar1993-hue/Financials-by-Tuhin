@@ -46,6 +46,9 @@ import {
   createCleanCaseCompanyProfile,
   createZeroHistoricalInputs,
   normalizeFinancialYearEnd,
+  loadDefaultStatementConfig,
+  saveStatementConfigAsDefault,
+  clearSavedDefaultStatementConfig,
 } from './services/financialEngine';
 import {
   runComprehensiveCharteredAudit,
@@ -95,14 +98,35 @@ export default function App() {
     Object.fromEntries(INITIAL_HISTORICAL_INPUTS.map(item => [item.year, item]))
   );
   const [customProjectedOverrides, setCustomProjectedOverrides] = useState<Record<number, YearDataInput>>({});
-  const [statementConfig, setStatementConfig] = useState<StatementConfigItem[]>(DEFAULT_STATEMENT_CONFIG_ITEMS);
+  const [savedConfigInit] = useState(() => loadDefaultStatementConfig());
+  const [statementConfig, setStatementConfig] = useState<StatementConfigItem[]>(() => savedConfigInit.items);
+  const [hasSavedDefaultConfig, setHasSavedDefaultConfig] = useState<boolean>(() => savedConfigInit.hasSavedDefault);
+  const [savedDefaultAt, setSavedDefaultAt] = useState<string | null>(() => savedConfigInit.savedAt);
 
   // Independent Auto-Fill Configurations for the 6 primary financial items (Section 76 Intelligent Year-Wise Filling)
   const [autoFillConfigs, setAutoFillConfigs] = useState<AutoFillConfigs>({});
 
   // Statement-level cell & label overrides for universal inline editing
   const [cellOverrides, setCellOverrides] = useState<StatementCellOverrides>({});
-  const [labelOverrides, setLabelOverrides] = useState<StatementLabelOverrides>({});
+  const [labelOverrides, setLabelOverrides] = useState<StatementLabelOverrides>(() => {
+    const next: StatementLabelOverrides = {};
+    savedConfigInit.items.forEach(item => {
+      const defItem = DEFAULT_STATEMENT_CONFIG_ITEMS.find(d => d.id === item.id);
+      if (!defItem || item.label === defItem.label) return;
+      const mapping = STATEMENT_CONFIG_TO_OVERRIDE_KEY[item.id];
+      if (mapping) {
+        next[`${mapping.stmt}_${mapping.field}`] = item.label;
+        return;
+      }
+      const faIdx = FIXED_ASSET_CATEGORY_CONFIG_IDS.indexOf(
+        item.id as (typeof FIXED_ASSET_CATEGORY_CONFIG_IDS)[number]
+      );
+      if (faIdx !== -1) {
+        next[`fa_${faIdx}`] = item.label;
+      }
+    });
+    return next;
+  });
   const [noteEdits, setNoteEdits] = useState<Record<number, { title?: string; textDescription?: string }>>({});
 
   // Modals & New Case Reset state
@@ -1239,18 +1263,55 @@ export default function App() {
     });
   };
 
-  const handleResetStatementConfig = () => {
-    setStatementConfig(DEFAULT_STATEMENT_CONFIG_ITEMS);
-    setLabelOverrides(prev => {
-      const next = { ...prev };
-      Object.values(STATEMENT_CONFIG_TO_OVERRIDE_KEY).forEach(mapping => {
-        delete next[`${mapping.stmt}_${mapping.field}`];
-      });
-      FIXED_ASSET_CATEGORY_CONFIG_IDS.forEach((_, idx) => {
-        delete next[`fa_${idx}`];
-      });
-      return next;
+  const applyConfigLabelOverrides = (
+    items: StatementConfigItem[],
+    prevOverrides: StatementLabelOverrides = {}
+  ): StatementLabelOverrides => {
+    const next: StatementLabelOverrides = { ...prevOverrides };
+    Object.values(STATEMENT_CONFIG_TO_OVERRIDE_KEY).forEach(mapping => {
+      delete next[`${mapping.stmt}_${mapping.field}`];
     });
+    FIXED_ASSET_CATEGORY_CONFIG_IDS.forEach((_, idx) => {
+      delete next[`fa_${idx}`];
+    });
+    items.forEach(item => {
+      const defItem = DEFAULT_STATEMENT_CONFIG_ITEMS.find(d => d.id === item.id);
+      if (!defItem || item.label === defItem.label) return;
+      const mapping = STATEMENT_CONFIG_TO_OVERRIDE_KEY[item.id];
+      if (mapping) {
+        next[`${mapping.stmt}_${mapping.field}`] = item.label;
+        return;
+      }
+      const faIdx = FIXED_ASSET_CATEGORY_CONFIG_IDS.indexOf(
+        item.id as (typeof FIXED_ASSET_CATEGORY_CONFIG_IDS)[number]
+      );
+      if (faIdx !== -1) {
+        next[`fa_${faIdx}`] = item.label;
+      }
+    });
+    return next;
+  };
+
+  const handleSaveStatementConfigAsDefault = () => {
+    const res = saveStatementConfigAsDefault(statementConfig);
+    setHasSavedDefaultConfig(true);
+    setSavedDefaultAt(res.savedAt);
+  };
+
+  const handleResetStatementConfig = () => {
+    const loaded = loadDefaultStatementConfig();
+    setStatementConfig(loaded.items);
+    setHasSavedDefaultConfig(loaded.hasSavedDefault);
+    setSavedDefaultAt(loaded.savedAt);
+    setLabelOverrides(prev => applyConfigLabelOverrides(loaded.items, prev));
+  };
+
+  const handleResetFactoryStatementConfig = () => {
+    const factory = clearSavedDefaultStatementConfig();
+    setStatementConfig(factory);
+    setHasSavedDefaultConfig(false);
+    setSavedDefaultAt(null);
+    setLabelOverrides(prev => applyConfigLabelOverrides(factory, prev));
   };
 
   // Handler: Update Note title/text edits while keeping live numeric tables & Note 12 calculations dynamic
@@ -1312,9 +1373,11 @@ export default function App() {
     setRectificationSnapshot(null);
     setLastAuditRunAt(null);
     setLastRectificationAppliedCount(null);
-    setStatementConfig(prev =>
-      prev.map(item => (item.customValues ? { ...item, customValues: {} } : item))
-    );
+    const savedCfg = loadDefaultStatementConfig();
+    setStatementConfig(savedCfg.items);
+    setHasSavedDefaultConfig(savedCfg.hasSavedDefault);
+    setSavedDefaultAt(savedCfg.savedAt);
+    setLabelOverrides(applyConfigLabelOverrides(savedCfg.items));
     setIsProfileModalOpen(false);
     setIsNewCaseModalOpen(false);
     setCaseResetKey(prev => prev + 1);
@@ -1513,6 +1576,10 @@ export default function App() {
               statementConfig={statementConfig}
               onUpdateStatementConfig={handleUpdateStatementConfig}
               onResetStatementConfig={handleResetStatementConfig}
+              onSaveStatementConfigAsDefault={handleSaveStatementConfigAsDefault}
+              onResetFactoryStatementConfig={handleResetFactoryStatementConfig}
+              hasSavedDefaultConfig={hasSavedDefaultConfig}
+              savedDefaultAt={savedDefaultAt}
               assumptions={assumptions}
               onUpdateAssumptions={handleUpdateAssumptions}
               cellOverrides={cellOverrides}
@@ -1590,6 +1657,10 @@ export default function App() {
               configItems={statementConfig}
               onUpdateConfig={handleUpdateStatementConfig}
               onResetDefaults={handleResetStatementConfig}
+              onSaveAsDefault={handleSaveStatementConfigAsDefault}
+              onResetFactoryDefaults={handleResetFactoryStatementConfig}
+              hasSavedDefault={hasSavedDefaultConfig}
+              savedDefaultAt={savedDefaultAt}
               years={allYearsInputs.map(y => y.year)}
             />
           )}
