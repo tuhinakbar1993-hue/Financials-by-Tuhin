@@ -72,6 +72,8 @@ import {
 import {
   getCustomItemYearValue,
   FIXED_ASSET_CATEGORY_CONFIG_IDS,
+  STD_BS_SECTIONS,
+  STD_CF_SECTIONS,
   generateNotesToFinancialStatements,
   normalizeFinancialYearEnd,
 } from '../services/financialEngine';
@@ -218,6 +220,11 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
   const getCustomItems = (stmt: StatementConfigItem['statement'], section?: string) =>
     statementConfig
       .filter(c => c.isCustom && c.statement === stmt && (!section || c.section === section))
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+  const getUnscopedCustomItems = (stmt: StatementConfigItem['statement'], stdSections: readonly string[]) =>
+    statementConfig
+      .filter(c => c.isCustom && c.statement === stmt && !stdSections.includes(c.section))
       .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 
   const exportSyncOptions = { statementConfig, labelOverrides, cellOverrides };
@@ -450,7 +457,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
           );
         }
         visCustRev.forEach(ci => {
-          pushIfNonZero(rows, ci.label, filteredIncome.map(d => getCustomItemYearValue(ci, d.year)));
+          rows.push([ci.label, ...filteredIncome.map(d => getCustomItemYearValue(ci, d.year))]);
         });
         if (isElemVisible('inc_costOfSales')) {
           pushIfNonZero(rows, getLbl('income', 'costOfSales', 'Cost of Sales', 'inc_costOfSales'), filteredIncome.map(d => -getVal('income', 'costOfSales', d.year, d.costOfSales)));
@@ -467,7 +474,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
           );
         }
         visCustOpex.forEach(ci => {
-          pushIfNonZero(rows, ci.label, filteredIncome.map(d => getCustomItemYearValue(ci, d.year)));
+          rows.push([ci.label, ...filteredIncome.map(d => getCustomItemYearValue(ci, d.year))]);
         });
         if (isElemVisible('inc_depreciationExpense')) {
           pushIfNonZero(rows, getLbl('income', 'depreciationExpense', 'Depreciation Expense', 'inc_depreciationExpense'), filteredIncome.map(d => -getVal('income', 'depreciationExpense', d.year, d.depreciationExpense)));
@@ -487,7 +494,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
           pushIfNonZero(rows, getLbl('income', 'financeCost', 'Finance Cost', 'inc_financeCost'), filteredIncome.map(d => -getVal('income', 'financeCost', d.year, d.financeCost)));
         }
         visCustNonOp.forEach(ci => {
-          pushIfNonZero(rows, ci.label, filteredIncome.map(d => getCustomItemYearValue(ci, d.year)));
+          rows.push([ci.label, ...filteredIncome.map(d => getCustomItemYearValue(ci, d.year))]);
         });
         rows.push([getLbl('income', 'profitBeforeTax', 'Profit Before Tax (EBT)'), ...filteredIncome.map(d => getVal('income', 'profitBeforeTax', d.year, d.profitBeforeTax))]);
         if (isElemVisible('inc_taxExpense')) {
@@ -508,14 +515,14 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         if (isElemVisible('bs_closingInventory')) pushIfNonZero(rows, getLbl('bs', 'closingInventory', 'Closing Inventory', 'bs_closingInventory'), filteredBalance.map(d => getVal('bs', 'closingInventory', d.year, d.closingInventory)));
         if (isElemVisible('bs_otherCurrentAssets')) pushIfNonZero(rows, getLbl('bs', 'otherCurrentAssets', 'Other Current Assets', 'bs_otherCurrentAssets'), filteredBalance.map(d => getVal('bs', 'otherCurrentAssets', d.year, d.otherCurrentAssets)));
         getCustomItems('balanceSheet', 'Current Assets').filter(c => c.isVisible).forEach(ci => {
-          pushIfNonZero(rows, ci.label, filteredBalance.map(d => getCustomItemYearValue(ci, d.year)));
+          rows.push([ci.label, ...filteredBalance.map(d => getCustomItemYearValue(ci, d.year))]);
         });
         rows.push([getLbl('bs', 'totalCurrentAssets', 'Total Current Assets'), ...filteredBalance.map(d => getVal('bs', 'totalCurrentAssets', d.year, d.totalCurrentAssets))]);
         if (isElemVisible('bs_propertyPlantEquipment')) pushIfNonZero(rows, getLbl('bs', 'propertyPlantEquipment', 'Property, Plant & Equipment (NBV)', 'bs_propertyPlantEquipment'), filteredBalance.map(d => getVal('bs', 'propertyPlantEquipment', d.year, d.propertyPlantEquipment)));
         if (isElemVisible('bs_intangibleAssets')) pushIfNonZero(rows, getLbl('bs', 'intangibleAssets', 'Intangible Assets', 'bs_intangibleAssets'), filteredBalance.map(d => getVal('bs', 'intangibleAssets', d.year, d.intangibleAssets)));
         if (isElemVisible('bs_otherNonCurrentAssets')) pushIfNonZero(rows, getLbl('bs', 'otherNonCurrentAssets', 'Other Non-Current Assets', 'bs_otherNonCurrentAssets'), filteredBalance.map(d => getVal('bs', 'otherNonCurrentAssets', d.year, d.otherNonCurrentAssets)));
         getCustomItems('balanceSheet', 'Non-Current Assets').filter(c => c.isVisible).forEach(ci => {
-          pushIfNonZero(rows, ci.label, filteredBalance.map(d => getCustomItemYearValue(ci, d.year)));
+          rows.push([ci.label, ...filteredBalance.map(d => getCustomItemYearValue(ci, d.year))]);
         });
         rows.push([getLbl('bs', 'totalNonCurrentAssets', 'Total Non-Current Assets'), ...filteredBalance.map(d => getVal('bs', 'totalNonCurrentAssets', d.year, d.totalNonCurrentAssets))]);
         rows.push([getLbl('bs', 'totalAssets', 'TOTAL ASSETS'), ...filteredBalance.map(d => getVal('bs', 'totalAssets', d.year, d.totalAssets))]);
@@ -524,22 +531,28 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         if (isElemVisible('bs_shortTermBorrowings')) pushIfNonZero(rows, getLbl('bs', 'shortTermBorrowings', 'Short-Term Borrowings', 'bs_shortTermBorrowings'), filteredBalance.map(d => getVal('bs', 'shortTermBorrowings', d.year, d.shortTermBorrowings)));
         if (isElemVisible('bs_currentTaxPayable')) pushIfNonZero(rows, getLbl('bs', 'currentTaxPayable', 'Current Tax Payable', 'bs_currentTaxPayable'), filteredBalance.map(d => getVal('bs', 'currentTaxPayable', d.year, d.currentTaxPayable)));
         getCustomItems('balanceSheet', 'Current Liabilities').filter(c => c.isVisible).forEach(ci => {
-          pushIfNonZero(rows, ci.label, filteredBalance.map(d => getCustomItemYearValue(ci, d.year)));
+          rows.push([ci.label, ...filteredBalance.map(d => getCustomItemYearValue(ci, d.year))]);
         });
         rows.push([getLbl('bs', 'totalCurrentLiabilities', 'Total Current Liabilities'), ...filteredBalance.map(d => getVal('bs', 'totalCurrentLiabilities', d.year, d.totalCurrentLiabilities))]);
         if (isElemVisible('bs_longTermBorrowings')) pushIfNonZero(rows, getLbl('bs', 'longTermBorrowings', 'Long-Term Borrowings', 'bs_longTermBorrowings'), filteredBalance.map(d => getVal('bs', 'longTermBorrowings', d.year, d.longTermBorrowings)));
         if (isElemVisible('bs_otherNonCurrentLiabilities')) pushIfNonZero(rows, getLbl('bs', 'otherNonCurrentLiabilities', 'Other Non-Current Liabilities', 'bs_otherNonCurrentLiabilities'), filteredBalance.map(d => getVal('bs', 'otherNonCurrentLiabilities', d.year, d.otherNonCurrentLiabilities)));
         getCustomItems('balanceSheet', 'Non-Current Liabilities').filter(c => c.isVisible).forEach(ci => {
-          pushIfNonZero(rows, ci.label, filteredBalance.map(d => getCustomItemYearValue(ci, d.year)));
+          rows.push([ci.label, ...filteredBalance.map(d => getCustomItemYearValue(ci, d.year))]);
         });
         rows.push([getLbl('bs', 'totalNonCurrentLiabilities', 'Total Non-Current Liabilities'), ...filteredBalance.map(d => getVal('bs', 'totalNonCurrentLiabilities', d.year, d.totalNonCurrentLiabilities))]);
         rows.push([getLbl('bs', 'totalLiabilities', 'TOTAL LIABILITIES'), ...filteredBalance.map(d => getVal('bs', 'totalLiabilities', d.year, d.totalLiabilities))]);
         if (isElemVisible('bs_shareCapital')) pushIfNonZero(rows, getLbl('bs', 'shareCapital', 'Share Capital', 'bs_shareCapital'), filteredBalance.map(d => getVal('bs', 'shareCapital', d.year, d.shareCapital)));
         if (isElemVisible('bs_retainedEarnings')) pushIfNonZero(rows, getLbl('bs', 'retainedEarnings', 'Retained Earnings', 'bs_retainedEarnings'), filteredBalance.map(d => getVal('bs', 'retainedEarnings', d.year, d.retainedEarnings)));
         if (isElemVisible('bs_reserves')) pushIfNonZero(rows, getLbl('bs', 'reserves', 'Reserves & Surplus', 'bs_reserves'), filteredBalance.map(d => getVal('bs', 'reserves', d.year, d.reserves)));
-        getCustomItems('balanceSheet', 'Equity').filter(c => c.isVisible).forEach(ci => {
-          pushIfNonZero(rows, ci.label, filteredBalance.map(d => getCustomItemYearValue(ci, d.year)));
-        });
+        [
+          ...getCustomItems('balanceSheet', 'Equity'),
+          ...getUnscopedCustomItems('balanceSheet', STD_BS_SECTIONS),
+          ...getCustomItems('equity'),
+        ]
+          .filter(c => c.isVisible)
+          .forEach(ci => {
+            rows.push([ci.label, ...filteredBalance.map(d => getCustomItemYearValue(ci, d.year))]);
+          });
         rows.push([getLbl('bs', 'totalEquity', 'TOTAL EQUITY'), ...filteredBalance.map(d => getVal('bs', 'totalEquity', d.year, d.totalEquity))]);
         rows.push([getLbl('bs', 'totalLiabilitiesAndEquity', 'TOTAL LIABILITIES & EQUITY'), ...filteredBalance.map(d => getVal('bs', 'totalLiabilitiesAndEquity', d.year, d.totalLiabilitiesAndEquity))]);
         rows.push([
@@ -576,7 +589,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
           rows.push([getLbl('eq', 'closingReserves', 'Closing Reserves'), ...closeResVals]);
         }
         getCustomItems('equity').filter(c => c.isVisible).forEach(ci => {
-          pushIfNonZero(rows, ci.label, filteredEquity.map(d => getCustomItemYearValue(ci, d.year)));
+          rows.push([ci.label, ...filteredEquity.map(d => getCustomItemYearValue(ci, d.year))]);
         });
         rows.push([getLbl('eq', 'totalOpeningEquity', 'TOTAL OPENING EQUITY'), ...filteredEquity.map(d => getVal('eq', 'totalOpeningEquity', d.year, d.totalOpeningEquity))]);
         rows.push([getLbl('eq', 'totalClosingEquity', 'TOTAL CLOSING SHAREHOLDERS EQUITY'), ...filteredEquity.map(d => getVal('eq', 'totalClosingEquity', d.year, d.totalClosingEquity))]);
@@ -648,9 +661,14 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         if (isElemVisible('cf_wc_other_ca')) pushIfNonZero(rows, getLbl('cf', 'changeInOtherCA', '(Increase) / Decrease in Other Current Assets', 'cf_wc_other_ca'), filteredCashFlow.map(d => getVal('cf', 'changeInOtherCA', d.year, d.changeInOtherCA ?? 0)));
         if (isElemVisible('cf_wc_payables')) pushIfNonZero(rows, getLbl('cf', 'changeInPayables', 'Increase / (Decrease) in Trade Payables', 'cf_wc_payables'), filteredCashFlow.map(d => getVal('cf', 'changeInPayables', d.year, d.changeInPayables)));
         if (isElemVisible('cf_wc_other_pay')) pushIfNonZero(rows, getLbl('cf', 'changeInOtherPayables', 'Increase / (Decrease) in Other Payables', 'cf_wc_other_pay'), filteredCashFlow.map(d => getVal('cf', 'changeInOtherPayables', d.year, d.changeInOtherPayables)));
-        getCustomItems('cashFlow', 'Operating Activities').filter(c => c.isVisible).forEach(ci => {
-          pushIfNonZero(rows, ci.label, filteredCashFlow.map(d => getCustomItemYearValue(ci, d.year)));
-        });
+        [
+          ...getCustomItems('cashFlow', 'Operating Activities'),
+          ...getUnscopedCustomItems('cashFlow', STD_CF_SECTIONS),
+        ]
+          .filter(c => c.isVisible)
+          .forEach(ci => {
+            rows.push([ci.label, ...filteredCashFlow.map(d => getCustomItemYearValue(ci, d.year))]);
+          });
         rows.push([getLbl('cf', 'cashGeneratedFromOperations', 'Cash Generated from Operations'), ...filteredCashFlow.map(d => getVal('cf', 'cashGeneratedFromOperations', d.year, d.cashGeneratedFromOperations))]);
         if (isElemVisible('cf_tax_paid')) pushIfNonZero(rows, getLbl('cf', 'incomeTaxPaid', 'Income Tax Paid', 'cf_tax_paid'), filteredCashFlow.map(d => getVal('cf', 'incomeTaxPaid', d.year, d.incomeTaxPaid)));
         if (isElemVisible('cf_finance_paid')) pushIfNonZero(rows, getLbl('cf', 'financeCostPaid', 'Finance Cost Paid', 'cf_finance_paid'), filteredCashFlow.map(d => getVal('cf', 'financeCostPaid', d.year, d.financeCostPaid)));
@@ -661,7 +679,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         if (isElemVisible('cf_interest_rec')) pushIfNonZero(rows, getLbl('cf', 'interestReceived', 'Interest Received', 'cf_interest_rec'), filteredCashFlow.map(d => getVal('cf', 'interestReceived', d.year, d.interestReceived)));
         if (isElemVisible('cf_dividends_rec')) pushIfNonZero(rows, getLbl('cf', 'dividendsReceived', 'Dividends Received', 'cf_dividends_rec'), filteredCashFlow.map(d => getVal('cf', 'dividendsReceived', d.year, d.dividendsReceived)));
         getCustomItems('cashFlow', 'Investing Activities').filter(c => c.isVisible).forEach(ci => {
-          pushIfNonZero(rows, ci.label, filteredCashFlow.map(d => getCustomItemYearValue(ci, d.year)));
+          rows.push([ci.label, ...filteredCashFlow.map(d => getCustomItemYearValue(ci, d.year))]);
         });
         rows.push([getLbl('cf', 'netCashFromInvesting', 'NET CASH FROM / (USED IN) INVESTING'), ...filteredCashFlow.map(d => getVal('cf', 'netCashFromInvesting', d.year, d.netCashFromInvesting))]);
         if (isElemVisible('cf_shares_issue')) pushIfNonZero(rows, getLbl('cf', 'financingProceedsShares', 'Proceeds from Issue of Share Capital', 'cf_shares_issue'), filteredCashFlow.map(d => getVal('cf', 'financingProceedsShares', d.year, d.financingProceedsShares)));
@@ -677,7 +695,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
         ]);
         if (isElemVisible('cf_dividends_paid')) pushIfNonZero(rows, getLbl('cf', 'financingDividendsPaid', 'Dividends Paid to Shareholders', 'cf_dividends_paid'), filteredCashFlow.map(d => getVal('cf', 'financingDividendsPaid', d.year, d.financingDividendsPaid)));
         getCustomItems('cashFlow', 'Financing Activities').filter(c => c.isVisible).forEach(ci => {
-          pushIfNonZero(rows, ci.label, filteredCashFlow.map(d => getCustomItemYearValue(ci, d.year)));
+          rows.push([ci.label, ...filteredCashFlow.map(d => getCustomItemYearValue(ci, d.year))]);
         });
         if (isElemVisible('cf_direct_financing')) pushIfNonZero(rows, getLbl('cf', 'directlyEnteredFinancingCashFlow', 'Directly Entered Financing Cash Flow', 'cf_direct_financing'), filteredCashFlow.map(d => getVal('cf', 'directlyEnteredFinancingCashFlow', d.year, d.directlyEnteredFinancingCashFlow)));
         rows.push([getLbl('cf', 'netCashFromFinancing', 'NET CASH FROM / (USED IN) FINANCING'), ...filteredCashFlow.map(d => getVal('cf', 'netCashFromFinancing', d.year, d.netCashFromFinancing))]);
@@ -1353,6 +1371,7 @@ export const StatementsViewer: React.FC<StatementsViewerProps> = ({
               isElemVisible={isElemVisible}
               onToggleElem={toggleConfigElement}
               customItems={getCustomItems('balanceSheet')}
+              extraEquityCustomItems={getCustomItems('equity')}
               getVal={getVal}
               getLbl={getLbl}
               onUpdateValue={onUpdateStatementValue}
@@ -1681,9 +1700,14 @@ function StatementOfCashFlowsTable({
     );
   };
 
-  const renderCustomRows = (section: string) =>
+  const renderCustomRows = (section: string, includeUnscoped = false) =>
     customItems
-      .filter(ci => ci.section === section && (ci.isVisible || isCustomizeMode))
+      .filter(
+        ci =>
+          (ci.section === section ||
+            (includeUnscoped && !(STD_CF_SECTIONS as readonly string[]).includes(ci.section))) &&
+          (ci.isVisible || isCustomizeMode)
+      )
       .map(ci => (
         <tr key={ci.id} className={!ci.isVisible ? 'opacity-45 bg-slate-50/90' : 'bg-indigo-50/35 hover:bg-indigo-50/60'}>
           <td className="py-2 px-4 font-sans text-indigo-900 pl-6">
@@ -1789,7 +1813,7 @@ function StatementOfCashFlowsTable({
             {renderStandardRow('cf_wc_other_ca', 'changeInOtherCA', '(Increase) / Decrease in Other Current Assets', d => d.changeInOtherCA ?? 0, { indent: true })}
             {renderStandardRow('cf_wc_payables', 'changeInPayables', 'Increase / (Decrease) in Trade Payables', d => d.changeInPayables, { indent: true })}
             {renderStandardRow('cf_wc_other_pay', 'changeInOtherPayables', 'Increase / (Decrease) in Other Payables', d => d.changeInOtherPayables, { indent: true })}
-            {renderCustomRows('Operating Activities')}
+            {renderCustomRows('Operating Activities', true)}
 
             <tr className="bg-slate-50/90 font-semibold text-slate-800">
               <td className="py-2 px-4 font-sans">
@@ -2304,6 +2328,7 @@ function BalanceSheetTable({
   isElemVisible,
   onToggleElem,
   customItems,
+  extraEquityCustomItems = [],
   getVal,
   getLbl,
   onUpdateValue,
@@ -2317,6 +2342,7 @@ function BalanceSheetTable({
   isElemVisible: (id: string) => boolean;
   onToggleElem: (id: string) => void;
   customItems: StatementConfigItem[];
+  extraEquityCustomItems?: StatementConfigItem[];
   getVal: (stmt: string, field: string, year: number, fallback: number) => number;
   getLbl: (stmt: string, field: string, defaultLabel: string, configId?: string) => string;
   onUpdateValue: (stmt: string, field: string, year: number, val: number) => void;
@@ -2368,9 +2394,16 @@ function BalanceSheetTable({
     );
   };
 
-  const renderCustomRows = (section: string) =>
-    customItems
-      .filter(ci => ci.section === section && (ci.isVisible || isCustomizeMode))
+  const renderCustomRows = (section: string, includeUnscoped = false) =>
+    [
+      ...customItems.filter(
+        ci =>
+          ci.section === section ||
+          (includeUnscoped && !(STD_BS_SECTIONS as readonly string[]).includes(ci.section))
+      ),
+      ...(includeUnscoped ? extraEquityCustomItems : []),
+    ]
+      .filter(ci => ci.isVisible || isCustomizeMode)
       .map(ci => (
         <tr key={ci.id} className={!ci.isVisible ? 'opacity-45 bg-slate-50/90' : 'bg-indigo-50/35 hover:bg-indigo-50/60'}>
           <td className="py-2 px-4 font-sans text-indigo-900">
@@ -2598,7 +2631,7 @@ function BalanceSheetTable({
             {renderBSRow('bs_shareCapital', 'shareCapital', 'Share Capital', d => d.shareCapital)}
             {renderBSRow('bs_retainedEarnings', 'retainedEarnings', 'Retained Earnings', d => d.retainedEarnings)}
             {renderBSRow('bs_reserves', 'reserves', 'Reserves & Surplus', d => d.reserves)}
-            {renderCustomRows('Equity')}
+            {renderCustomRows('Equity', true)}
 
             <tr className="bg-teal-50/75 font-bold text-teal-900">
               <td className="py-2 px-4 font-sans">

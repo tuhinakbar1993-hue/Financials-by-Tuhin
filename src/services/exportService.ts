@@ -21,7 +21,7 @@ import {
   Footer,
   PageNumber,
 } from 'docx';
-import jsPDF from 'jspdf';
+import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import {
   CompanyProfile,
@@ -89,7 +89,7 @@ export function hasAnyNonZeroValue(values: readonly unknown[]): boolean {
 
 function filterNoteTableForExport(tableData: FinancialNoteItem['tableData']) {
   if (!tableData) return null;
-  const nonNilRows = tableData.rows.filter(r => hasAnyNonZeroValue(r.values));
+  const nonNilRows = tableData.rows.filter(r => r.isCustom || hasAnyNonZeroValue(r.values));
   const hasNonNilTotal = Boolean(tableData.totalRow && hasAnyNonZeroValue(tableData.totalRow.values));
   if (nonNilRows.length === 0 && !hasNonNilTotal) return null;
   return {
@@ -245,6 +245,12 @@ function getUnscopedCustomRows(
         !standardSections.includes(item.section)
     )
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+}
+
+function isCustomCashFlowInflow(ci: StatementConfigItem, vals: number[]): boolean {
+  if (ci.sign === 'negative') return false;
+  const nonZero = vals.filter(v => Math.abs(v) >= 0.005);
+  return nonZero.length === 0 || nonZero.some(v => v > 0);
 }
 
 export function shouldShowDetailedFACategories(
@@ -4023,14 +4029,21 @@ export function exportDocumentPdf(
   doc.text(`${title} · ${company.accountingFramework} Standards · Currency: ${company.reportingCurrency} (${company.reportingUnit})`, 14, 17);
   doc.text(`Financials with Tuhin | Mohammad Towhidul Akbar Tuhin`, 297 - 14, 17, { align: 'right' });
 
+  const nDocDataCols = Math.max(1, headers.length - 1);
+  const docFontSize = nDocDataCols > 14 ? 5.6 : nDocDataCols >= 10 ? 6.4 : 8;
+  const docCellPad = nDocDataCols > 14 ? 0.8 : nDocDataCols >= 10 ? 1.1 : 2;
+  const docMarginLR = nDocDataCols >= 10 ? 10 : 14;
+  const docCol0W = nDocDataCols > 14 ? 54 : nDocDataCols >= 10 ? 60 : 'auto';
+
   autoTable(doc, {
     head: [headers],
     body: rows.map(r => r.map(c => typeof c === 'number' ? fmtExportNum(c) : String(c))),
     startY: 28,
-    styles: { fontSize: 8, cellPadding: 2, font: 'helvetica' },
+    styles: { fontSize: docFontSize, cellPadding: docCellPad, font: 'helvetica', overflow: 'linebreak' },
     headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: 'bold' },
     alternateRowStyles: { fillColor: [248, 250, 252] },
-    margin: { left: 14, right: 14 },
+    columnStyles: typeof docCol0W === 'number' ? { 0: { cellWidth: docCol0W } } : undefined,
+    margin: { left: docMarginLR, right: docMarginLR },
     didDrawPage: (data) => {
       doc.setFontSize(8);
       doc.setTextColor(148, 163, 184);
@@ -4169,6 +4182,14 @@ export function exportCompletePackagePdf(
   doc.setTextColor(148, 163, 184);
   doc.text(`Independent Statutory Auditors: ${company.auditorName}`, 148, 168, { align: 'center' });
 
+  const nPkgCols = Math.max(1, incomeData.length);
+  const pkgFontSize = nPkgCols > 14 ? 5.5 : nPkgCols >= 10 ? 6.3 : 8;
+  const pkgCfFontSize = nPkgCols > 14 ? 5.2 : nPkgCols >= 10 ? 6.0 : 7;
+  const pkgCellPad = nPkgCols > 14 ? 0.75 : nPkgCols >= 10 ? 1.1 : 1.8;
+  const pkgMarginLR = nPkgCols >= 10 ? 10 : 14;
+  const pkgCol0W = nPkgCols > 14 ? 54 : nPkgCols >= 10 ? 60 : undefined;
+  const pkgColStyles = pkgCol0W ? { 0: { cellWidth: pkgCol0W } } : undefined;
+
   // Page 2: Income Statement
   doc.addPage();
   renderPdfHeader(doc, company, '1. STATEMENT OF COMPREHENSIVE INCOME (INCOME STATEMENT)');
@@ -4178,8 +4199,10 @@ export function exportCompletePackagePdf(
     head: [isHeaders],
     body: isRows.map(r => r.map(c => typeof c === 'number' ? fmtExportNum(c) : String(c))),
     startY: 28,
-    styles: { fontSize: 8, cellPadding: 2 },
+    styles: { fontSize: pkgFontSize, cellPadding: pkgCellPad, overflow: 'linebreak' },
     headStyles: { fillColor: [30, 41, 59] },
+    columnStyles: pkgColStyles,
+    margin: { left: pkgMarginLR, right: pkgMarginLR },
   });
 
   // Page 3: Statement of Financial Position
@@ -4191,8 +4214,10 @@ export function exportCompletePackagePdf(
     head: [bsHeaders],
     body: bsRows.map(r => r.map(c => typeof c === 'number' ? fmtExportNum(c) : String(c))),
     startY: 28,
-    styles: { fontSize: 7.5, cellPadding: 1.8 },
+    styles: { fontSize: pkgFontSize, cellPadding: pkgCellPad, overflow: 'linebreak' },
     headStyles: { fillColor: [30, 41, 59] },
+    columnStyles: pkgColStyles,
+    margin: { left: pkgMarginLR, right: pkgMarginLR },
   });
 
   // Page 4: Statement of Cash Flows
@@ -4204,8 +4229,10 @@ export function exportCompletePackagePdf(
     head: [cfHeaders],
     body: cfRows.map(r => r.map(c => typeof c === 'number' ? fmtExportNum(c) : String(c))),
     startY: 28,
-    styles: { fontSize: 7, cellPadding: 1.6 },
+    styles: { fontSize: pkgCfFontSize, cellPadding: pkgCellPad, overflow: 'linebreak' },
     headStyles: { fillColor: [30, 41, 59] },
+    columnStyles: pkgColStyles,
+    margin: { left: pkgMarginLR, right: pkgMarginLR },
   });
 
   // Page 5: Statement of Changes in Equity
@@ -4217,8 +4244,10 @@ export function exportCompletePackagePdf(
     head: [eqHeaders],
     body: eqRows.map(r => r.map(c => typeof c === 'number' ? fmtExportNum(c) : String(c))),
     startY: 28,
-    styles: { fontSize: 8, cellPadding: 2 },
+    styles: { fontSize: pkgFontSize, cellPadding: pkgCellPad, overflow: 'linebreak' },
     headStyles: { fillColor: [30, 41, 59] },
+    columnStyles: pkgColStyles,
+    margin: { left: pkgMarginLR, right: pkgMarginLR },
   });
 
   // Page 6: Schedule of Fixed Assets
@@ -4512,7 +4541,7 @@ export function buildPreviousTextTables(
   if (isVis(options, 'bs_otherNonCurrentAssets')) {
     pushIfNonZero(bsRows, lbl(options, 'bs', 'otherNonCurrentAssets', 'Other Non-Current Assets'), prevData.map(d => d.otherNonCurrentAssets ?? 0));
   }
-  customBsNca.forEach(ci => pushIfNonZero(bsRows, ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year))));
+  customBsNca.forEach(ci => bsRows.push([ci.label, ...prevData.map(d => getCustomItemYearValue(ci, d.year))]));
   bsRows.push(['Current Assets', ...prevData.map(d => d.totalCurrentAssets)]);
   if (isVis(options, 'bs_otherReceivables')) {
     pushIfNonZero(
@@ -4533,7 +4562,7 @@ export function buildPreviousTextTables(
   if (isVis(options, 'bs_cashAndEquivalents')) {
     pushIfNonZero(bsRows, lbl(options, 'bs', 'cashAndEquivalents', 'Cash & Cash Equivalents'), prevData.map(d => d.cashAndCashEquivalents));
   }
-  customBsCa.forEach(ci => pushIfNonZero(bsRows, ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year))));
+  customBsCa.forEach(ci => bsRows.push([ci.label, ...prevData.map(d => getCustomItemYearValue(ci, d.year))]));
   bsRows.push(['Taka', ...prevData.map(d => d.totalAssetsTaka)]);
   bsRows.push(['CAPITAL & LIABILITIES', ...prevData.map(() => '')]);
   pushIfNonZero(bsRows, 'Opening Capital', prevData.map(d => d.openingCapital));
@@ -4543,7 +4572,7 @@ export function buildPreviousTextTables(
     pushIfNonZero(bsRows, `Less: ${lbl(options, 'eq', 'dividendsPaid', 'Drawings')}`, prevData.map(d => d.drawings));
   }
   bsRows.push(['Capital after drawings', ...prevData.map(d => d.capitalAfterDrawings)]);
-  customBsEq.forEach(ci => pushIfNonZero(bsRows, ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year))));
+  customBsEq.forEach(ci => bsRows.push([ci.label, ...prevData.map(d => getCustomItemYearValue(ci, d.year))]));
   const nclPrevRows: (string | number)[][] = [];
   if (isVis(options, 'bs_longTermBorrowings')) {
     pushIfNonZero(nclPrevRows, lbl(options, 'bs', 'longTermBorrowings', 'Long Term Loan'), prevData.map(d => d.longTermLoan ?? 0));
@@ -4551,7 +4580,7 @@ export function buildPreviousTextTables(
   if (isVis(options, 'bs_otherNonCurrentLiabilities')) {
     pushIfNonZero(nclPrevRows, lbl(options, 'bs', 'otherNonCurrentLiabilities', 'Other Non-Current Liabilities'), prevData.map(d => d.otherNonCurrentLiabilities ?? 0));
   }
-  customBsNcl.forEach(ci => pushIfNonZero(nclPrevRows, ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year))));
+  customBsNcl.forEach(ci => nclPrevRows.push([ci.label, ...prevData.map(d => getCustomItemYearValue(ci, d.year))]));
   if (nclPrevRows.length > 0) {
     bsRows.push(['Non-Current Liabilities', ...prevData.map(() => '')], ...nclPrevRows);
   }
@@ -4568,7 +4597,7 @@ export function buildPreviousTextTables(
   if (isVis(options, 'bs_currentTaxPayable')) {
     pushIfNonZero(bsRows, lbl(options, 'bs', 'currentTaxPayable', 'Provision for Taxation'), prevData.map(d => d.provisionForTaxation));
   }
-  customBsCl.forEach(ci => pushIfNonZero(bsRows, ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year))));
+  customBsCl.forEach(ci => bsRows.push([ci.label, ...prevData.map(d => getCustomItemYearValue(ci, d.year))]));
   bsRows.push(['Total', ...prevData.map(d => d.totalCapitalAndLiabilities)]);
 
   const isRows: (string | number)[][] = [];
@@ -4579,7 +4608,7 @@ export function buildPreviousTextTables(
       prevData.map(d => d.sales - customIncRev.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0))
     );
   }
-  customIncRev.forEach(ci => pushIfNonZero(isRows, ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year))));
+  customIncRev.forEach(ci => isRows.push([ci.label, ...prevData.map(d => getCustomItemYearValue(ci, d.year))]));
   if (isVis(options, 'inc_costOfSales')) {
     pushIfNonZero(isRows, `Less- ${lbl(options, 'income', 'costOfSales', 'Cost of Goods Sold')}`, prevData.map(d => d.costOfGoodsSold));
   }
@@ -4604,7 +4633,7 @@ export function buildPreviousTextTables(
       pushIfNonZero(isRows, lineLabel, prevData.map(d => Number(d[field])));
     });
   }
-  customIncOpex.forEach(ci => pushIfNonZero(isRows, ci.label, prevData.map(d => -getCustomItemYearValue(ci, d.year))));
+  customIncOpex.forEach(ci => isRows.push([ci.label, ...prevData.map(d => -getCustomItemYearValue(ci, d.year))]));
   if (isVis(options, 'inc_depreciationExpense')) {
     pushIfNonZero(isRows, lbl(options, 'income', 'depreciationExpense', 'Depreciation'), prevData.map(d => d.depreciation));
   }
@@ -4616,7 +4645,7 @@ export function buildPreviousTextTables(
       prevData.map(d => d.otherIncome - customIncNonOp.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0))
     );
   }
-  customIncNonOp.forEach(ci => pushIfNonZero(isRows, ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year))));
+  customIncNonOp.forEach(ci => isRows.push([ci.label, ...prevData.map(d => getCustomItemYearValue(ci, d.year))]));
   isRows.push(['Subtotal', ...prevData.map(d => d.operatingSubtotal)]);
   if (isVis(options, 'inc_financeCost')) {
     pushIfNonZero(isRows, `Less: ${lbl(options, 'income', 'financeCost', 'Financial Exp.')}`, prevData.map(d => d.financialExp));
@@ -4645,7 +4674,7 @@ export function buildPreviousTextTables(
   if (isVis(options, 'cf_wc_payables')) {
     pushIfNonZero(cfRows, lbl(options, 'cf', 'changeInPayables', 'Add: Increase or (decrease) in Current Liabilities'), prevData.map(d => d.cfChangeInCurrentLiabilities));
   }
-  customCfOp.forEach(ci => pushIfNonZero(cfRows, ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year))));
+  customCfOp.forEach(ci => cfRows.push([ci.label, ...prevData.map(d => getCustomItemYearValue(ci, d.year))]));
   cfRows.push(['Net Cash from operating activities', ...prevData.map(d => d.cfNetCashOperating)]);
 
   cfRows.push(['b) CASH FLOWS FROM INVESTING ACTIVITIES:', ...prevData.map(() => '')]);
@@ -4658,7 +4687,7 @@ export function buildPreviousTextTables(
   if (isVis(options, 'cf_dividends_rec')) {
     pushIfNonZero(cfRows, lbl(options, 'cf', 'dividendsReceived', 'Dividends Received'), prevData.map(d => d.cfDividendsReceived ?? 0));
   }
-  customCfInv.forEach(ci => pushIfNonZero(cfRows, ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year))));
+  customCfInv.forEach(ci => cfRows.push([ci.label, ...prevData.map(d => getCustomItemYearValue(ci, d.year))]));
   cfRows.push(['Net Cash used in investing Activities', ...prevData.map(d => d.cfNetCashInvesting)]);
 
   cfRows.push(['c) CASH FLOWS FROM FINANCING ACTIVITIES:', ...prevData.map(() => '')]);
@@ -4674,7 +4703,7 @@ export function buildPreviousTextTables(
   if (isVis(options, 'cf_dividends_paid')) {
     pushIfNonZero(cfRows, lbl(options, 'cf', 'financingDividendsPaid', 'Drawings'), prevData.map(d => d.cfDrawings));
   }
-  customCfFin.forEach(ci => pushIfNonZero(cfRows, ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year))));
+  customCfFin.forEach(ci => cfRows.push([ci.label, ...prevData.map(d => getCustomItemYearValue(ci, d.year))]));
   pushIfNonZero(cfRows, 'Opening Balance', prevData.map(d => d.cfOpeningBalance));
   cfRows.push(['Net Cash used in Financing Activities', ...prevData.map(d => d.cfNetCashFinancing)]);
   cfRows.push(['d) Net Increase decrease in cash & cash equivalents (A+B+C)', ...prevData.map(d => d.cfNetIncreaseCash)]);
@@ -4702,7 +4731,7 @@ export function buildPreviousTextTables(
   if (isVis(options, 'eq_openingReserves') || isVis(options, 'eq_otherComprehensiveIncome')) {
     pushIfNonZero(eqRows, lbl(options, 'eq', 'closingReserves', 'Closing Reserves'), prevData.map(d => d.eqClosingReserves));
   }
-  customEq.forEach(ci => pushIfNonZero(eqRows, ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year))));
+  customEq.forEach(ci => eqRows.push([ci.label, ...prevData.map(d => getCustomItemYearValue(ci, d.year))]));
   eqRows.push([lbl(options, 'eq', 'totalClosingEquity', 'TOTAL CLOSING EQUITY'), ...prevData.map(d => d.eqTotalClosingEquity)]);
 
   return { bsRows, isRows, cfRows, eqRows };
@@ -4762,10 +4791,13 @@ export function exportPreviousFinancialsExcel(
     ['PROPERTIES & ASSETS', ...prevData.map(() => '')],
   ];
   const nextBsRow = () => bsRows.length + 1;
+  const pushBsAlways = (label: string, vals: number[], trackRows: number[]) => {
+    trackRows.push(nextBsRow());
+    bsRows.push([label, ...vals.map(v => nCell(v))]);
+  };
   const pushBsIfNonZero = (label: string, vals: number[], trackRows: number[]) => {
     if (hasAnyNonZeroValue(vals)) {
-      trackRows.push(nextBsRow());
-      bsRows.push([label, ...vals.map(v => nCell(v))]);
+      pushBsAlways(label, vals, trackRows);
     }
   };
   const assetInputs: number[] = [];
@@ -4779,7 +4811,7 @@ export function exportPreviousFinancialsExcel(
     pushBsIfNonZero(lbl(options, 'bs', 'otherNonCurrentAssets', 'Other Non-Current Assets'), prevData.map(d => d.otherNonCurrentAssets ?? 0), assetInputs);
   }
   customBsNca.forEach(ci => {
-    pushBsIfNonZero(ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year)), assetInputs);
+    pushBsAlways(ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year)), assetInputs);
   });
   const caHeaderIdx = bsRows.length;
   const caExcelRow = caHeaderIdx + 1;
@@ -4805,7 +4837,7 @@ export function exportPreviousFinancialsExcel(
     pushBsIfNonZero(lbl(options, 'bs', 'cashAndEquivalents', 'Cash & Cash Equivalents'), prevData.map(d => d.cashAndCashEquivalents), caChildRows);
   }
   customBsCa.forEach(ci => {
-    pushBsIfNonZero(ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year)), caChildRows);
+    pushBsAlways(ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year)), caChildRows);
   });
   bsRows[caHeaderIdx] = [
     'Current Assets',
@@ -4843,7 +4875,7 @@ export function exportPreviousFinancialsExcel(
   ]);
   const totalCapLiabInputs = [capAfterDrawRow];
   customBsEq.forEach(ci => {
-    pushBsIfNonZero(ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year)), totalCapLiabInputs);
+    pushBsAlways(ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year)), totalCapLiabInputs);
   });
   const nclExcelCandidates: { label: string; vals: number[] }[] = [];
   if (isVis(options, 'bs_longTermBorrowings')) {
@@ -4856,7 +4888,7 @@ export function exportPreviousFinancialsExcel(
   }
   customBsNcl.forEach(ci => {
     const vals = prevData.map(d => getCustomItemYearValue(ci, d.year));
-    if (hasAnyNonZeroValue(vals)) nclExcelCandidates.push({ label: ci.label, vals });
+    nclExcelCandidates.push({ label: ci.label, vals });
   });
   if (nclExcelCandidates.length > 0) {
     bsRows.push(['Non-Current Liabilities', ...prevData.map(() => '')]);
@@ -4882,7 +4914,7 @@ export function exportPreviousFinancialsExcel(
     pushBsIfNonZero(lbl(options, 'bs', 'currentTaxPayable', 'Provision for Taxation'), prevData.map(d => d.provisionForTaxation), clChildRows);
   }
   customBsCl.forEach(ci => {
-    pushBsIfNonZero(ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year)), clChildRows);
+    pushBsAlways(ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year)), clChildRows);
   });
   bsRows[clHeaderIdx] = [
     'Current Liabilities',
@@ -4919,10 +4951,13 @@ export function exportPreviousFinancialsExcel(
     colHeaders,
   ];
   const nextIsRow = () => isRows.length + 1;
+  const pushIsAlways = (label: string, vals: number[], trackRows: number[]) => {
+    trackRows.push(nextIsRow());
+    isRows.push([label, ...vals.map(v => nCell(v))]);
+  };
   const pushIsIfNonZero = (label: string, vals: number[], trackRows: number[]) => {
     if (hasAnyNonZeroValue(vals)) {
-      trackRows.push(nextIsRow());
-      isRows.push([label, ...vals.map(v => nCell(v))]);
+      pushIsAlways(label, vals, trackRows);
     }
   };
   const gpAddRows: number[] = [];
@@ -4934,7 +4969,7 @@ export function exportPreviousFinancialsExcel(
     );
   }
   customIncRev.forEach(ci => {
-    pushIsIfNonZero(ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year)), gpAddRows);
+    pushIsAlways(ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year)), gpAddRows);
   });
   let cogsExcelRow: number | null = null;
   if (isVis(options, 'inc_costOfSales')) {
@@ -4982,7 +5017,7 @@ export function exportPreviousFinancialsExcel(
     });
   }
   customIncOpex.forEach(ci => {
-    pushIsIfNonZero(ci.label, prevData.map(d => -getCustomItemYearValue(ci, d.year)), adminChildRows);
+    pushIsAlways(ci.label, prevData.map(d => -getCustomItemYearValue(ci, d.year)), adminChildRows);
   });
   if (isVis(options, 'inc_depreciationExpense')) {
     pushIsIfNonZero(lbl(options, 'income', 'depreciationExpense', 'Depreciation'), prevData.map(d => d.depreciation), adminChildRows);
@@ -5005,7 +5040,7 @@ export function exportPreviousFinancialsExcel(
     );
   }
   customIncNonOp.forEach(ci => {
-    pushIsIfNonZero(ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year)), opSubAddRows);
+    pushIsAlways(ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year)), opSubAddRows);
   });
   const opSubRow = nextIsRow();
   isRows.push([
@@ -5046,10 +5081,13 @@ export function exportPreviousFinancialsExcel(
     ['a) CASH FLOWS FROM OPERATING ACTIVITIES:', ...prevData.map(() => '')],
   ];
   const nextCfRow = () => cfRows.length + 1;
+  const pushCfAlways = (label: string, vals: number[], trackRows: number[]) => {
+    trackRows.push(nextCfRow());
+    cfRows.push([label, ...vals.map(v => nCell(v))]);
+  };
   const pushCfIfNonZero = (label: string, vals: number[], trackRows: number[]) => {
     if (hasAnyNonZeroValue(vals)) {
-      trackRows.push(nextCfRow());
-      cfRows.push([label, ...vals.map(v => nCell(v))]);
+      pushCfAlways(label, vals, trackRows);
     }
   };
   const cfOpChildRows: number[] = [];
@@ -5070,7 +5108,7 @@ export function exportPreviousFinancialsExcel(
     pushCfIfNonZero(lbl(options, 'cf', 'changeInPayables', 'Add: Increase or (decrease) in Current Liabilities'), prevData.map(d => d.cfChangeInCurrentLiabilities), cfOpChildRows);
   }
   customCfOp.forEach(ci => {
-    pushCfIfNonZero(ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year)), cfOpChildRows);
+    pushCfAlways(ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year)), cfOpChildRows);
   });
   const cfNetOpRow = nextCfRow();
   cfRows.push([
@@ -5090,7 +5128,7 @@ export function exportPreviousFinancialsExcel(
     pushCfIfNonZero(lbl(options, 'cf', 'dividendsReceived', 'Dividends Received'), prevData.map(d => d.cfDividendsReceived ?? 0), cfInvChildRows);
   }
   customCfInv.forEach(ci => {
-    pushCfIfNonZero(ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year)), cfInvChildRows);
+    pushCfAlways(ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year)), cfInvChildRows);
   });
   const cfNetInvRow = nextCfRow();
   cfRows.push([
@@ -5113,7 +5151,7 @@ export function exportPreviousFinancialsExcel(
     pushCfIfNonZero(lbl(options, 'cf', 'financingDividendsPaid', 'Drawings'), prevData.map(d => d.cfDrawings), cfFinChildRows);
   }
   customCfFin.forEach(ci => {
-    pushCfIfNonZero(ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year)), cfFinChildRows);
+    pushCfAlways(ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year)), cfFinChildRows);
   });
   pushCfIfNonZero('Opening Balance', prevData.map(d => d.cfOpeningBalance), cfFinChildRows);
   const cfNetFinRow = nextCfRow();
@@ -5148,10 +5186,13 @@ export function exportPreviousFinancialsExcel(
     colHeaders,
   ];
   const nextEqRow = () => eqRows.length + 1;
+  const pushEqAlways = (label: string, vals: number[], trackRows: number[]) => {
+    trackRows.push(nextEqRow());
+    eqRows.push([label, ...vals.map(v => nCell(v))]);
+  };
   const pushEqIfNonZero = (label: string, vals: number[], trackRows: number[]) => {
     if (hasAnyNonZeroValue(vals)) {
-      trackRows.push(nextEqRow());
-      eqRows.push([label, ...vals.map(v => nCell(v))]);
+      pushEqAlways(label, vals, trackRows);
     }
   };
   const scInputs: number[] = [];
@@ -5186,7 +5227,7 @@ export function exportPreviousFinancialsExcel(
     pushEqIfNonZero(lbl(options, 'eq', 'closingReserves', 'Closing Reserves'), prevData.map(d => d.eqClosingReserves), eqTotalInputs);
   }
   customEq.forEach(ci => {
-    pushEqIfNonZero(ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year)), eqTotalInputs);
+    pushEqAlways(ci.label, prevData.map(d => getCustomItemYearValue(ci, d.year)), eqTotalInputs);
   });
   eqRows.push([
     lbl(options, 'eq', 'totalClosingEquity', 'TOTAL CLOSING EQUITY'),
@@ -5216,25 +5257,53 @@ export function exportPreviousFinancialsExcel(
       'Depreciation charged for the year',
       `W.D.V. at ${formatFyEndDateCode(d.year, company.financialYearEnd)}`,
     ]);
-    const itemRow = startIdx + 1;
-    faRows.push([
-      'Fixed Assets',
-      nCell(d.faOpening),
-      nCell(d.faAddition - d.faDisposal),
-      fCell(`B${itemRow}+C${itemRow}`, d.faTotal),
-      nCell(d.faRatePct),
-      nCell(d.faDepreciationCharged),
-      nCell(d.faWDV),
-    ]);
-    faRows.push([
-      'Taka',
-      fCell(`B${itemRow}`, d.faOpening),
-      fCell(`C${itemRow}`, d.faAddition - d.faDisposal),
-      fCell(`D${itemRow}`, d.faTotal),
-      '',
-      fCell(`F${itemRow}`, d.faDepreciationCharged),
-      fCell(`G${itemRow}`, d.faWDV),
-    ]);
+    const showDetailedFA = shouldShowDetailedFACategories(d.faSchedule, options);
+    if (showDetailedFA && d.faSchedule) {
+      const faCats = resolveFACategoriesForExport(d.faSchedule, options);
+      const itemRowNums: number[] = [];
+      faCats.forEach(cat => {
+        const rNum = faRows.length + 1;
+        itemRowNums.push(rNum);
+        faRows.push([
+          cat.name,
+          nCell(cat.costOpening),
+          nCell(cat.additions - cat.disposals),
+          fCell(`B${rNum}+C${rNum}`, cat.costClosing),
+          nCell(cat.depRate),
+          nCell(cat.depCharge),
+          nCell(cat.netBookValue),
+        ]);
+      });
+      faRows.push([
+        'Taka',
+        fCell(excelSumRows('B', itemRowNums), d.faOpening),
+        fCell(excelSumRows('C', itemRowNums), d.faAddition - d.faDisposal),
+        fCell(excelSumRows('D', itemRowNums), d.faTotal),
+        '',
+        fCell(excelSumRows('F', itemRowNums), d.faDepreciationCharged),
+        fCell(excelSumRows('G', itemRowNums), d.faWDV),
+      ]);
+    } else {
+      const itemRow = startIdx + 1;
+      faRows.push([
+        'Fixed Assets',
+        nCell(d.faOpening),
+        nCell(d.faAddition - d.faDisposal),
+        fCell(`B${itemRow}+C${itemRow}`, d.faTotal),
+        nCell(d.faRatePct),
+        nCell(d.faDepreciationCharged),
+        nCell(d.faWDV),
+      ]);
+      faRows.push([
+        'Taka',
+        fCell(`B${itemRow}`, d.faOpening),
+        fCell(`C${itemRow}`, d.faAddition - d.faDisposal),
+        fCell(`D${itemRow}`, d.faTotal),
+        '',
+        fCell(`F${itemRow}`, d.faDepreciationCharged),
+        fCell(`G${itemRow}`, d.faWDV),
+      ]);
+    }
     faRows.push([]);
   });
 
@@ -5380,42 +5449,60 @@ export async function exportPreviousFinancialsWord(
             spacing: { after: 60 },
             children: [new TextRun({ text: '1.00 FIXED ASSETS SCHEDULE', font: 'Times New Roman', size: 20, bold: true, color: '0F172A' })],
           }),
-          ...faAsc.flatMap(d => [
-            createDocxTable(
-              [
-                'Particulars',
-                `Opening at ${formatFyStartDateCode(d.year, company.financialYearEnd)}`,
-                'Addition during the year',
-                `Total at ${formatFyEndDateCode(d.year, company.financialYearEnd)}`,
-                'Rate %',
-                'Depreciation charged for the year',
-                `W.D.V. at ${formatFyEndDateCode(d.year, company.financialYearEnd)}`,
-              ],
-              [
-                ['Fixed Assets', d.faOpening, d.faAddition - d.faDisposal, d.faTotal, d.faRatePct, d.faDepreciationCharged, d.faWDV],
-                ['Taka', d.faOpening, d.faAddition - d.faDisposal, d.faTotal, '', d.faDepreciationCharged, d.faWDV],
-              ],
-              {
-                theme: 'previous_grid',
-                font: 'Times New Roman',
-                fontSizePt: 8.2,
-                headFontSizePt: 8.2,
-                totalWidthTwips: usableW,
-                boldRowLabels: new Set(['Taka']),
-                doubleBottomLabels: new Set(['Taka']),
-                customAligns: [
-                  AlignmentType.LEFT,
-                  AlignmentType.RIGHT,
-                  AlignmentType.RIGHT,
-                  AlignmentType.RIGHT,
-                  AlignmentType.CENTER,
-                  AlignmentType.RIGHT,
-                  AlignmentType.RIGHT,
+          ...faAsc.flatMap(d => {
+            const showDetailedFA = shouldShowDetailedFACategories(d.faSchedule, options);
+            const faBodyRows: (string | number)[][] =
+              showDetailedFA && d.faSchedule
+                ? [
+                    ...resolveFACategoriesForExport(d.faSchedule, options).map(cat => [
+                      cat.name,
+                      cat.costOpening,
+                      cat.additions - cat.disposals,
+                      cat.costClosing,
+                      cat.depRate,
+                      cat.depCharge,
+                      cat.netBookValue,
+                    ]),
+                    ['Taka', d.faOpening, d.faAddition - d.faDisposal, d.faTotal, '', d.faDepreciationCharged, d.faWDV],
+                  ]
+                : [
+                    ['Fixed Assets', d.faOpening, d.faAddition - d.faDisposal, d.faTotal, d.faRatePct, d.faDepreciationCharged, d.faWDV],
+                    ['Taka', d.faOpening, d.faAddition - d.faDisposal, d.faTotal, '', d.faDepreciationCharged, d.faWDV],
+                  ];
+            return [
+              createDocxTable(
+                [
+                  'Particulars',
+                  `Opening at ${formatFyStartDateCode(d.year, company.financialYearEnd)}`,
+                  'Addition during the year',
+                  `Total at ${formatFyEndDateCode(d.year, company.financialYearEnd)}`,
+                  'Rate %',
+                  'Depreciation charged for the year',
+                  `W.D.V. at ${formatFyEndDateCode(d.year, company.financialYearEnd)}`,
                 ],
-              }
-            ),
-            new Paragraph({ spacing: { after: 80 }, children: [] }),
-          ]),
+                faBodyRows,
+                {
+                  theme: 'previous_grid',
+                  font: 'Times New Roman',
+                  fontSizePt: 8.2,
+                  headFontSizePt: 8.2,
+                  totalWidthTwips: usableW,
+                  boldRowLabels: new Set(['Taka']),
+                  doubleBottomLabels: new Set(['Taka']),
+                  customAligns: [
+                    AlignmentType.LEFT,
+                    AlignmentType.RIGHT,
+                    AlignmentType.RIGHT,
+                    AlignmentType.RIGHT,
+                    AlignmentType.CENTER,
+                    AlignmentType.RIGHT,
+                    AlignmentType.RIGHT,
+                  ],
+                }
+              ),
+              new Paragraph({ spacing: { after: 80 }, children: [] }),
+            ];
+          }),
 
           new Paragraph({
             spacing: { before: 80, after: 60 },
@@ -5560,6 +5647,25 @@ export function exportPreviousFinancialsPdf(
   const faAsc = [...prevData].sort((a, b) => a.year - b.year);
   let yCursor = 34;
   faAsc.forEach((d) => {
+    const showDetailedFA = shouldShowDetailedFACategories(d.faSchedule, options);
+    const faBody: (string | number)[][] =
+      showDetailedFA && d.faSchedule
+        ? [
+            ...resolveFACategoriesForExport(d.faSchedule, options).map(cat => [
+              cat.name,
+              fmtExactNum(cat.costOpening),
+              fmtExactNum(cat.additions - cat.disposals),
+              fmtExactNum(cat.costClosing),
+              `${cat.depRate}`,
+              fmtExactNum(cat.depCharge),
+              fmtExactNum(cat.netBookValue),
+            ]),
+            ['Taka', fmtExactNum(d.faOpening), fmtExactNum(d.faAddition - d.faDisposal), fmtExactNum(d.faTotal), '', fmtExactNum(d.faDepreciationCharged), fmtExactNum(d.faWDV)],
+          ]
+        : [
+            ['Fixed Assets', fmtExactNum(d.faOpening), fmtExactNum(d.faAddition - d.faDisposal), fmtExactNum(d.faTotal), `${d.faRatePct}`, fmtExactNum(d.faDepreciationCharged), fmtExactNum(d.faWDV)],
+            ['Taka', fmtExactNum(d.faOpening), fmtExactNum(d.faAddition - d.faDisposal), fmtExactNum(d.faTotal), '', fmtExactNum(d.faDepreciationCharged), fmtExactNum(d.faWDV)],
+          ];
     autoTable(doc, {
       head: [[
         'Particulars',
@@ -5570,10 +5676,7 @@ export function exportPreviousFinancialsPdf(
         'Depreciation charged for the year',
         `W.D.V. at ${formatFyEndDateCode(d.year, company.financialYearEnd)}`,
       ]],
-      body: [
-        ['Fixed Assets', fmtExactNum(d.faOpening), fmtExactNum(d.faAddition - d.faDisposal), fmtExactNum(d.faTotal), `${d.faRatePct}`, fmtExactNum(d.faDepreciationCharged), fmtExactNum(d.faWDV)],
-        ['Taka', fmtExactNum(d.faOpening), fmtExactNum(d.faAddition - d.faDisposal), fmtExactNum(d.faTotal), '', fmtExactNum(d.faDepreciationCharged), fmtExactNum(d.faWDV)],
-      ],
+      body: faBody,
       startY: yCursor,
       theme: 'grid',
       styles: { font: 'times', fontSize: 8.2, cellPadding: 1.6, textColor: [15, 23, 42], lineColor: [51, 65, 85], lineWidth: 0.2 },
@@ -5588,7 +5691,7 @@ export function exportPreviousFinancialsPdf(
         6: { halign: 'right' },
       },
       didParseCell: (data) => {
-        if (data.section === 'body' && data.row.index === 1) {
+        if (data.section === 'body' && Array.isArray(data.row.raw) && String(data.row.raw[0] ?? '') === 'Taka') {
           data.cell.styles.fontStyle = 'bold';
         }
       },
@@ -5778,7 +5881,7 @@ export function buildProjectedTextTables(
   if (isVis(options, 'bs_otherNonCurrentAssets')) {
     pushProj3IfNonZero(ncaDetailRows, lbl(options, 'bs', 'otherNonCurrentAssets', 'Other Non-Current Assets'), '', projData.map(d => d.otherNonCurrentAssets ?? 0));
   }
-  customBsNca.forEach(ci => pushProj3IfNonZero(ncaDetailRows, ci.label, '', projData.map(d => getCustomItemYearValue(ci, d.year))));
+  customBsNca.forEach(ci => ncaDetailRows.push([ci.label, '', ...projData.map(d => getCustomItemYearValue(ci, d.year))]));
   if (ncaDetailRows.length > 0) {
     bsRows.push(['Non Current Assets', '', ...projData.map(() => '')], ...ncaDetailRows);
   }
@@ -5799,7 +5902,7 @@ export function buildProjectedTextTables(
     pushProj3IfNonZero(caDetailRows, lbl(options, 'bs', 'otherCurrentAssets', 'Other Current Assets'), '', projData.map(d => d.otherCurrentAssets ?? 0));
   }
   if (isVis(options, 'bs_cashAndEquivalents')) pushProj3IfNonZero(caDetailRows, cashLbl, '6.00', projData.map(d => d.cashAndCashEquivalents));
-  customBsCa.forEach(ci => pushProj3IfNonZero(caDetailRows, ci.label, '', projData.map(d => getCustomItemYearValue(ci, d.year))));
+  customBsCa.forEach(ci => caDetailRows.push([ci.label, '', ...projData.map(d => getCustomItemYearValue(ci, d.year))]));
   if (caDetailRows.length > 0) {
     bsRows.push(['Current Assets', '', ...projData.map(() => '')], ...caDetailRows);
   }
@@ -5815,7 +5918,7 @@ export function buildProjectedTextTables(
     pushProj3IfNonZero(bsRows, lbl(options, 'eq', 'dividendsPaid', 'Drawings'), '', projData.map(d => d.drawings));
   }
   bsRows.push([closingCapLbl, '', ...projData.map(d => d.closingCapital)]);
-  customBsEq.forEach(ci => pushProj3IfNonZero(bsRows, ci.label, '', projData.map(d => getCustomItemYearValue(ci, d.year))));
+  customBsEq.forEach(ci => bsRows.push([ci.label, '', ...projData.map(d => getCustomItemYearValue(ci, d.year))]));
 
   const nclDetailRows: (string | number)[][] = [];
   if (isVis(options, 'bs_longTermBorrowings')) {
@@ -5829,7 +5932,7 @@ export function buildProjectedTextTables(
       projData.map(d => d.otherNonCurrentLiabilities ?? 0)
     );
   }
-  customBsNcl.forEach(ci => pushProj3IfNonZero(nclDetailRows, ci.label, '', projData.map(d => getCustomItemYearValue(ci, d.year))));
+  customBsNcl.forEach(ci => nclDetailRows.push([ci.label, '', ...projData.map(d => getCustomItemYearValue(ci, d.year))]));
   if (nclDetailRows.length > 0) {
     bsRows.push(['Non-Current Liabilities', '', ...projData.map(() => '')], ...nclDetailRows);
   }
@@ -5839,7 +5942,7 @@ export function buildProjectedTextTables(
   if (isVis(options, 'bs_currentTaxPayable')) pushProj3IfNonZero(clDetailRows, taxPayLbl, '9.00', projData.map(d => d.provisionsForTax));
   if (isVis(options, 'bs_shortTermBorrowings')) pushProj3IfNonZero(clDetailRows, stLoanLbl, '10.00', projData.map(d => d.shortTermLoan));
   if (isVis(options, 'bs_otherPayables')) pushProj3IfNonZero(clDetailRows, expLiabLbl, '', projData.map(d => d.liabilitiesForExp));
-  customBsCl.forEach(ci => pushProj3IfNonZero(clDetailRows, ci.label, '', projData.map(d => getCustomItemYearValue(ci, d.year))));
+  customBsCl.forEach(ci => clDetailRows.push([ci.label, '', ...projData.map(d => getCustomItemYearValue(ci, d.year))]));
   if (clDetailRows.length > 0) {
     bsRows.push(['Current Liabilities', '', ...projData.map(() => '')], ...clDetailRows);
   }
@@ -5856,7 +5959,7 @@ export function buildProjectedTextTables(
       projData.map(d => d.sales - customIncRev.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0))
     );
   }
-  customIncRev.forEach(ci => pushProj3IfNonZero(plRows, ci.label, '', projData.map(d => getCustomItemYearValue(ci, d.year))));
+  customIncRev.forEach(ci => plRows.push([ci.label, '', ...projData.map(d => getCustomItemYearValue(ci, d.year))]));
   if (isVis(options, 'inc_costOfSales')) pushProj3IfNonZero(plRows, cogsLbl, '11.00', projData.map(d => d.costOfGoodsSold));
   plRows.push(['Gross Profit', '', ...projData.map(d => d.grossProfit)]);
   if (isVis(options, 'inc_interestIncome')) {
@@ -5867,7 +5970,7 @@ export function buildProjectedTextTables(
       projData.map(d => d.othersIncome - customIncNonOp.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0))
     );
   }
-  customIncNonOp.forEach(ci => pushProj3IfNonZero(plRows, ci.label, '', projData.map(d => getCustomItemYearValue(ci, d.year))));
+  customIncNonOp.forEach(ci => plRows.push([ci.label, '', ...projData.map(d => getCustomItemYearValue(ci, d.year))]));
   plRows.push(['Total Gross Profit & Other Income', '', ...projData.map(d => d.grossProfitWithOtherIncome)]);
   const plOpexDetailRows: (string | number)[][] = [];
   if (showAdminOpexRow) {
@@ -5878,7 +5981,7 @@ export function buildProjectedTextTables(
       projData.map(d => d.adminAndSellingExpenses + customIncOpex.reduce((s, ci) => s + getCustomItemYearValue(ci, d.year), 0))
     );
   }
-  customIncOpex.forEach(ci => pushProj3IfNonZero(plOpexDetailRows, ci.label, '', projData.map(d => -getCustomItemYearValue(ci, d.year))));
+  customIncOpex.forEach(ci => plOpexDetailRows.push([ci.label, '', ...projData.map(d => -getCustomItemYearValue(ci, d.year))]));
   if (plOpexDetailRows.length > 0) {
     plRows.push(['Less: Operating Expenses:', '', ...projData.map(() => '')], ...plOpexDetailRows);
   }
@@ -5903,7 +6006,7 @@ export function buildProjectedTextTables(
   if (isVis(options, 'cf_amort') && isVis(options, 'bs_intangibleAssets')) {
     pushCfIfNonZero(cfRows, lbl(options, 'cf', 'adjAmortization', 'Amortization of Intangible Assets'), projData.map(d => d.cfAmortization ?? 0));
   }
-  customCfOp.forEach(ci => pushCfIfNonZero(cfRows, ci.label, projData.map(d => getCustomItemYearValue(ci, d.year))));
+  customCfOp.forEach(ci => cfRows.push([ci.label, ...projData.map(d => getCustomItemYearValue(ci, d.year))]));
   cfRows.push(['Net Cash Used by Operating Activities', ...projData.map(d => d.cfNetCashOperating)]);
 
   cfRows.push(['2. CASH FLOW FROM INVESTING ACTIVITIES:', ...projData.map(() => '')]);
@@ -5911,6 +6014,12 @@ export function buildProjectedTextTables(
   if (isVis(options, 'cf_sale_ppe')) pushCfIfNonZero(invInflowRows, lbl(options, 'cf', 'salePPE', 'Sale Of Property, Plant & Equipment'), projData.map(d => d.cfSalePPE));
   if (isVis(options, 'cf_dividends_rec')) pushCfIfNonZero(invInflowRows, lbl(options, 'cf', 'dividendsReceived', 'Dividends Received'), projData.map(d => d.cfDividendsReceived ?? 0));
   pushCfIfNonZero(invInflowRows, 'Capital', projData.map(d => d.cfInvestingCapitalInflow));
+  const customInvOutflowRows: (string | number)[][] = [];
+  customCfInv.forEach(ci => {
+    const vals = projData.map(d => getCustomItemYearValue(ci, d.year));
+    if (isCustomCashFlowInflow(ci, vals)) invInflowRows.push([ci.label, ...vals]);
+    else customInvOutflowRows.push([ci.label, ...vals]);
+  });
   if (invInflowRows.length > 0) {
     cfRows.push(['Inflows:', ...projData.map(() => '')], ...invInflowRows);
   }
@@ -5921,7 +6030,7 @@ export function buildProjectedTextTables(
     pushCfIfNonZero(invOutflowRows, lbl(options, 'cf', 'purchaseIntangibles', 'Purchase Of Intangible Assets'), projData.map(d => d.cfPurchaseIntangibles ?? 0));
   }
   pushCfIfNonZero(invOutflowRows, 'Purchase Investment In Debt Or Securities', projData.map(d => d.cfPurchaseInvestment));
-  customCfInv.forEach(ci => pushCfIfNonZero(invOutflowRows, ci.label, projData.map(d => getCustomItemYearValue(ci, d.year))));
+  invOutflowRows.push(...customInvOutflowRows);
   if (invOutflowRows.length > 0) {
     cfRows.push(['Outflows:', ...projData.map(() => '')], ...invOutflowRows);
   }
@@ -5932,6 +6041,12 @@ export function buildProjectedTextTables(
   if (isVis(options, 'cf_borrow_proceeds')) pushCfIfNonZero(finInflowRows, lbl(options, 'cf', 'financingProceedsBorrowings', 'Loan Received'), projData.map(d => d.cfLoanReceived));
   if (isVis(options, 'cf_shares_issue')) pushCfIfNonZero(finInflowRows, 'Additional Capital', projData.map(d => d.cfAdditionalCapital));
   pushCfIfNonZero(finInflowRows, 'Issuance Of Debt (Bond & Notes)', projData.map(d => d.cfIssuanceOfDebt));
+  const customFinOutflowRows: (string | number)[][] = [];
+  customCfFin.forEach(ci => {
+    const vals = projData.map(d => getCustomItemYearValue(ci, d.year));
+    if (isCustomCashFlowInflow(ci, vals)) finInflowRows.push([ci.label, ...vals]);
+    else customFinOutflowRows.push([ci.label, ...vals]);
+  });
   if (finInflowRows.length > 0) {
     cfRows.push(['Inflows:', ...projData.map(() => '')], ...finInflowRows);
   }
@@ -5943,7 +6058,7 @@ export function buildProjectedTextTables(
   // Mandatory inclusion of 'Repayment of Borrowings & Financing' overrides nil-value omission
   finOutflowRows.push([repayLbl, ...projData.map(d => (isVis(options, 'cf_borrow_repay') ? d.cfRedeemLongTermDebt : 0))]);
   pushCfIfNonZero(finOutflowRows, 'Issuance Of Bonds Payable', projData.map(d => d.cfIssuanceBondsPayable));
-  customCfFin.forEach(ci => pushCfIfNonZero(finOutflowRows, ci.label, projData.map(d => getCustomItemYearValue(ci, d.year))));
+  finOutflowRows.push(...customFinOutflowRows);
   if (finOutflowRows.length > 0) {
     cfRows.push(['Outflows:', ...projData.map(() => '')], ...finOutflowRows);
   }
@@ -6066,7 +6181,7 @@ export function exportProjectedFinancialsExcel(
   }
   customBsNca.forEach(ci => {
     const vals = projData.map(d => getCustomItemYearValue(ci, d.year));
-    if (hasAnyNonZeroValue(vals)) ncaCandidates.push({ label: ci.label, noteRef: '', vals });
+    ncaCandidates.push({ label: ci.label, noteRef: '', vals });
   });
   const ncaRows: number[] = [];
   if (ncaCandidates.length > 0) {
@@ -6108,7 +6223,7 @@ export function exportProjectedFinancialsExcel(
   }
   customBsCa.forEach(ci => {
     const vals = projData.map(d => getCustomItemYearValue(ci, d.year));
-    if (hasAnyNonZeroValue(vals)) caCandidates.push({ label: ci.label, noteRef: '', vals });
+    caCandidates.push({ label: ci.label, noteRef: '', vals });
   });
   const caRows: number[] = [];
   if (caCandidates.length > 0) {
@@ -6131,10 +6246,13 @@ export function exportProjectedFinancialsExcel(
   ]);
   bsRows.push(['Equity & Liabilities', '', ...projData.map(() => '')]);
   const eqSubInputs: number[] = [];
+  const pushBs3Always = (label: string, vals: number[], trackRows: number[]) => {
+    trackRows.push(nextBsRow());
+    bsRows.push([label, '', ...vals.map(v => nCell(v))]);
+  };
   const pushBs3IfNonZero = (label: string, vals: number[], trackRows: number[]) => {
     if (hasAnyNonZeroValue(vals)) {
-      trackRows.push(nextBsRow());
-      bsRows.push([label, '', ...vals.map(v => nCell(v))]);
+      pushBs3Always(label, vals, trackRows);
     }
   };
   pushBs3IfNonZero('Capital', projData.map(d => d.capital), eqSubInputs);
@@ -6164,7 +6282,7 @@ export function exportProjectedFinancialsExcel(
   ]);
   const eqExtraRows: number[] = [];
   customBsEq.forEach(ci => {
-    pushBs3IfNonZero(ci.label, projData.map(d => getCustomItemYearValue(ci, d.year)), eqExtraRows);
+    pushBs3Always(ci.label, projData.map(d => getCustomItemYearValue(ci, d.year)), eqExtraRows);
   });
 
   const nclCandidates: { label: string; noteRef: string; vals: number[] }[] = [];
@@ -6178,7 +6296,7 @@ export function exportProjectedFinancialsExcel(
   }
   customBsNcl.forEach(ci => {
     const vals = projData.map(d => getCustomItemYearValue(ci, d.year));
-    if (hasAnyNonZeroValue(vals)) nclCandidates.push({ label: ci.label, noteRef: '', vals });
+    nclCandidates.push({ label: ci.label, noteRef: '', vals });
   });
   const nclRows: number[] = [];
   if (nclCandidates.length > 0) {
@@ -6208,7 +6326,7 @@ export function exportProjectedFinancialsExcel(
   }
   customBsCl.forEach(ci => {
     const vals = projData.map(d => getCustomItemYearValue(ci, d.year));
-    if (hasAnyNonZeroValue(vals)) clCandidates.push({ label: ci.label, noteRef: '', vals });
+    clCandidates.push({ label: ci.label, noteRef: '', vals });
   });
   const clRows: number[] = [];
   if (clCandidates.length > 0) {
@@ -6266,10 +6384,13 @@ export function exportProjectedFinancialsExcel(
     [],
   ];
   const nextPlRow = () => plRows.length + 1;
+  const pushPlAlways = (label: string, noteRef: string, vals: number[], trackRows: number[]) => {
+    trackRows.push(nextPlRow());
+    plRows.push([label, noteRef, ...vals.map(v => nCell(v))]);
+  };
   const pushPlIfNonZero = (label: string, noteRef: string, vals: number[], trackRows: number[]) => {
     if (hasAnyNonZeroValue(vals)) {
-      trackRows.push(nextPlRow());
-      plRows.push([label, noteRef, ...vals.map(v => nCell(v))]);
+      pushPlAlways(label, noteRef, vals, trackRows);
     }
   };
   const plGpAddRows: number[] = [];
@@ -6282,7 +6403,7 @@ export function exportProjectedFinancialsExcel(
     );
   }
   customIncRev.forEach(ci => {
-    pushPlIfNonZero(ci.label, '', projData.map(d => getCustomItemYearValue(ci, d.year)), plGpAddRows);
+    pushPlAlways(ci.label, '', projData.map(d => getCustomItemYearValue(ci, d.year)), plGpAddRows);
   });
   let plCogsRow: number | null = null;
   if (isVis(options, 'inc_costOfSales')) {
@@ -6317,7 +6438,7 @@ export function exportProjectedFinancialsExcel(
     );
   }
   customIncNonOp.forEach(ci => {
-    pushPlIfNonZero(ci.label, '', projData.map(d => getCustomItemYearValue(ci, d.year)), plSubAddRows);
+    pushPlAlways(ci.label, '', projData.map(d => getCustomItemYearValue(ci, d.year)), plSubAddRows);
   });
   const plSubRow = nextPlRow();
   plRows.push([
@@ -6337,7 +6458,7 @@ export function exportProjectedFinancialsExcel(
   }
   customIncOpex.forEach(ci => {
     const vals = projData.map(d => -getCustomItemYearValue(ci, d.year));
-    if (hasAnyNonZeroValue(vals)) plOpexCandidates.push({ label: ci.label, noteRef: '', vals });
+    plOpexCandidates.push({ label: ci.label, noteRef: '', vals });
   });
   const plOpexRows: number[] = [];
   if (plOpexCandidates.length > 0) {
@@ -6424,10 +6545,13 @@ export function exportProjectedFinancialsExcel(
     ['1. CASH FLOW FROM OPERATING ACTIVITIES:', ...projData.map(d => d.year)],
   ];
   const nextCfRow = () => cfRows.length + 1;
+  const pushCfExcelAlways = (label: string, vals: number[], trackRows: number[]) => {
+    trackRows.push(nextCfRow());
+    cfRows.push([label, ...vals.map(v => nCell(v))]);
+  };
   const pushCfExcelIfNonZero = (label: string, vals: number[], trackRows: number[]) => {
     if (hasAnyNonZeroValue(vals)) {
-      trackRows.push(nextCfRow());
-      cfRows.push([label, ...vals.map(v => nCell(v))]);
+      pushCfExcelAlways(label, vals, trackRows);
     }
   };
   const cfOpRows: number[] = [];
@@ -6444,7 +6568,7 @@ export function exportProjectedFinancialsExcel(
   if (isVis(options, 'cf_amort') && isVis(options, 'bs_intangibleAssets')) {
     pushCfExcelIfNonZero(lbl(options, 'cf', 'adjAmortization', 'Amortization of Intangible Assets'), projData.map(d => d.cfAmortization ?? 0), cfOpRows);
   }
-  customCfOp.forEach(ci => pushCfExcelIfNonZero(ci.label, projData.map(d => getCustomItemYearValue(ci, d.year)), cfOpRows));
+  customCfOp.forEach(ci => pushCfExcelAlways(ci.label, projData.map(d => getCustomItemYearValue(ci, d.year)), cfOpRows));
   const cfNetOpRow = nextCfRow();
   cfRows.push([
     'Net Cash Used by Operating Activities',
@@ -6464,6 +6588,12 @@ export function exportProjectedFinancialsExcel(
   }
   const invCapVals = projData.map(d => d.cfInvestingCapitalInflow);
   if (hasAnyNonZeroValue(invCapVals)) invInflowCandidates.push({ label: 'Capital', vals: invCapVals });
+  const customInvOutflowCandidates: { label: string; vals: number[] }[] = [];
+  customCfInv.forEach(ci => {
+    const vals = projData.map(d => getCustomItemYearValue(ci, d.year));
+    if (isCustomCashFlowInflow(ci, vals)) invInflowCandidates.push({ label: ci.label, vals });
+    else customInvOutflowCandidates.push({ label: ci.label, vals });
+  });
   if (invInflowCandidates.length > 0) {
     cfRows.push(['Inflows:', ...projData.map(() => '')]);
     invInflowCandidates.forEach(item => {
@@ -6484,10 +6614,7 @@ export function exportProjectedFinancialsExcel(
   }
   const purInvVals = projData.map(d => d.cfPurchaseInvestment);
   if (hasAnyNonZeroValue(purInvVals)) invOutflowCandidates.push({ label: 'Purchase Investment In Debt Or Securities', vals: purInvVals });
-  customCfInv.forEach(ci => {
-    const vals = projData.map(d => getCustomItemYearValue(ci, d.year));
-    if (hasAnyNonZeroValue(vals)) invOutflowCandidates.push({ label: ci.label, vals });
-  });
+  invOutflowCandidates.push(...customInvOutflowCandidates);
   if (invOutflowCandidates.length > 0) {
     cfRows.push(['Outflows:', ...projData.map(() => '')]);
     invOutflowCandidates.forEach(item => {
@@ -6514,6 +6641,12 @@ export function exportProjectedFinancialsExcel(
   }
   const debtIssVals = projData.map(d => d.cfIssuanceOfDebt);
   if (hasAnyNonZeroValue(debtIssVals)) finInflowCandidates.push({ label: 'Issuance Of Debt (Bond & Notes)', vals: debtIssVals });
+  const customFinOutflowItems: { label: string; vals: number[] }[] = [];
+  customCfFin.forEach(ci => {
+    const vals = projData.map(d => getCustomItemYearValue(ci, d.year));
+    if (isCustomCashFlowInflow(ci, vals)) finInflowCandidates.push({ label: ci.label, vals });
+    else customFinOutflowItems.push({ label: ci.label, vals });
+  });
   if (finInflowCandidates.length > 0) {
     cfRows.push(['Inflows:', ...projData.map(() => '')]);
     finInflowCandidates.forEach(item => {
@@ -6531,8 +6664,8 @@ export function exportProjectedFinancialsExcel(
   cfFinRows.push(nextCfRow());
   cfRows.push([repayLbl, ...projData.map(d => nCell(isVis(options, 'cf_borrow_repay') ? d.cfRedeemLongTermDebt : 0))]);
   pushCfExcelIfNonZero('Issuance Of Bonds Payable', projData.map(d => d.cfIssuanceBondsPayable), cfFinRows);
-  customCfFin.forEach(ci => {
-    pushCfExcelIfNonZero(ci.label, projData.map(d => getCustomItemYearValue(ci, d.year)), cfFinRows);
+  customFinOutflowItems.forEach(item => {
+    pushCfExcelAlways(item.label, item.vals, cfFinRows);
   });
   const cfNetFinRow = nextCfRow();
   cfRows.push([
@@ -6644,29 +6777,61 @@ export function exportProjectedFinancialsExcel(
       '',
       '',
     ]);
-    const itemRow = topIdx + 3;
-    schedRows.push([
-      1,
-      'Property Plant & Equipment',
-      nCell(d.schedOpeningBalance),
-      nCell(d.schedAddition),
-      nCell(d.schedDisposals),
-      fCell(`C${itemRow}+D${itemRow}-E${itemRow}`, d.schedBalanceClosing),
-      nCell(d.schedRatePct),
-      nCell(d.schedDepreciation),
-      nCell(d.schedWDV),
-    ]);
-    schedRows.push([
-      '',
-      'Total',
-      fCell(`C${itemRow}`, d.schedOpeningBalance),
-      fCell(`D${itemRow}`, d.schedAddition),
-      fCell(`E${itemRow}`, d.schedDisposals),
-      fCell(`F${itemRow}`, d.schedBalanceClosing),
-      '',
-      fCell(`H${itemRow}`, d.schedDepreciation),
-      fCell(`I${itemRow}`, d.schedWDV),
-    ]);
+    const showDetailedFA = shouldShowDetailedFACategories(d.faSchedule, options);
+    if (showDetailedFA && d.faSchedule) {
+      const faCats = resolveFACategoriesForExport(d.faSchedule, options);
+      const itemRowNums: number[] = [];
+      faCats.forEach((cat, idx) => {
+        const rNum = schedRows.length + 1;
+        itemRowNums.push(rNum);
+        schedRows.push([
+          idx + 1,
+          cat.name,
+          nCell(cat.costOpening),
+          nCell(cat.additions),
+          nCell(cat.disposals),
+          fCell(`C${rNum}+D${rNum}-E${rNum}`, cat.costClosing),
+          nCell(cat.depRate),
+          nCell(cat.depCharge),
+          nCell(cat.netBookValue),
+        ]);
+      });
+      schedRows.push([
+        '',
+        'Total',
+        fCell(excelSumRows('C', itemRowNums), d.faSchedule.totalCostOpening),
+        fCell(excelSumRows('D', itemRowNums), d.faSchedule.totalAdditions),
+        fCell(excelSumRows('E', itemRowNums), d.faSchedule.totalDisposals),
+        fCell(excelSumRows('F', itemRowNums), d.faSchedule.totalCostClosing),
+        '',
+        fCell(excelSumRows('H', itemRowNums), d.faSchedule.totalDepCharge),
+        fCell(excelSumRows('I', itemRowNums), d.faSchedule.totalNetBookValue),
+      ]);
+    } else {
+      const itemRow = topIdx + 3;
+      schedRows.push([
+        1,
+        'Property Plant & Equipment',
+        nCell(d.schedOpeningBalance),
+        nCell(d.schedAddition),
+        nCell(d.schedDisposals),
+        fCell(`C${itemRow}+D${itemRow}-E${itemRow}`, d.schedBalanceClosing),
+        nCell(d.schedRatePct),
+        nCell(d.schedDepreciation),
+        nCell(d.schedWDV),
+      ]);
+      schedRows.push([
+        '',
+        'Total',
+        fCell(`C${itemRow}`, d.schedOpeningBalance),
+        fCell(`D${itemRow}`, d.schedAddition),
+        fCell(`E${itemRow}`, d.schedDisposals),
+        fCell(`F${itemRow}`, d.schedBalanceClosing),
+        '',
+        fCell(`H${itemRow}`, d.schedDepreciation),
+        fCell(`I${itemRow}`, d.schedWDV),
+      ]);
+    }
     schedRows.push([]);
   });
   const wsSched = XLSX.utils.aoa_to_sheet(schedRows);
@@ -6952,55 +7117,85 @@ export async function exportProjectedFinancialsWord(
 
           new Paragraph({ children: [new PageBreak()] }),
           ...projHeader('Schedule of Property Plant & Equipments', formatFyProjectedAsAt(maxYear, company.financialYearEnd), true),
-          ...projAsc.flatMap(d => [
-            createDocxTable(
-              ['SL No.', 'Particulars', 'Opening Balance', 'Addition During the Year', 'Disposals During the Year', `Balance as on ${formatFyEndDateCode(d.year, company.financialYearEnd)}`, 'Rate (%)', 'Depreciation Charged During the Year', `W.D.V as on ${formatFyEndDateCode(d.year, company.financialYearEnd)}`],
-              [
-                [1, 'Property Plant & Equipment', d.schedOpeningBalance, d.schedAddition, d.schedDisposals, d.schedBalanceClosing, `${d.schedRatePct}%`, d.schedDepreciation, d.schedWDV],
-                ['', 'Total', d.schedOpeningBalance, d.schedAddition, d.schedDisposals, d.schedBalanceClosing, '', d.schedDepreciation, d.schedWDV],
-              ],
-              {
-                theme: 'projected_grid',
-                font: 'Helvetica',
-                fontSizePt: 7.5,
-                headFontSizePt: 7.5,
-                colWidthsTwips: schedColsW,
-                totalWidthTwips: usableW,
-                leftColsCount: 2,
-                labelColIndex: 1,
-                boldRowLabels: new Set(['Total']),
-                doubleBottomLabels: new Set(['Total']),
-                customAligns: [
-                  AlignmentType.CENTER,
-                  AlignmentType.LEFT,
-                  AlignmentType.RIGHT,
-                  AlignmentType.RIGHT,
-                  AlignmentType.RIGHT,
-                  AlignmentType.RIGHT,
-                  AlignmentType.CENTER,
-                  AlignmentType.RIGHT,
-                  AlignmentType.RIGHT,
-                ],
-                multiHeaderRows: [
-                  [
-                    { content: 'SL No.', rowSpan: 2, align: AlignmentType.CENTER },
-                    { content: 'Particulars', rowSpan: 2, align: AlignmentType.CENTER },
-                    { content: 'Cost', colSpan: 4, align: AlignmentType.CENTER },
-                    { content: 'Rate of Dep. (%)', rowSpan: 2, align: AlignmentType.CENTER },
-                    { content: 'Depreciation Charged During the Year', rowSpan: 2, align: AlignmentType.CENTER },
-                    { content: `W.D.V as on ${formatFyEndDateCode(d.year, company.financialYearEnd)}`, rowSpan: 2, align: AlignmentType.CENTER },
+          ...projAsc.flatMap(d => {
+            const showDetailedFA = shouldShowDetailedFACategories(d.faSchedule, options);
+            const schedBodyRows: (string | number)[][] =
+              showDetailedFA && d.faSchedule
+                ? [
+                    ...resolveFACategoriesForExport(d.faSchedule, options).map((cat, idx) => [
+                      idx + 1,
+                      cat.name,
+                      cat.costOpening,
+                      cat.additions,
+                      cat.disposals,
+                      cat.costClosing,
+                      `${cat.depRate}%`,
+                      cat.depCharge,
+                      cat.netBookValue,
+                    ]),
+                    [
+                      '',
+                      'Total',
+                      d.faSchedule.totalCostOpening,
+                      d.faSchedule.totalAdditions,
+                      d.faSchedule.totalDisposals,
+                      d.faSchedule.totalCostClosing,
+                      '',
+                      d.faSchedule.totalDepCharge,
+                      d.faSchedule.totalNetBookValue,
+                    ],
+                  ]
+                : [
+                    [1, 'Property Plant & Equipment', d.schedOpeningBalance, d.schedAddition, d.schedDisposals, d.schedBalanceClosing, `${d.schedRatePct}%`, d.schedDepreciation, d.schedWDV],
+                    ['', 'Total', d.schedOpeningBalance, d.schedAddition, d.schedDisposals, d.schedBalanceClosing, '', d.schedDepreciation, d.schedWDV],
+                  ];
+            return [
+              createDocxTable(
+                ['SL No.', 'Particulars', 'Opening Balance', 'Addition During the Year', 'Disposals During the Year', `Balance as on ${formatFyEndDateCode(d.year, company.financialYearEnd)}`, 'Rate (%)', 'Depreciation Charged During the Year', `W.D.V as on ${formatFyEndDateCode(d.year, company.financialYearEnd)}`],
+                schedBodyRows,
+                {
+                  theme: 'projected_grid',
+                  font: 'Helvetica',
+                  fontSizePt: 7.5,
+                  headFontSizePt: 7.5,
+                  colWidthsTwips: schedColsW,
+                  totalWidthTwips: usableW,
+                  leftColsCount: 2,
+                  labelColIndex: 1,
+                  boldRowLabels: new Set(['Total']),
+                  doubleBottomLabels: new Set(['Total']),
+                  customAligns: [
+                    AlignmentType.CENTER,
+                    AlignmentType.LEFT,
+                    AlignmentType.RIGHT,
+                    AlignmentType.RIGHT,
+                    AlignmentType.RIGHT,
+                    AlignmentType.RIGHT,
+                    AlignmentType.CENTER,
+                    AlignmentType.RIGHT,
+                    AlignmentType.RIGHT,
                   ],
-                  [
-                    { content: 'Opening Balance', align: AlignmentType.CENTER },
-                    { content: 'Addition During the Year', align: AlignmentType.CENTER },
-                    { content: 'Disposals During the Year', align: AlignmentType.CENTER },
-                    { content: `Balance as on ${formatFyEndDateCode(d.year, company.financialYearEnd)}`, align: AlignmentType.CENTER },
+                  multiHeaderRows: [
+                    [
+                      { content: 'SL No.', rowSpan: 2, align: AlignmentType.CENTER },
+                      { content: 'Particulars', rowSpan: 2, align: AlignmentType.CENTER },
+                      { content: 'Cost', colSpan: 4, align: AlignmentType.CENTER },
+                      { content: 'Rate of Dep. (%)', rowSpan: 2, align: AlignmentType.CENTER },
+                      { content: 'Depreciation Charged During the Year', rowSpan: 2, align: AlignmentType.CENTER },
+                      { content: `W.D.V as on ${formatFyEndDateCode(d.year, company.financialYearEnd)}`, rowSpan: 2, align: AlignmentType.CENTER },
+                    ],
+                    [
+                      { content: 'Opening Balance', align: AlignmentType.CENTER },
+                      { content: 'Addition During the Year', align: AlignmentType.CENTER },
+                      { content: 'Disposals During the Year', align: AlignmentType.CENTER },
+                      { content: `Balance as on ${formatFyEndDateCode(d.year, company.financialYearEnd)}`, align: AlignmentType.CENTER },
+                    ],
                   ],
-                ],
-              }
-            ),
-            new Paragraph({ spacing: { after: 70 }, children: [] }),
-          ]),
+                }
+              ),
+              new Paragraph({ spacing: { after: 120 }, children: [] }),
+            ];
+          }),
 
           ...(parsedSchedule && parsedSchedule.rows.length > 0
             ? [
@@ -7447,6 +7642,37 @@ export function exportProjectedFinancialsPdf(
       doc.addPage();
       ySched = 16;
     }
+    const showDetailedFA = shouldShowDetailedFACategories(d.faSchedule, options);
+    const schedBody: (string | number)[][] =
+      showDetailedFA && d.faSchedule
+        ? [
+            ...resolveFACategoriesForExport(d.faSchedule, options).map((cat, idx) => [
+              String(idx + 1),
+              cat.name,
+              fmtExactNum(cat.costOpening),
+              fmtExactNum(cat.additions),
+              fmtExactNum(cat.disposals),
+              fmtExactNum(cat.costClosing),
+              `${cat.depRate}%`,
+              fmtExactNum(cat.depCharge),
+              fmtExactNum(cat.netBookValue),
+            ]),
+            [
+              '',
+              'Total',
+              fmtExactNum(d.faSchedule.totalCostOpening),
+              fmtExactNum(d.faSchedule.totalAdditions),
+              fmtExactNum(d.faSchedule.totalDisposals),
+              fmtExactNum(d.faSchedule.totalCostClosing),
+              '',
+              fmtExactNum(d.faSchedule.totalDepCharge),
+              fmtExactNum(d.faSchedule.totalNetBookValue),
+            ],
+          ]
+        : [
+            ['1', 'Property Plant & Equipment', fmtExactNum(d.schedOpeningBalance), fmtExactNum(d.schedAddition), fmtExactNum(d.schedDisposals), fmtExactNum(d.schedBalanceClosing), `${d.schedRatePct}%`, fmtExactNum(d.schedDepreciation), fmtExactNum(d.schedWDV)],
+            ['', 'Total', fmtExactNum(d.schedOpeningBalance), fmtExactNum(d.schedAddition), fmtExactNum(d.schedDisposals), fmtExactNum(d.schedBalanceClosing), '', fmtExactNum(d.schedDepreciation), fmtExactNum(d.schedWDV)],
+          ];
     autoTable(doc, {
       head: [
         [
@@ -7459,10 +7685,7 @@ export function exportProjectedFinancialsPdf(
         ],
         ['Opening Balance', 'Addition During the Year', 'Disposals During the Year', `Balance as on ${formatFyEndDateCode(d.year, company.financialYearEnd)}`],
       ],
-      body: [
-        ['1', 'Property Plant & Equipment', fmtExactNum(d.schedOpeningBalance), fmtExactNum(d.schedAddition), fmtExactNum(d.schedDisposals), fmtExactNum(d.schedBalanceClosing), `${d.schedRatePct}%`, fmtExactNum(d.schedDepreciation), fmtExactNum(d.schedWDV)],
-        ['', 'Total', fmtExactNum(d.schedOpeningBalance), fmtExactNum(d.schedAddition), fmtExactNum(d.schedDisposals), fmtExactNum(d.schedBalanceClosing), '', fmtExactNum(d.schedDepreciation), fmtExactNum(d.schedWDV)],
-      ],
+      body: schedBody,
       startY: ySched,
       theme: 'grid',
       styles: { fontSize: 7.5, cellPadding: 1.5, textColor: [15, 23, 42], lineColor: [51, 65, 85], lineWidth: 0.2 },
@@ -7479,7 +7702,7 @@ export function exportProjectedFinancialsPdf(
         8: { halign: 'right' },
       },
       didParseCell: (data) => {
-        if (data.section === 'body' && data.row.index === 1) {
+        if (data.section === 'body' && Array.isArray(data.row.raw) && String(data.row.raw[1] ?? '') === 'Total') {
           data.cell.styles.fontStyle = 'bold';
         }
       },

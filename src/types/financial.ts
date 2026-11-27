@@ -285,7 +285,7 @@ export interface FinancialNoteItem {
   textDescription: string;
   tableData?: {
     headers: string[];
-    rows: { label: string; values: (string | number)[] }[];
+    rows: { label: string; values: (string | number)[]; isCustom?: boolean }[];
     totalRow?: { label: string; values: (string | number)[] };
   };
 }

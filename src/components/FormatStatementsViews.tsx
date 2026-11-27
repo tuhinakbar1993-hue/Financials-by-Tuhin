@@ -54,7 +54,15 @@ import {
   exportProjectedFinancialsExcel,
   exportProjectedFinancialsWord,
   exportProjectedFinancialsPdf,
+  shouldShowDetailedFACategories,
+  resolveFACategoriesForExport,
 } from '../services/exportService';
+
+function isCustomCashFlowInflow(ci: StatementConfigItem, vals: number[]): boolean {
+  if (ci.sign === 'negative') return false;
+  const nonZero = vals.filter(v => Math.abs(v) >= 0.005);
+  return nonZero.length === 0 || nonZero.some(v => v > 0);
+}
 
 function fmtCell(val: number): string {
   if (Math.abs(val) < 0.005) return '-';
@@ -210,7 +218,7 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
     .filter(
       c =>
         c.isCustom &&
-        ((c.statement === 'balanceSheet' && (c.section === 'Equity' || !STD_BS_SECTIONS.includes(c.section))) ||
+        ((c.statement === 'balanceSheet' && (c.section === 'Equity' || !(STD_BS_SECTIONS as readonly string[]).includes(c.section))) ||
           c.statement === 'equity')
     )
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
@@ -226,7 +234,7 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
   const visIncNonOp = customIncNonOp.filter(c => c.isVisible);
   const customCfOp = statementConfig
     .filter(
-      c => c.isCustom && c.statement === 'cashFlow' && (c.section === 'Operating Activities' || !STD_CF_SECTIONS.includes(c.section))
+      c => c.isCustom && c.statement === 'cashFlow' && (c.section === 'Operating Activities' || !(STD_CF_SECTIONS as readonly string[]).includes(c.section))
     )
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   const customCfInv = getCustom('cashFlow', 'Investing Activities');
@@ -1610,24 +1618,38 @@ export const PreviousFormatSuiteView: React.FC<PreviousFormatSuiteViewProps> = (
                     </tr>
                   </thead>
                   <tbody>
-                    <tr className="border-b border-slate-200">
-                      <td className="py-2 px-3 text-slate-800 border-r border-slate-200">Fixed Assets</td>
-                      <td className="py-2 px-3 text-right font-mono text-slate-800 border-r border-slate-200">{fmtCell(d.faOpening)}</td>
-                      <td className="py-2 px-3 text-right font-mono text-slate-800 border-r border-slate-200">{fmtCell(d.faAddition - d.faDisposal)}</td>
-                      <td className="py-2 px-3 text-right font-mono text-emerald-800 font-semibold border-r border-slate-200">
-                        {onUpdatePrimaryDriver ? (
-                          <InlineDriverCell
-                            value={d.faGrossAssetBase}
-                            isEditMode={isEditMode}
-                            onSave={val => onUpdatePrimaryDriver(d.year, 'fixedAssetsGross', val)}
-                            title="Fixed User Input: Fixed Assets (Gross Asset Base)"
-                          />
-                        ) : fmtCell(d.faTotal)}
-                      </td>
-                      <td className="py-2 px-3 text-center font-mono text-slate-700 border-r border-slate-200">{d.faRatePct}</td>
-                      <td className="py-2 px-3 text-right font-mono text-slate-800 border-r border-slate-200">{fmtCell(d.faDepreciationCharged)}</td>
-                      <td className="py-2 px-3 text-right font-mono text-slate-900 font-semibold">{fmtCell(d.faWDV)}</td>
-                    </tr>
+                    {shouldShowDetailedFACategories(d.faSchedule, exportSyncOptions) && d.faSchedule ? (
+                      resolveFACategoriesForExport(d.faSchedule, exportSyncOptions).map((cat, idx) => (
+                        <tr key={`${d.year}_fa_${idx}`} className="border-b border-slate-200 hover:bg-slate-50/70">
+                          <td className="py-2 px-3 text-slate-800 border-r border-slate-200">{cat.name}</td>
+                          <td className="py-2 px-3 text-right font-mono text-slate-800 border-r border-slate-200">{fmtCell(cat.costOpening)}</td>
+                          <td className="py-2 px-3 text-right font-mono text-slate-800 border-r border-slate-200">{fmtCell(cat.additions - cat.disposals)}</td>
+                          <td className="py-2 px-3 text-right font-mono text-slate-800 border-r border-slate-200">{fmtCell(cat.costClosing)}</td>
+                          <td className="py-2 px-3 text-center font-mono text-slate-700 border-r border-slate-200">{cat.depRate}</td>
+                          <td className="py-2 px-3 text-right font-mono text-slate-800 border-r border-slate-200">{fmtCell(cat.depCharge)}</td>
+                          <td className="py-2 px-3 text-right font-mono text-slate-900 font-semibold">{fmtCell(cat.netBookValue)}</td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr className="border-b border-slate-200">
+                        <td className="py-2 px-3 text-slate-800 border-r border-slate-200">Fixed Assets</td>
+                        <td className="py-2 px-3 text-right font-mono text-slate-800 border-r border-slate-200">{fmtCell(d.faOpening)}</td>
+                        <td className="py-2 px-3 text-right font-mono text-slate-800 border-r border-slate-200">{fmtCell(d.faAddition - d.faDisposal)}</td>
+                        <td className="py-2 px-3 text-right font-mono text-emerald-800 font-semibold border-r border-slate-200">
+                          {onUpdatePrimaryDriver ? (
+                            <InlineDriverCell
+                              value={d.faGrossAssetBase}
+                              isEditMode={isEditMode}
+                              onSave={val => onUpdatePrimaryDriver(d.year, 'fixedAssetsGross', val)}
+                              title="Fixed User Input: Fixed Assets (Gross Asset Base)"
+                            />
+                          ) : fmtCell(d.faTotal)}
+                        </td>
+                        <td className="py-2 px-3 text-center font-mono text-slate-700 border-r border-slate-200">{d.faRatePct}</td>
+                        <td className="py-2 px-3 text-right font-mono text-slate-800 border-r border-slate-200">{fmtCell(d.faDepreciationCharged)}</td>
+                        <td className="py-2 px-3 text-right font-mono text-slate-900 font-semibold">{fmtCell(d.faWDV)}</td>
+                      </tr>
+                    )}
                     <tr className="bg-emerald-50 font-bold text-emerald-950">
                       <td className="py-2 px-3 border-r border-slate-200">Taka</td>
                       <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.faOpening)}</td>
@@ -1790,7 +1812,7 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
     .filter(
       c =>
         c.isCustom &&
-        ((c.statement === 'balanceSheet' && (c.section === 'Equity' || !STD_BS_SECTIONS.includes(c.section))) ||
+        ((c.statement === 'balanceSheet' && (c.section === 'Equity' || !(STD_BS_SECTIONS as readonly string[]).includes(c.section))) ||
           c.statement === 'equity')
     )
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
@@ -1809,7 +1831,7 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
 
   const customCfOp = statementConfig
     .filter(
-      c => c.isCustom && c.statement === 'cashFlow' && (c.section === 'Operating Activities' || !STD_CF_SECTIONS.includes(c.section))
+      c => c.isCustom && c.statement === 'cashFlow' && (c.section === 'Operating Activities' || !(STD_CF_SECTIONS as readonly string[]).includes(c.section))
     )
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   const customCfInv = getCustom('cashFlow', 'Investing Activities');
@@ -2758,6 +2780,20 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                   <td className="py-1.5 px-4 text-slate-700">Capital</td>
                   {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfInvestingCapitalInflow)}</td>)}
                 </tr>
+                {customCfInv.filter(ci => (ci.isVisible || isCustomizeMode) && isCustomCashFlowInflow(ci, projData.map(d => getCustomItemYearValue(ci, d.year)))).map(ci => (
+                  <tr key={ci.id} className={!ci.isVisible ? 'opacity-45 bg-slate-50' : 'bg-indigo-50/35 hover:bg-indigo-50/60'}>
+                    <td className="py-1.5 px-4 text-indigo-900">
+                      <div className="flex items-center gap-2">
+                        {renderCheck(ci.id)}
+                        <span>{ci.label}</span>
+                        <span className="text-[9px] font-mono uppercase bg-indigo-100 text-indigo-800 border border-indigo-200 px-1 py-0.5 rounded">Custom</span>
+                      </div>
+                    </td>
+                    {projData.map(d => (
+                      <td key={d.year} className="py-1.5 px-3 text-right font-mono text-indigo-800 border-l border-slate-200/80">{fmtCell(getCustomItemYearValue(ci, d.year))}</td>
+                    ))}
+                  </tr>
+                ))}
                 <tr className="font-semibold text-slate-800">
                   <td colSpan={projData.length + 1} className="py-1 px-4 underline">Outflows:</td>
                 </tr>
@@ -2791,7 +2827,7 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                   <td className="py-1.5 px-4 text-slate-700">Purchase Investment In Debt Or Securities</td>
                   {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfPurchaseInvestment)}</td>)}
                 </tr>
-                {customCfInv.filter(ci => ci.isVisible || isCustomizeMode).map(ci => (
+                {customCfInv.filter(ci => (ci.isVisible || isCustomizeMode) && !isCustomCashFlowInflow(ci, projData.map(d => getCustomItemYearValue(ci, d.year)))).map(ci => (
                   <tr key={ci.id} className={!ci.isVisible ? 'opacity-45 bg-slate-50' : 'bg-indigo-50/35 hover:bg-indigo-50/60'}>
                     <td className="py-1.5 px-4 text-indigo-900">
                       <div className="flex items-center gap-2">
@@ -2842,6 +2878,20 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                   <td className="py-1.5 px-4 text-slate-700">Issuance Of Debt (Bond &amp; Notes)</td>
                   {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfIssuanceOfDebt)}</td>)}
                 </tr>
+                {customCfFin.filter(ci => (ci.isVisible || isCustomizeMode) && isCustomCashFlowInflow(ci, projData.map(d => getCustomItemYearValue(ci, d.year)))).map(ci => (
+                  <tr key={ci.id} className={!ci.isVisible ? 'opacity-45 bg-slate-50' : 'bg-indigo-50/35 hover:bg-indigo-50/60'}>
+                    <td className="py-1.5 px-4 text-indigo-900">
+                      <div className="flex items-center gap-2">
+                        {renderCheck(ci.id)}
+                        <span>{ci.label}</span>
+                        <span className="text-[9px] font-mono uppercase bg-indigo-100 text-indigo-800 border border-indigo-200 px-1 py-0.5 rounded">Custom</span>
+                      </div>
+                    </td>
+                    {projData.map(d => (
+                      <td key={d.year} className="py-1.5 px-3 text-right font-mono text-indigo-800 border-l border-slate-200/80">{fmtCell(getCustomItemYearValue(ci, d.year))}</td>
+                    ))}
+                  </tr>
+                ))}
                 <tr className="font-semibold text-slate-800">
                   <td colSpan={projData.length + 1} className="py-1 px-4 underline">Outflows:</td>
                 </tr>
@@ -2882,7 +2932,7 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                   <td className="py-1.5 px-4 text-slate-700">Issuance Of Bonds Payable</td>
                   {projData.map(d => <td key={d.year} className="py-1.5 px-3 text-right font-mono text-slate-900 border-l border-slate-200/80">{fmtCell(d.cfIssuanceBondsPayable)}</td>)}
                 </tr>
-                {customCfFin.filter(ci => ci.isVisible || isCustomizeMode).map(ci => (
+                {customCfFin.filter(ci => (ci.isVisible || isCustomizeMode) && !isCustomCashFlowInflow(ci, projData.map(d => getCustomItemYearValue(ci, d.year)))).map(ci => (
                   <tr key={ci.id} className={!ci.isVisible ? 'opacity-45 bg-slate-50' : 'bg-indigo-50/35 hover:bg-indigo-50/60'}>
                     <td className="py-1.5 px-4 text-indigo-900">
                       <div className="flex items-center gap-2">
@@ -3064,37 +3114,68 @@ export const ProjectedFormatSuiteView: React.FC<ProjectedFormatSuiteViewProps> =
                   </tr>
                 </thead>
                 <tbody className="text-slate-800">
-                  <tr className="border-b border-slate-200 hover:bg-slate-50/70">
-                    <td className="py-2 px-2 text-center font-mono text-slate-600 border-r border-slate-200">1</td>
-                    <td className="py-2 px-3 text-slate-900 border-r border-slate-200">Property Plant &amp; Equipment</td>
-                    <td className="py-2 px-3 text-right font-mono text-slate-900 border-r border-slate-200">{fmtCell(d.schedOpeningBalance)}</td>
-                    <td className="py-2 px-3 text-right font-mono text-slate-900 border-r border-slate-200">{fmtCell(d.schedAddition)}</td>
-                    <td className="py-2 px-3 text-right font-mono text-slate-900 border-r border-slate-200">{fmtCell(d.schedDisposals)}</td>
-                    <td className="py-2 px-3 text-right font-mono text-emerald-800 font-semibold border-r border-slate-200">
-                      {onUpdatePrimaryDriver ? (
-                        <InlineDriverCell
-                          value={d.schedGrossAssetBase}
-                          isEditMode={isEditMode}
-                          onSave={val => onUpdatePrimaryDriver(d.year, 'fixedAssetsGross', val)}
-                          title="Fixed User Input: Fixed Assets (Gross Asset Base)"
-                        />
-                      ) : fmtCell(d.schedBalanceClosing)}
-                    </td>
-                    <td className="py-2 px-2 text-center font-mono text-slate-700 border-r border-slate-200">{d.schedRatePct}%</td>
-                    <td className="py-2 px-3 text-right font-mono text-slate-900 border-r border-slate-200">{fmtCell(d.schedDepreciation)}</td>
-                    <td className="py-2 px-3 text-right font-mono text-slate-900 font-semibold">{fmtCell(d.schedWDV)}</td>
-                  </tr>
-                  <tr className="bg-sky-50/75 font-bold text-sky-900">
-                    <td className="py-2 px-2 border-r border-slate-200"></td>
-                    <td className="py-2 px-3 text-center border-r border-slate-200">Total</td>
-                    <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.schedOpeningBalance)}</td>
-                    <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.schedAddition)}</td>
-                    <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.schedDisposals)}</td>
-                    <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.schedBalanceClosing)}</td>
-                    <td className="py-2 px-2 border-r border-slate-200"></td>
-                    <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.schedDepreciation)}</td>
-                    <td className="py-2 px-3 text-right font-mono">{fmtCell(d.schedWDV)}</td>
-                  </tr>
+                  {shouldShowDetailedFACategories(d.faSchedule, exportSyncOptions) && d.faSchedule ? (
+                    <>
+                      {resolveFACategoriesForExport(d.faSchedule, exportSyncOptions).map((cat, idx) => (
+                        <tr key={`${d.year}_sched_${idx}`} className="border-b border-slate-200 hover:bg-slate-50/70">
+                          <td className="py-2 px-2 text-center font-mono text-slate-600 border-r border-slate-200">{idx + 1}</td>
+                          <td className="py-2 px-3 text-slate-900 border-r border-slate-200">{cat.name}</td>
+                          <td className="py-2 px-3 text-right font-mono text-slate-900 border-r border-slate-200">{fmtCell(cat.costOpening)}</td>
+                          <td className="py-2 px-3 text-right font-mono text-slate-900 border-r border-slate-200">{fmtCell(cat.additions)}</td>
+                          <td className="py-2 px-3 text-right font-mono text-slate-900 border-r border-slate-200">{fmtCell(cat.disposals)}</td>
+                          <td className="py-2 px-3 text-right font-mono text-slate-900 border-r border-slate-200">{fmtCell(cat.costClosing)}</td>
+                          <td className="py-2 px-2 text-center font-mono text-slate-700 border-r border-slate-200">{cat.depRate}%</td>
+                          <td className="py-2 px-3 text-right font-mono text-slate-900 border-r border-slate-200">{fmtCell(cat.depCharge)}</td>
+                          <td className="py-2 px-3 text-right font-mono text-slate-900 font-semibold">{fmtCell(cat.netBookValue)}</td>
+                        </tr>
+                      ))}
+                      <tr className="bg-sky-50/75 font-bold text-sky-900">
+                        <td className="py-2 px-2 border-r border-slate-200"></td>
+                        <td className="py-2 px-3 text-center border-r border-slate-200">Total</td>
+                        <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.faSchedule.totalCostOpening)}</td>
+                        <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.faSchedule.totalAdditions)}</td>
+                        <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.faSchedule.totalDisposals)}</td>
+                        <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.faSchedule.totalCostClosing)}</td>
+                        <td className="py-2 px-2 border-r border-slate-200"></td>
+                        <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.faSchedule.totalDepCharge)}</td>
+                        <td className="py-2 px-3 text-right font-mono">{fmtCell(d.faSchedule.totalNetBookValue)}</td>
+                      </tr>
+                    </>
+                  ) : (
+                    <>
+                      <tr className="border-b border-slate-200 hover:bg-slate-50/70">
+                        <td className="py-2 px-2 text-center font-mono text-slate-600 border-r border-slate-200">1</td>
+                        <td className="py-2 px-3 text-slate-900 border-r border-slate-200">Property Plant &amp; Equipment</td>
+                        <td className="py-2 px-3 text-right font-mono text-slate-900 border-r border-slate-200">{fmtCell(d.schedOpeningBalance)}</td>
+                        <td className="py-2 px-3 text-right font-mono text-slate-900 border-r border-slate-200">{fmtCell(d.schedAddition)}</td>
+                        <td className="py-2 px-3 text-right font-mono text-slate-900 border-r border-slate-200">{fmtCell(d.schedDisposals)}</td>
+                        <td className="py-2 px-3 text-right font-mono text-emerald-800 font-semibold border-r border-slate-200">
+                          {onUpdatePrimaryDriver ? (
+                            <InlineDriverCell
+                              value={d.schedGrossAssetBase}
+                              isEditMode={isEditMode}
+                              onSave={val => onUpdatePrimaryDriver(d.year, 'fixedAssetsGross', val)}
+                              title="Fixed User Input: Fixed Assets (Gross Asset Base)"
+                            />
+                          ) : fmtCell(d.schedBalanceClosing)}
+                        </td>
+                        <td className="py-2 px-2 text-center font-mono text-slate-700 border-r border-slate-200">{d.schedRatePct}%</td>
+                        <td className="py-2 px-3 text-right font-mono text-slate-900 border-r border-slate-200">{fmtCell(d.schedDepreciation)}</td>
+                        <td className="py-2 px-3 text-right font-mono text-slate-900 font-semibold">{fmtCell(d.schedWDV)}</td>
+                      </tr>
+                      <tr className="bg-sky-50/75 font-bold text-sky-900">
+                        <td className="py-2 px-2 border-r border-slate-200"></td>
+                        <td className="py-2 px-3 text-center border-r border-slate-200">Total</td>
+                        <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.schedOpeningBalance)}</td>
+                        <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.schedAddition)}</td>
+                        <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.schedDisposals)}</td>
+                        <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.schedBalanceClosing)}</td>
+                        <td className="py-2 px-2 border-r border-slate-200"></td>
+                        <td className="py-2 px-3 text-right font-mono border-r border-slate-200">{fmtCell(d.schedDepreciation)}</td>
+                        <td className="py-2 px-3 text-right font-mono">{fmtCell(d.schedWDV)}</td>
+                      </tr>
+                    </>
+                  )}
                 </tbody>
               </table>
             ))}

@@ -3520,7 +3520,7 @@ export function generateNotesToFinancialStatements(
     })
     .filter(e => e.visible)
     .map(e => e.cat);
-  const customFACats: FixedAssetCategory[] = (cfg || [])
+  const customFACats: (FixedAssetCategory & { isCustom?: boolean })[] = (cfg || [])
     .filter(item => item.isCustom && item.isVisible && item.statement === 'fixedAssets')
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
     .map(item => {
@@ -3537,9 +3537,10 @@ export function generateNotesToFinancialStatements(
         depClosing: 0,
         netBookValue: val,
         depRate: 0,
+        isCustom: true,
       };
     });
-  const note5Categories = [...stdFACats, ...customFACats];
+  const note5Categories: (FixedAssetCategory & { isCustom?: boolean })[] = [...stdFACats, ...customFACats];
 
   const customEquityRows = (cfg || [])
     .filter(
@@ -3548,7 +3549,7 @@ export function generateNotesToFinancialStatements(
         item.isVisible &&
         (item.statement === 'equity' ||
           (item.statement === 'balanceSheet' &&
-            (item.section === 'Equity' || !STD_BS_SECTIONS.includes(item.section))))
+            (item.section === 'Equity' || !(STD_BS_SECTIONS as readonly string[]).includes(item.section))))
     )
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
     .map(item => ({
@@ -3557,6 +3558,7 @@ export function generateNotesToFinancialStatements(
         getCustomItemYearValue(item, currYear).toLocaleString(),
         getCustomItemYearValue(item, prevYear).toLocaleString(),
       ],
+      isCustom: true,
     }));
 
   const cCustomRev = getVisibleCustomItemsSum(cfg, 'income', currYear, 'Revenue & Gross Margin');
@@ -3699,6 +3701,7 @@ export function generateNotesToFinancialStatements(
         rows: note5Categories.map(cat => ({
           label: cat.name,
           values: [cat.costClosing.toLocaleString(), cat.depClosing.toLocaleString(), cat.netBookValue.toLocaleString()],
+          ...(cat.isCustom ? { isCustom: true } : {}),
         })),
         totalRow: {
           label: 'Total Fixed Assets Net Book Value',

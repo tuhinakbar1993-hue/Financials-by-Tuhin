@@ -1564,7 +1564,287 @@ assert.equal(
   'Instant rectification must settle final projected year LT borrowings to 0'
 );
 
-console.log('ALL VERIFICATION CHECKS PASSED! Workbooks:', capturedWorkbooks.map(c => c.filename), 'Docx:', capturedDocx.map(d => `${d.filename}(${d.size}B)`));
+// ============================================================================
+// 11. PRESERVE EXISTING TEMPLATES & COMPLETE EXPORT OF USER-SELECTED ITEMS
+// ============================================================================
+import zlib from 'node:zlib';
+
+function extractZipXmlText(buf: Uint8Array): string {
+  const b = Buffer.from(buf);
+  let out = '';
+  // Find End of Central Directory (0x06054b50)
+  let eocd = -1;
+  for (let i = b.length - 22; i >= Math.max(0, b.length - 65558); i--) {
+    if (b.readUInt32LE(i) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd >= 0) {
+    const cdSize = b.readUInt32LE(eocd + 12);
+    const cdOffset = b.readUInt32LE(eocd + 16);
+    let pos = cdOffset;
+    const endPos = cdOffset + cdSize;
+    while (pos + 46 <= endPos && b.readUInt32LE(pos) === 0x02014b50) {
+      const method = b.readUInt16LE(pos + 10);
+      const compSize = b.readUInt32LE(pos + 20);
+      const nameLen = b.readUInt16LE(pos + 28);
+      const extraLen = b.readUInt16LE(pos + 30);
+      const commentLen = b.readUInt16LE(pos + 32);
+      const localOffset = b.readUInt32LE(pos + 42);
+      const name = b.subarray(pos + 46, pos + 46 + nameLen).toString('utf8');
+      pos += 46 + nameLen + extraLen + commentLen;
+      if (name.endsWith('.xml') && localOffset + 30 <= b.length && b.readUInt32LE(localOffset) === 0x04034b50) {
+        const lNameLen = b.readUInt16LE(localOffset + 26);
+        const lExtraLen = b.readUInt16LE(localOffset + 28);
+        const dataStart = localOffset + 30 + lNameLen + lExtraLen;
+        const slice = b.subarray(dataStart, dataStart + compSize);
+        const raw = method === 8 ? zlib.inflateRawSync(slice) : slice;
+        out += raw.toString('utf8') + '\n';
+      }
+    }
+  }
+  return out
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/\s+/g, ' ');
+}
+
+const { jsPDF: JsPdfCtor } = (await import('jspdf')) as unknown as {
+  jsPDF: {
+    API: {
+      events: unknown[];
+    };
+  };
+};
+const capturedPdfText: { filename: string; text: string }[] = [];
+let pdfHookActive = true;
+JsPdfCtor.API.events.push([
+  'initialized',
+  function (this: {
+    save: (f?: string) => void;
+    internal?: { pages?: Record<string, string[]> };
+  }) {
+    const origInstSave = this.save;
+    this.save = (filename = 'doc.pdf') => {
+      if (!pdfHookActive) {
+        return origInstSave.call(this, filename);
+      }
+      const pagesObj = this.internal?.pages || {};
+      const joined = Object.values(pagesObj)
+        .filter(Array.isArray)
+        .map(p => p.join('\n'))
+        .join('\n');
+      const tjText = Array.from(joined.matchAll(/\(([^()]*)\)\s*Tj/g))
+        .map(m => m[1])
+        .join(' ')
+        .replace(/\\([()\\])/g, '$1')
+        .replace(/\s+/g, ' ');
+      capturedPdfText.push({ filename, text: `${joined}\n${tjText}` });
+    };
+  },
+]);
+
+// (A) Baseline Template Preservation: uncustomized Previous & Projected exports MUST retain exact single-line Fixed Assets tables
+capturedWorkbooks.length = 0;
+capturedPdfText.length = 0;
+exportsMod.clearCapturedDocxExportsForTest();
+
+exportsMod.exportPreviousFinancialsExcel(engine.INITIAL_COMPANY_PROFILE, baseline.prev.slice(0, 2), baseline.notes);
+exportsMod.exportProjectedFinancialsExcel(engine.INITIAL_COMPANY_PROFILE, baseline.proj);
+await exportsMod.exportPreviousFinancialsWord(engine.INITIAL_COMPANY_PROFILE, baseline.prev.slice(0, 2), baseline.notes);
+await exportsMod.exportProjectedFinancialsWord(engine.INITIAL_COMPANY_PROFILE, baseline.proj);
+exportsMod.exportPreviousFinancialsPdf(engine.INITIAL_COMPANY_PROFILE, baseline.prev.slice(0, 2), baseline.notes);
+exportsMod.exportProjectedFinancialsPdf(engine.INITIAL_COMPANY_PROFILE, baseline.proj);
+
+assert.equal(capturedWorkbooks.length, 2, 'Expected 2 baseline format Excel workbooks');
+capturedWorkbooks.forEach(({ wb }) => validateFormulaCells(wb));
+
+const basePrevFaRows = xlsxCjs.utils.sheet_to_json<(string | number)[]>(
+  capturedWorkbooks[0].wb.Sheets['5. Fixed Assets & Notes'],
+  { header: 1 }
+);
+const basePrevFaPartic = basePrevFaRows.map(r => String(r[0] ?? ''));
+assert(basePrevFaPartic.includes('Fixed Assets'), 'Uncustomized Previous FA Excel must keep single Fixed Assets row');
+assert(basePrevFaPartic.includes('Taka'), 'Uncustomized Previous FA Excel must keep Taka total row');
+assert(!basePrevFaPartic.includes('Land & Building'), 'Uncustomized Previous FA Excel must not expand detailed asset classes');
+
+const baseProjSchARows = xlsxCjs.utils.sheet_to_json<(string | number)[]>(
+  capturedWorkbooks[1].wb.Sheets['5. Schedule-A PPE'],
+  { header: 1 }
+);
+const baseProjSchAPartic = baseProjSchARows.map(r => String(r[1] ?? ''));
+assert(baseProjSchAPartic.includes('Property Plant & Equipment'), 'Uncustomized Projected Schedule-A Excel must keep single PPE row');
+assert(baseProjSchAPartic.includes('Total'), 'Uncustomized Projected Schedule-A Excel must keep Total row');
+assert(!baseProjSchAPartic.includes('Land & Building'), 'Uncustomized Projected Schedule-A Excel must not expand detailed asset classes');
+
+const baseDocx = exportsMod.getCapturedDocxExportsForTest();
+assert.equal(baseDocx.length, 2);
+assert(extractZipXmlText(baseDocx[0].buffer!).includes('Fixed Assets'), 'Uncustomized Previous Word must include Fixed Assets');
+assert(extractZipXmlText(baseDocx[1].buffer!).includes('Property Plant & Equipment'), 'Uncustomized Projected Word must include Property Plant & Equipment');
+
+// (B) User-Selected Custom Financial Items (including ZERO-valued rows) Across ALL Formats (Excel, Word, PDF)
+const phase2CustomItems: StatementConfigItem[] = [
+  { id: 'p2_inc_rev_zero', statement: 'income', section: 'Revenue & Gross Margin', label: 'P2 Zero Service Fee', isMandatory: false, isVisible: true, order: 301, isCustom: true, sign: 'positive', customValues: {} },
+  { id: 'p2_inc_opex_zero', statement: 'income', section: 'Operating Expenses', label: 'P2 Zero Marketing Levy', isMandatory: false, isVisible: true, order: 302, isCustom: true, sign: 'negative', customValues: {} },
+  { id: 'p2_inc_nonop_zero', statement: 'income', section: 'Non-Operating & Tax', label: 'P2 Zero Grant Income', isMandatory: false, isVisible: true, order: 303, isCustom: true, sign: 'positive', customValues: {} },
+  { id: 'p2_inc_unscoped_zero', statement: 'income', section: 'Custom Income Group', label: 'P2 Zero Extraordinary Gain', isMandatory: false, isVisible: true, order: 304, isCustom: true, sign: 'positive', customValues: {} },
+  { id: 'p2_bs_nca_zero', statement: 'balanceSheet', section: 'Non-Current Assets', label: 'P2 Zero Long Term Deposit', isMandatory: false, isVisible: true, order: 305, isCustom: true, sign: 'positive', customValues: {} },
+  { id: 'p2_bs_ca_zero', statement: 'balanceSheet', section: 'Current Assets', label: 'P2 Zero Prepaid Royalty', isMandatory: false, isVisible: true, order: 306, isCustom: true, sign: 'positive', customValues: {} },
+  { id: 'p2_bs_ncl_zero', statement: 'balanceSheet', section: 'Non-Current Liabilities', label: 'P2 Zero Lease Obligation', isMandatory: false, isVisible: true, order: 307, isCustom: true, sign: 'positive', customValues: {} },
+  { id: 'p2_bs_cl_zero', statement: 'balanceSheet', section: 'Current Liabilities', label: 'P2 Zero Accrued Cess', isMandatory: false, isVisible: true, order: 308, isCustom: true, sign: 'positive', customValues: {} },
+  { id: 'p2_bs_eq_zero', statement: 'balanceSheet', section: 'Equity', label: 'P2 Zero Revaluation Reserve', isMandatory: false, isVisible: true, order: 309, isCustom: true, sign: 'positive', customValues: {} },
+  { id: 'p2_bs_unscoped_zero', statement: 'balanceSheet', section: 'Custom BS Group', label: 'P2 Zero Statutory Reserve', isMandatory: false, isVisible: true, order: 310, isCustom: true, sign: 'positive', customValues: {} },
+  { id: 'p2_eq_stmt_zero', statement: 'equity', section: 'Equity Movements', label: 'P2 Zero Capital Contribution', isMandatory: false, isVisible: true, order: 311, isCustom: true, sign: 'positive', customValues: {} },
+  { id: 'p2_cf_op_zero', statement: 'cashFlow', section: 'Operating Activities', label: 'P2 Zero Operating Adjustment', isMandatory: false, isVisible: true, order: 312, isCustom: true, sign: 'positive', customValues: {} },
+  { id: 'p2_cf_inv_inflow', statement: 'cashFlow', section: 'Investing Activities', label: 'P2 Custom Inv Inflow', isMandatory: false, isVisible: true, order: 313, isCustom: true, sign: 'positive', customValues: { 2026: 15000 } },
+  { id: 'p2_cf_inv_outflow', statement: 'cashFlow', section: 'Investing Activities', label: 'P2 Custom Inv Outflow', isMandatory: false, isVisible: true, order: 314, isCustom: true, sign: 'negative', customValues: { 2026: -8000 } },
+  { id: 'p2_cf_fin_inflow', statement: 'cashFlow', section: 'Financing Activities', label: 'P2 Custom Fin Inflow', isMandatory: false, isVisible: true, order: 315, isCustom: true, sign: 'positive', customValues: { 2026: 22000 } },
+  { id: 'p2_cf_fin_outflow', statement: 'cashFlow', section: 'Financing Activities', label: 'P2 Custom Fin Outflow', isMandatory: false, isVisible: true, order: 316, isCustom: true, sign: 'negative', customValues: { 2026: -5000 } },
+  { id: 'p2_cf_unscoped_zero', statement: 'cashFlow', section: 'Custom CF Group', label: 'P2 Zero CF Special', isMandatory: false, isVisible: true, order: 317, isCustom: true, sign: 'positive', customValues: {} },
+  { id: 'p2_fa_zero', statement: 'fixedAssets', section: 'Fixed Assets', label: 'P2 Zero Solar Array', isMandatory: false, isVisible: true, order: 318, isCustom: true, sign: 'positive', customValues: {} },
+];
+
+const phase2Cfg: StatementConfigItem[] = [...engine.DEFAULT_STATEMENT_CONFIG_ITEMS, ...phase2CustomItems];
+const phase2Res = runPipeline(phase2Cfg);
+const phase2Opts = { statementConfig: phase2Cfg, labelOverrides: {}, cellOverrides: {} };
+
+// Verify Notes 5 and 9 retain zero-valued custom items
+const p2Note5 = phase2Res.notes.find(n => n.noteNumber === 5)!;
+const p2Note9 = phase2Res.notes.find(n => n.noteNumber === 9)!;
+assert(p2Note5.tableData!.rows.some(r => r.label === 'P2 Zero Solar Array' && r.isCustom), 'Note 5 must tag and retain zero custom FA item');
+assert(p2Note9.tableData!.rows.some(r => r.label === 'P2 Zero Capital Contribution' && r.isCustom), 'Note 9 must tag and retain zero custom Equity item');
+
+capturedWorkbooks.length = 0;
+capturedPdfText.length = 0;
+exportsMod.clearCapturedDocxExportsForTest();
+
+// Run all 3 complete suites + Notes across Excel, Word, PDF
+exportsMod.exportCompletePackageExcel(
+  engine.INITIAL_COMPANY_PROFILE,
+  phase2Res.inc,
+  phase2Res.bs,
+  phase2Res.cf,
+  phase2Res.eq,
+  phase2Res.fa,
+  phase2Res.notes,
+  'p2_complete.xlsx',
+  phase2Res.dscr,
+  phase2Opts
+);
+exportsMod.exportPreviousFinancialsExcel(engine.INITIAL_COMPANY_PROFILE, phase2Res.prev.slice(0, 2), phase2Res.notes, phase2Opts);
+exportsMod.exportProjectedFinancialsExcel(engine.INITIAL_COMPANY_PROFILE, phase2Res.proj, phase2Opts);
+
+await exportsMod.exportCompletePackageWord(
+  engine.INITIAL_COMPANY_PROFILE,
+  phase2Res.inc,
+  phase2Res.bs,
+  phase2Res.cf,
+  phase2Res.eq,
+  phase2Res.fa,
+  phase2Res.notes,
+  'p2_complete.docx',
+  phase2Res.dscr,
+  phase2Opts
+);
+await exportsMod.exportPreviousFinancialsWord(engine.INITIAL_COMPANY_PROFILE, phase2Res.prev.slice(0, 2), phase2Res.notes, phase2Opts);
+await exportsMod.exportProjectedFinancialsWord(engine.INITIAL_COMPANY_PROFILE, phase2Res.proj, phase2Opts);
+
+exportsMod.exportCompletePackagePdf(
+  engine.INITIAL_COMPANY_PROFILE,
+  phase2Res.inc,
+  phase2Res.bs,
+  phase2Res.cf,
+  phase2Res.eq,
+  phase2Res.fa,
+  phase2Res.notes,
+  'p2_complete.pdf',
+  phase2Res.dscr,
+  phase2Opts
+);
+exportsMod.exportPreviousFinancialsPdf(engine.INITIAL_COMPANY_PROFILE, phase2Res.prev.slice(0, 2), phase2Res.notes, phase2Opts);
+exportsMod.exportProjectedFinancialsPdf(engine.INITIAL_COMPANY_PROFILE, phase2Res.proj, phase2Opts);
+
+assert.equal(capturedWorkbooks.length, 3, 'Expected 3 Phase 2 Excel workbooks');
+const p2CompleteWb = capturedWorkbooks[0].wb;
+const p2PrevWb = capturedWorkbooks[1].wb;
+const p2ProjWb = capturedWorkbooks[2].wb;
+
+[p2CompleteWb, p2PrevWb, p2ProjWb].forEach(wb => validateFormulaCells(wb));
+
+const p2CompleteText = p2CompleteWb.SheetNames.map(s => xlsxCjs.utils.sheet_to_csv(p2CompleteWb.Sheets[s])).join('\n');
+const p2PrevText = p2PrevWb.SheetNames.map(s => xlsxCjs.utils.sheet_to_csv(p2PrevWb.Sheets[s])).join('\n');
+const p2ProjText = p2ProjWb.SheetNames.map(s => xlsxCjs.utils.sheet_to_csv(p2ProjWb.Sheets[s])).join('\n');
+
+const p2DocxList = exportsMod.getCapturedDocxExportsForTest();
+assert.equal(p2DocxList.length, 3, 'Expected 3 Phase 2 Word exports');
+const p2CompleteDocxTxt = extractZipXmlText(p2DocxList[0].buffer!);
+const p2PrevDocxTxt = extractZipXmlText(p2DocxList[1].buffer!);
+const p2ProjDocxTxt = extractZipXmlText(p2DocxList[2].buffer!);
+
+assert.equal(capturedPdfText.length, 3, 'Expected 3 Phase 2 PDF exports');
+const p2CompletePdfTxt = capturedPdfText[0].text;
+const p2PrevPdfTxt = capturedPdfText[1].text;
+const p2ProjPdfTxt = capturedPdfText[2].text;
+
+const pdfHasText = (pdfStr: string, needle: string) =>
+  pdfStr.includes(needle) || pdfStr.replace(/\s+/g, '').includes(needle.replace(/\s+/g, ''));
+
+for (const item of phase2CustomItems) {
+  assert(p2CompleteText.includes(item.label), `Section 76 Excel missing custom item: ${item.label}`);
+  assert(p2CompleteDocxTxt.includes(item.label), `Section 76 Word missing custom item: ${item.label}`);
+  assert(pdfHasText(p2CompletePdfTxt, item.label), `Section 76 PDF missing custom item: ${item.label}`);
+
+  assert(p2PrevText.includes(item.label), `Previous Excel missing custom item: ${item.label}`);
+  assert(p2PrevDocxTxt.includes(item.label), `Previous Word missing custom item: ${item.label}`);
+  assert(pdfHasText(p2PrevPdfTxt, item.label), `Previous PDF missing custom item: ${item.label}`);
+
+  // All statements except dedicated Equity Changes (which Projected Format folds into BS Equity + CF Financing)
+  if (item.statement !== 'equity' || item.id === 'p2_eq_stmt_zero') {
+    assert(p2ProjText.includes(item.label), `Projected Excel missing custom item: ${item.label}`);
+    assert(p2ProjDocxTxt.includes(item.label), `Projected Word missing custom item: ${item.label}`);
+    assert(pdfHasText(p2ProjPdfTxt, item.label), `Projected PDF missing custom item: ${item.label}`);
+  }
+}
+
+// Verify Projected Cash Flows Excel places Investing/Financing custom Inflows under Inflows: and Outflows under Outflows:
+const projCfRows = xlsxCjs.utils.sheet_to_json<(string | number)[]>(p2ProjWb.Sheets['3. Cash Flows'], { header: 1 });
+const projCfLabels = projCfRows.map(r => String(r[0] ?? ''));
+const invHeaderIdx = projCfLabels.indexOf('2. CASH FLOW FROM INVESTING ACTIVITIES:');
+const invOutIdx = projCfLabels.indexOf('Outflows:', invHeaderIdx);
+const finHeaderIdx = projCfLabels.indexOf('3. CASH FLOW FROM FINANCIAL ACTIVITIES:');
+const finOutIdx = projCfLabels.indexOf('Outflows:', finHeaderIdx);
+
+const invInflowRowIdx = projCfLabels.indexOf('P2 Custom Inv Inflow');
+const invOutflowRowIdx = projCfLabels.indexOf('P2 Custom Inv Outflow');
+const finInflowRowIdx = projCfLabels.indexOf('P2 Custom Fin Inflow');
+const finOutflowRowIdx = projCfLabels.indexOf('P2 Custom Fin Outflow');
+
+assert(invInflowRowIdx > invHeaderIdx && invInflowRowIdx < invOutIdx, 'Projected CF Excel must place custom Investing inflow under Inflows:');
+assert(invOutflowRowIdx > invOutIdx && invOutflowRowIdx < finHeaderIdx, 'Projected CF Excel must place custom Investing outflow under Outflows:');
+assert(finInflowRowIdx > finHeaderIdx && finInflowRowIdx < finOutIdx, 'Projected CF Excel must place custom Financing inflow under Inflows:');
+assert(finOutflowRowIdx > finOutIdx, 'Projected CF Excel must place custom Financing outflow under Outflows:');
+
+// Verify Previous & Projected expanded Fixed Assets Excel schedules contain both standard & custom classes + live formulas
+const p2PrevFaSheet = p2PrevWb.Sheets['5. Fixed Assets & Notes'];
+const p2PrevFaLabels = xlsxCjs.utils.sheet_to_json<(string | number)[]>(p2PrevFaSheet, { header: 1 }).map(r => String(r[0] ?? ''));
+assert(p2PrevFaLabels.includes('P2 Zero Solar Array'), 'Previous FA Excel must list custom FA class');
+assert(p2PrevFaLabels.includes('Taka'), 'Previous FA Excel must retain Taka total row');
+
+const p2ProjFaSheet = p2ProjWb.Sheets['5. Schedule-A PPE'];
+const p2ProjFaLabels = xlsxCjs.utils.sheet_to_json<(string | number)[]>(p2ProjFaSheet, { header: 1 }).map(r => String(r[1] ?? ''));
+assert(p2ProjFaLabels.includes('P2 Zero Solar Array'), 'Projected Schedule-A Excel must list custom FA class');
+assert(p2ProjFaLabels.includes('Total'), 'Projected Schedule-A Excel must retain Total row');
+
+pdfHookActive = false;
+xlsxCjs.writeFile = origWriteFile;
+
+console.log('ALL VERIFICATION CHECKS PASSED! Workbooks:', capturedWorkbooks.map(c => c.filename), 'Docx:', p2DocxList.map(d => `${d.filename}(${d.size}B)`));
+
 
 
 
